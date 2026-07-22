@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Phrase-ladder generation (`routes.py`): analyzes note/chord density, fret
+  complexity, and technique load per section to build a fresh Easy..Hard
+  phrase-level difficulty ladder for sloppak arrangements that don't have
+  one, and writes it back into the sloppak (dir or zip form) in place.
+  `/api/plugins/dynamic_difficulty/generate` (single arrangement) and
+  `/generate-library` (best-effort library-wide sweep) routes; a
+  "⚙️ Generate Difficulties" player-controls button surfaces the single-song
+  path whenever `highway.hasPhraseData()` is false, with a double-submit
+  guard and an automatic highway reconnect on success.
 - Initial release: live accuracy-driven master-difficulty auto-adjustment
   (reads existing note-detection scorer judgments via
   `highway.getNoteStateProvider()`, commits a hit-rate verdict per phrase

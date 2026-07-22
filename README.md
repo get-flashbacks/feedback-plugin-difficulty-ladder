@@ -6,6 +6,25 @@ difficulty indicators.
 
 ## What it does
 
+**Generate missing difficulty ladders**
+- Most charts (GP imports, plain single-level sloppaks) have no phrase-level
+  Easy/Medium/Hard data at all — `highway.hasPhraseData()` is `false` and the
+  mastery slider has nothing to filter. The "⚙️ Generate Difficulties" button
+  (shown automatically whenever the current song lacks phrase data) analyzes
+  the arrangement's note/chord density, fret complexity, and technique load
+  per section, and writes a fresh multi-tier phrase ladder directly into the
+  sloppak on disk (`routes.py`'s `/generate` route) — after which the button
+  reconnects the highway so the new data streams in immediately.
+- A `/generate-library` route does the same as a best-effort sweep over every
+  sloppak in the DLC folder, for filling in a whole library at once.
+- Never touches an arrangement that already has phrase data unless `force`
+  is set — existing hand-authored difficulty ladders are never clobbered.
+- This is a fresh implementation against feedBack's own arrangement wire
+  format (`lib/song.py`) — it does not port code from, or share a runtime
+  with, the Slopsmith arrangement editor's differently-scoped difficulty
+  feature; only the general "score note groups, bucket into tiers" heuristic
+  approach was used as design inspiration.
+
 **Live auto-adjustment**
 - Reads live per-note hit/miss judgments from whichever note-detection scorer
   is active (e.g. the `note_detect` plugin) via `highway.getNoteStateProvider()`
