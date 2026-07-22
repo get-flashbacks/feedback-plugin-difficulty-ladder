@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Generator ran the fretted guitar/bass fret-complexity heuristic against
+  every arrangement indiscriminately, including keys/piano charts — which
+  encode `midi = string*24 + fret` (no fretboard at all), so it would have
+  silently produced meaningless difficulty tiers instead of erroring. Added
+  instrument detection (manifest `type` + the same `/^(keys|piano|keyboard|
+  synth)/i` name match core's piano-roll mode uses) with a separate
+  pitch/polyphony/hand-span heuristic for keys, and a clean
+  `unsupported-instrument-drums` skip for drum-part entries (which point at
+  a `drum_tab.json`, not a notes/chords file, and were never reachable by
+  the old code path anyway).
+
 ### Added
 - Phrase-ladder generation (`routes.py`): analyzes note/chord density, fret
   complexity, and technique load per section to build a fresh Easy..Hard

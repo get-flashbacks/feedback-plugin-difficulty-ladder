@@ -25,6 +25,18 @@ difficulty indicators.
   feature; only the general "score note groups, bucket into tiers" heuristic
   approach was used as design inspiration.
 
+**Instrument coverage**
+
+| Instrument | Supported? | Notes |
+|---|---|---|
+| Guitar / bass (fretted) | ✅ | Fret complexity, span, technique (bend/slide/hammer-on/tremolo/harmonic), density, sustain-ease. |
+| Keys / piano | ✅ | Separate pitch-based heuristic (polyphony, hand-span, density, sustain-ease) — keys notes encode `midi = string*24 + fret`, so the fretted heuristic doesn't apply and never runs against them. No fret anchors/hand-shapes generated (the piano renderer doesn't consume them). |
+| Drums | ❌ | Drum parts are a `drum_tab.json` pointer, not a `notes`/`chords` file — outside this generator's data model entirely. Detected and skipped cleanly (`unsupported-instrument-drums`), never mis-scored. |
+
+Arrangement type is detected the same way core does: the manifest's
+`type` field (`"piano"`/`"keys"`/`"drums"`), falling back to the same
+`/^(keys|piano|keyboard|synth)/i` name match the piano-roll chart mode uses.
+
 **Live auto-adjustment**
 - Reads live per-note hit/miss judgments from whichever note-detection scorer
   is active (e.g. the `note_detect` plugin) via `highway.getNoteStateProvider()`
