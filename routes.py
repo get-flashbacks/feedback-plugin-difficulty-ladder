@@ -19,6 +19,7 @@ feedBack's actual data.
 
 import json
 import os
+import re
 import zipfile
 from pathlib import Path
 
@@ -32,6 +33,28 @@ from safepath import safe_join
 PLUGIN_ID = "dynamic_difficulty"
 
 MIN_EVENTS_FOR_GENERATION = 8  # skip near-empty arrangements — nothing to grade
+
+# Same convention core uses for piano-roll mode (CLAUDE.md: "Any arrangement
+# named Keys, Piano, Keyboard, or Synth renders as a piano-roll chart").
+_KEYS_NAME_RE = re.compile(r"^(keys|piano|keyboard|synth)", re.IGNORECASE)
+
+
+def _instrument_kind(arr_type: str, arr_name: str) -> str:
+    """Classify an arrangement for generation purposes: 'fretted', 'keys',
+    or 'drums'. Keys notes encode `midi = string*24 + fret` (no fretboard at
+    all), so the guitar/bass fret-complexity heuristic below is meaningless
+    for them and must not run — they get their own pitch/polyphony-based
+    scoring. Drums arrangements never reach this module in the first place
+    (see setup()'s manifest-entry check) since they carry no notes/chords
+    file — 'drums' here is just for a clear, honest skip reason."""
+    t = (arr_type or "").strip().lower()
+    if t in ("piano", "keys"):
+        return "keys"
+    if t in ("drums", "drum"):
+        return "drums"
+    if _KEYS_NAME_RE.match((arr_name or "").strip()):
+        return "keys"
+    return "fretted"
 
 
 # ── Scoring heuristic ────────────────────────────────────────────────────────
@@ -227,6 +250,122 @@ def _generate_anchors(notes, beat_times, *, default_width=4):
     return anchors
 
 
+# ── Keys/piano scoring — separate from the fretted path above ───────────────
+#
+# Keys arrangements have no fretboard: `s`/`f` encode absolute pitch as
+# `midi = string*24 + fret` (see CLAUDE.md's note-detect section), so
+# fret-complexity scoring is meaningless here. Difficulty instead comes from
+# polyphony, hand span, density, and sustain ease — the same shape feedBack's
+# own editor plugin CHANGELOG describes for its keys difficulty support
+# ("Scoring is pitch-based ... instead of the guitar fret/string heuristics").
+
+def _note_midi_keys(n):
+    return int(n.get("s", 0)) * 24 + int(n.get("f", 0))
+
+
+def _group_notes_keys(notes, chords, *, onset_window_ms=30):
+    """Group keys notes into atomic units. No fretboard, so grouping is
+    purely temporal: explicit chords stay chords, remaining notes sharing an
+    onset (within `onset_window_ms`) become a block-chord cluster."""
+    groups = []
+    for ch in chords:
+        groups.append({
+            "type": "chord", "notes": list(ch.get("notes", []) or []), "chord": ch,
+            "time": float(ch.get("t", 0)), "score": 0.0, "level": 0,
+        })
+
+    note_list = sorted((dict(n) for n in notes), key=lambda n: float(n.get("t", 0)))
+    total = len(note_list)
+    i = 0
+    while i < total:
+        base_t = float(note_list[i].get("t", 0))
+        cluster = [note_list[i]]
+        j = i + 1
+        while j < total and (float(note_list[j].get("t", 0)) - base_t) * 1000 <= onset_window_ms:
+            cluster.append(note_list[j])
+            j += 1
+        groups.append({
+            "type": "chord" if len(cluster) > 1 else "note",
+            "notes": cluster, "chord": None,
+            "time": base_t, "score": 0.0, "level": 0,
+        })
+        i = j
+
+    groups.sort(key=lambda g: g["time"])
+    return groups
+
+
+def _score_groups_keys(groups):
+    total = len(groups)
+    for gi, g in enumerate(groups):
+        ns = g["notes"]
+        if not ns:
+            g["score"] = 0.0
+            continue
+        midis = [_note_midi_keys(n) for n in ns]
+
+        poly = min(1.0, (len(ns) - 1) / 4.0)  # 1 note=0, 5+ at once=1
+        span = (max(midis) - min(midis)) if len(midis) > 1 else 0
+        span_score = min(1.0, span / 12.0)  # an octave reach = 1.0
+
+        lo = max(0, gi - 5)
+        hi = min(total, gi + 6)
+        nearby = sum(len(groups[k]["notes"]) for k in range(lo, hi))
+        density = min(1.0, nearby / 20.0)
+
+        speed = 0.0
+        if gi + 1 < total:
+            dt = float(groups[gi + 1]["time"]) - float(g["time"])
+            if dt > 0:
+                speed = min(1.0, max(0.0, (0.25 - dt) / 0.25))
+
+        max_sus = max(float(n.get("sus", 0)) for n in ns)
+        sustain_ease = min(1.0, max_sus / 2.0)
+
+        g["score"] = (
+            0.30 * poly + 0.25 * span_score + 0.20 * density
+            + 0.15 * speed + 0.10 * (1.0 - sustain_ease)
+        )
+
+
+def _notes_for_level_keys(groups, level, max_level):
+    """Thin keys chords by pitch, keeping outer voices first — melody
+    (highest pitch) + bass (lowest) at the bottom tier, growing inward,
+    mirroring simplified piano sheet-music arrangements. No 'chords' output:
+    everything flattens to individual notes, same as the fretted path's
+    reduced tiers."""
+    out_notes = []
+    for g in groups:
+        if g["level"] > level:
+            continue
+        ns = list(g["notes"])
+        g_time = float(g.get("time", 0))
+        is_explicit_chord = g.get("chord") is not None
+        if len(ns) > 1 and level < max_level:
+            ranked = sorted(ns, key=_note_midi_keys)
+            if level == 0:
+                keep = [ranked[0], ranked[-1]]
+            elif len(ranked) > 3:
+                mid = len(ranked) // 2
+                keep = [ranked[0], ranked[mid], ranked[-1]]
+            else:
+                keep = ranked
+            seen = set()
+            deduped = []
+            for n in keep:
+                if id(n) not in seen:
+                    seen.add(id(n))
+                    deduped.append(n)
+            ns = deduped
+        for n in ns:
+            merged = dict(n)
+            if is_explicit_chord or merged.get("t") is None:
+                merged["t"] = g_time
+            out_notes.append(merged)
+    out_notes.sort(key=lambda n: float(n.get("t", 0)))
+    return out_notes, []  # keys never emits chord-shaped entries at reduced tiers
+
+
 def generate_phrases_for_arrangement(arr, *, n_levels=4):
     """Build a phrase-level difficulty ladder for one arrangement's raw wire
     dict (as stored in a sloppak's arrangements/*.json).
@@ -234,14 +373,21 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4):
     Read-only over `arr` — returns the `phrases` wire list to assign onto
     `arr["phrases"]`; every other key in `arr` is left untouched by the
     caller. Returns None when there isn't enough chart content to bother
-    (an ambient/silent arrangement, or one already effectively empty).
+    (an ambient/silent arrangement, or one already effectively empty), or
+    when the arrangement's instrument isn't one this generator supports
+    (currently: fretted guitar/bass and keys/piano — see _instrument_kind).
     """
+    kind = _instrument_kind(arr.get("type", ""), arr.get("name", ""))
+    if kind == "drums":
+        return None  # shouldn't normally reach here — see setup()'s pre-check
+
     notes = arr.get("notes", []) or []
     chords = arr.get("chords", []) or []
     beats = arr.get("beats", []) or []
     sections = arr.get("sections", []) or []
     tuning = arr.get("tuning", [0] * 6) or [0] * 6
     n_strings = max(1, len(tuning))
+    is_keys = (kind == "keys")
 
     total_events = len(notes) + sum(len(c.get("notes", []) or []) for c in chords)
     if total_events < MIN_EVENTS_FOR_GENERATION:
@@ -273,8 +419,12 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4):
     if not windows:
         windows = [(0.0, duration)]
 
-    groups_all = _group_notes(notes, chords)
-    _score_groups(groups_all, n_strings)
+    if is_keys:
+        groups_all = _group_notes_keys(notes, chords)
+        _score_groups_keys(groups_all)
+    else:
+        groups_all = _group_notes(notes, chords)
+        _score_groups(groups_all, n_strings)
     beat_times = [float(b.get("time", 0)) for b in beats]
     max_level = n_levels - 1
 
@@ -286,8 +436,14 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4):
         _assign_levels(phrase_groups, n_levels)
         levels_out = []
         for lvl in range(n_levels):
-            lvl_notes, lvl_chords = _notes_for_level(phrase_groups, lvl, max_level)
-            lvl_anchors = _generate_anchors(lvl_notes, beat_times)
+            if is_keys:
+                lvl_notes, lvl_chords = _notes_for_level_keys(phrase_groups, lvl, max_level)
+            else:
+                lvl_notes, lvl_chords = _notes_for_level(phrase_groups, lvl, max_level)
+            # Fret anchors and hand shapes are fretboard concepts the piano
+            # renderer never consumes (mirrors feedBack's own editor plugin's
+            # keys difficulty support) — leave them empty for keys.
+            lvl_anchors = [] if is_keys else _generate_anchors(lvl_notes, beat_times)
             levels_out.append({
                 "difficulty": lvl,
                 "notes": lvl_notes,
@@ -351,9 +507,18 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
     entry = entries[arrangement_index]
     if not isinstance(entry, dict):
         raise HTTPException(400, "malformed arrangement entry")
+
+    # Drum-part entries (feedpak 1.17.0 "drums as arrangements") point at a
+    # `drum_tab` file, never a note/chord `file` — same routing sloppak.py's
+    # own load_song() does. They never carry the notes/chords this generator
+    # reads, so this is a clean, expected skip, not an error.
+    entry_type = str(entry.get("type") or "").strip().lower()
+    if entry_type in ("drums", "drum"):
+        return None, None, "unsupported-instrument-drums"
+
     rel = str(entry.get("file", "")).strip()
     if not rel:
-        raise HTTPException(400, "arrangement has no backing file (drums/pointer entry?)")
+        raise HTTPException(400, "arrangement has no backing file")
     raw_bytes = sloppak.read_member_bytes(pack_path, rel)
     if raw_bytes is None:
         raise HTTPException(404, f"arrangement file {rel!r} not found in pack")
@@ -363,17 +528,19 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
     # stat the .jsonc suffix and read_text itself) doesn't apply here —
     # detect .jsonc by the manifest-declared relpath instead.
     arr = parse_jsonc(text) if rel.lower().endswith(".jsonc") else json.loads(text)
-    return rel, arr
+    return rel, arr, None
 
 
 def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log) -> dict:
-    rel, arr = _load_manifest_and_arrangement(pack_path, arrangement_index)
+    rel, arr, skip_reason = _load_manifest_and_arrangement(pack_path, arrangement_index)
+    if skip_reason:
+        return {"ok": True, "skipped": skip_reason, "arrangement_index": arrangement_index}
     if not force and arr.get("phrases"):
         return {"ok": True, "skipped": "already-has-phrases", "arrangement_index": arrangement_index}
 
     phrases = generate_phrases_for_arrangement(arr, n_levels=n_levels)
     if phrases is None:
-        return {"ok": True, "skipped": "not-enough-content", "arrangement_index": arrangement_index}
+        return {"ok": True, "skipped": "not-enough-content-or-unsupported-instrument", "arrangement_index": arrangement_index}
 
     arr["phrases"] = phrases
     new_bytes = json.dumps(arr, ensure_ascii=False).encode("utf-8")
