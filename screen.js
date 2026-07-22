@@ -41,6 +41,12 @@
     var _phraseTotal = 0;
     var _curPhraseIdx = -1;
     var _lastAutoAppliedPct = null; // used to detect a manual slider override
+    // Forward-advancing cursors into the time-sorted notes/chords arrays —
+    // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
+    // performance doctrine). Reset only on a backward seek (loop/rewind).
+    var _noteCursor = 0;
+    var _chordCursor = 0;
+    var _lastScoredT = -1;
 
     function songKeyOf(si) {
         if (!si) return null;
@@ -55,6 +61,9 @@
         _phraseTotal = 0;
         _curPhraseIdx = -1;
         _lastAutoAppliedPct = null;
+        _noteCursor = 0;
+        _chordCursor = 0;
+        _lastScoredT = -1;
     }
     resetPerSongState();
 
@@ -106,6 +115,16 @@
         if (!phrases || phrases.length === 0) return;
         var t = hw.getTime();
 
+        // A backward jump (loop restart, user seek, section-practice rewind)
+        // invalidates the forward-only cursors below — resync from scratch.
+        // This branch is the only O(N)-ish path here and it's seek-triggered,
+        // not per-frame.
+        if (t < _lastScoredT - 0.05) {
+            _noteCursor = 0;
+            _chordCursor = 0;
+        }
+        _lastScoredT = t;
+
         var idx = _curPhraseIdx;
         if (idx < 0 || t < phrases[idx].start_time || t >= phrases[idx].end_time) {
             idx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
@@ -123,11 +142,16 @@
         var lookback = 0.6;   // seconds — give the scorer time to settle a judgment
         var windowStart = Math.max(p.start_time, t - 2.0);
 
+        // Notes/chords arrive time-sorted (core guarantee — see highway.js).
+        // Advance each cursor past everything older than windowStart ONCE;
+        // it never needs to look at that prefix again, so this amortizes to
+        // O(total events in the song) instead of O(N) every rAF tick.
         var notes = typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [];
-        for (var i = 0; i < notes.length; i++) {
+        while (_noteCursor < notes.length && notes[_noteCursor].t < windowStart) _noteCursor++;
+        for (var i = _noteCursor; i < notes.length; i++) {
             var n = notes[i];
-            if (n.t < windowStart || n.t > t - lookback) continue;
-            if (n.t < p.start_time || n.t >= p.end_time) continue;
+            if (n.t > t - lookback) break;
+            if (n.t >= p.end_time) break;
             var nk = judgmentKey(n.t, n.s, n.f);
             if (_judgedKeys.has(nk)) continue;
             var nst = provider(n, n.t);
@@ -141,10 +165,11 @@
         }
 
         var chords = typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [];
-        for (var j = 0; j < chords.length; j++) {
+        while (_chordCursor < chords.length && chords[_chordCursor].t < windowStart) _chordCursor++;
+        for (var j = _chordCursor; j < chords.length; j++) {
             var c = chords[j];
-            if (c.t < windowStart || c.t > t - lookback) continue;
-            if (c.t < p.start_time || c.t >= p.end_time) continue;
+            if (c.t > t - lookback) break;
+            if (c.t >= p.end_time) break;
             var cnotes = c.notes || [];
             for (var k = 0; k < cnotes.length; k++) {
                 var cn = cnotes[k];
@@ -165,11 +190,17 @@
     // ---- Glass-filling HUD (overlay contract: own canvas, own rAF) ----
     var _hudCanvas = null;
     var _hudRafHandle = null;
+    var _playerEl = null;   // cached — re-resolved only if disconnected, never per-frame-queried
     var GLASS_W = 26, GLASS_GAP = 8, GLASS_MAX_H = 44, GLASS_MIN_H = 16, LOOKAHEAD = 5;
+
+    function getPlayerEl() {
+        if (!_playerEl || !_playerEl.isConnected) _playerEl = document.getElementById('player');
+        return _playerEl;
+    }
 
     function ensureHudCanvas() {
         if (_hudCanvas && _hudCanvas.isConnected) return _hudCanvas;
-        var player = document.getElementById('player');
+        var player = getPlayerEl();
         if (!player) return null;
         _hudCanvas = document.createElement('canvas');
         _hudCanvas.id = 'dynamic-difficulty-hud';
@@ -181,7 +212,7 @@
     }
 
     function isPlayerActive() {
-        var player = document.getElementById('player');
+        var player = getPlayerEl();
         return !!(player && player.classList.contains('active'));
     }
 
@@ -256,6 +287,74 @@
         });
     }
 
+    // ---- Generate-difficulties CTA (calls routes.py's /generate) ----
+    var _generateBtn = null;
+    var _generating = false;   // double-submit guard — Slopsmith's editor plugin
+                                // shipped without one on its Build button and a
+                                // stray second click raced two concurrent jobs
+
+    function currentTarget() {
+        var hw = window.highway;
+        var si = hw && typeof hw.getSongInfo === 'function' ? hw.getSongInfo() : null;
+        if (!si || !si.filename) return null;
+        return { filename: si.filename, arrangement_index: si.arrangement_index || 0 };
+    }
+
+    function updateGenerateButtonVisibility() {
+        if (!_generateBtn) return;
+        var hw = window.highway;
+        var hasData = !!(hw && typeof hw.hasPhraseData === 'function' && hw.hasPhraseData());
+        _generateBtn.style.display = hasData ? 'none' : '';
+    }
+
+    function _resetGenerateBtnLabel() {
+        if (_generateBtn) _generateBtn.textContent = '⚙️ Generate Difficulties';
+    }
+
+    async function onGenerateClick() {
+        if (_generating) return; // guard: one in-flight generate at a time
+        var target = currentTarget();
+        if (!target) return;
+        _generating = true;
+        _generateBtn.disabled = true;
+        _generateBtn.textContent = 'Generating…';
+        try {
+            var resp = await fetch('/api/plugins/' + PLUGIN_ID + '/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(target),
+            });
+            var data = null;
+            try { data = await resp.json(); } catch (_) { /* noop */ }
+            if (!resp.ok || !data || data.error) {
+                console.warn('[dynamic_difficulty] generate failed:', (data && data.error) || resp.status);
+                _generateBtn.textContent = 'Generate failed';
+                setTimeout(_resetGenerateBtnLabel, 2500);
+                return;
+            }
+            if (data.skipped) {
+                _generateBtn.textContent = data.skipped === 'already-has-phrases'
+                    ? 'Already has difficulties' : 'Not enough content';
+                setTimeout(updateGenerateButtonVisibility, 2500);
+                return;
+            }
+            // Reload the current song so the highway WS re-streams the new
+            // phrase data (it was written server-side after this song's
+            // websocket already sent its snapshot).
+            var hw = window.highway;
+            if (hw && typeof hw.reconnect === 'function') {
+                hw.reconnect(target.filename, target.arrangement_index);
+            }
+        } catch (e) {
+            console.warn('[dynamic_difficulty] generate request failed:', e);
+            _generateBtn.textContent = 'Generate failed';
+            setTimeout(_resetGenerateBtnLabel, 2500);
+        } finally {
+            _generating = false;
+            _generateBtn.disabled = false;
+        }
+    }
+
     // ---- Player-controls toggle (v3 chrome contract) ----
     var _controlsBtn = null;
     function syncControlsUI() {
@@ -272,7 +371,11 @@
         if (!window.feedBack.ui || typeof window.feedBack.ui.playerControlSlot !== 'function') return;
         var slot = window.feedBack.ui.playerControlSlot();
         if (!slot) return;
-        if (_controlsBtn && slot.contains(_controlsBtn)) { syncControlsUI(); return; }
+        if (_controlsBtn && slot.contains(_controlsBtn)) {
+            syncControlsUI();
+            updateGenerateButtonVisibility();
+            return;
+        }
 
         _controlsBtn = document.createElement('button');
         _controlsBtn.id = 'dynamic-difficulty-toggle';
@@ -286,6 +389,15 @@
         };
         slot.appendChild(_controlsBtn);
         syncControlsUI();
+
+        _generateBtn = document.createElement('button');
+        _generateBtn.id = 'dynamic-difficulty-generate';
+        _generateBtn.className = 'fb-text text-xs px-2 py-1 rounded hover:bg-white/10 flex items-center gap-1';
+        _generateBtn.textContent = '⚙️ Generate Difficulties';
+        _generateBtn.title = 'Generate an Easy/Medium/Hard difficulty ladder for this arrangement (sloppak songs only)';
+        _generateBtn.onclick = onGenerateClick;
+        slot.appendChild(_generateBtn);
+        updateGenerateButtonVisibility();
     }
 
     // ---- Lifecycle ----
@@ -298,6 +410,7 @@
             resetPerSongState();
         }
         mountControls();
+        updateGenerateButtonVisibility();
     }
 
     if (window.feedBack && typeof window.feedBack.on === 'function') {

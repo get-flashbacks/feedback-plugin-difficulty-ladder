@@ -6,5 +6,6 @@
   "description": "Live accuracy-driven difficulty auto-adjustment with a glass-filling section HUD.",
   "category": "practice",
   "script": "screen.js",
+  "routes": "routes.py",
   "settings": { "html": "settings.html" }
 }
