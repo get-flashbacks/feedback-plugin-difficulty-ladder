@@ -1,0 +1,10 @@
+{
+  "id": "dynamic_difficulty",
+  "name": "Dynamic Difficulty",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Live accuracy-driven difficulty auto-adjustment with a glass-filling section HUD.",
+  "category": "practice",
+  "script": "screen.js",
+  "settings": { "html": "settings.html" }
+}
