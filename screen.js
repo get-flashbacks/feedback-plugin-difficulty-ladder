@@ -1,6 +1,17 @@
 (function () {
     'use strict';
 
+    // Re-hydration guard (plugin-runtime-idempotent.v1 / spec §6.1): the Host
+    // MAY re-run this script mid-session (e.g. the plugin set reloads). This
+    // plugin is a persistent background overlay with no per-visit UI to
+    // refresh (unlike a nav screen reacting to screen:changed), so a second
+    // execution has nothing useful to do — without this guard it would start
+    // a second parallel pair of rAF loops and duplicate every event listener
+    // registered below.
+    var _singleton = (window.__feedBackDynamicDifficulty = window.__feedBackDynamicDifficulty || { installed: false });
+    if (_singleton.installed) return;
+    _singleton.installed = true;
+
     var PLUGIN_ID = 'dynamic_difficulty';
     var LS_PREFIX = 'dynamic_difficulty.';
 

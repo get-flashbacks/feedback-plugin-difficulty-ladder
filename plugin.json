@@ -7,5 +7,6 @@
   "category": "practice",
   "script": "screen.js",
   "routes": "routes.py",
-  "settings": { "html": "settings.html" }
+  "settings": { "html": "settings.html" },
+  "standards": ["plugin-runtime-idempotent.v1"]
 }
