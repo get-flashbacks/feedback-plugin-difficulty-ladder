@@ -20,6 +20,7 @@ feedBack's actual data.
 import json
 import os
 import re
+import threading
 import zipfile
 from pathlib import Path
 
@@ -462,28 +463,78 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4):
 
 # ── Sloppak read/write (dir or zip form) ─────────────────────────────────────
 
+_ZIP_ROOT = Path("/_dd_root").resolve()
+
+
+def _safe_member_name(rel: str) -> str | None:
+    """Canonical, containment-checked member name for `rel`, or None if it
+    would escape the pack root. `rel` comes from the manifest's own
+    arrangement `file` value — trusted for reading (sloppak.read_member_bytes
+    already validates it internally) but NOT pre-validated for this write
+    path, so it gets the same safe_join-based check the directory-form write
+    path already gets. Mirrors sloppak.py's own _zip_member_key normalization
+    (NOT str.lstrip, which strips a character set rather than a "./" prefix
+    and would treat "../../x" the same as "x")."""
+    safe = safe_join(_ZIP_ROOT, rel or "")
+    if safe is None or safe == _ZIP_ROOT:
+        return None
+    return safe.relative_to(_ZIP_ROOT).as_posix()
+
+
 def _rewrite_zip_member(zip_path: Path, rel: str, new_bytes: bytes) -> None:
     """Replace ONE member's bytes inside a zip, preserving every other member.
 
     zipfile has no in-place member update, so this rebuilds the archive into
     a sibling temp file and atomically swaps it in.
     """
+    rel_norm = _safe_member_name(rel)
+    if rel_norm is None:
+        raise ValueError(f"unsafe member path {rel!r}")
     tmp_path = zip_path.with_name(zip_path.name + ".dd_tmp")
-    rel_norm = rel.replace("\\", "/").lstrip("./")
-    with zipfile.ZipFile(str(zip_path), "r") as zin:
-        infos = zin.infolist()
-        with zipfile.ZipFile(str(tmp_path), "w", zipfile.ZIP_DEFLATED) as zout:
-            written = False
-            for item in infos:
-                item_norm = item.filename.replace("\\", "/").lstrip("./")
-                if item_norm == rel_norm:
-                    zout.writestr(item, new_bytes)
-                    written = True
-                else:
-                    zout.writestr(item, zin.read(item.filename))
-            if not written:
-                zout.writestr(rel, new_bytes)
-    os.replace(str(tmp_path), str(zip_path))
+    try:
+        with zipfile.ZipFile(str(zip_path), "r") as zin:
+            infos = zin.infolist()
+            with zipfile.ZipFile(str(tmp_path), "w", zipfile.ZIP_DEFLATED) as zout:
+                written = False
+                for item in infos:
+                    item_norm = _safe_member_name(item.filename)
+                    if item_norm == rel_norm:
+                        zout.writestr(item, new_bytes)
+                        written = True
+                    else:
+                        zout.writestr(item, zin.read(item.filename))
+                if not written:
+                    zout.writestr(rel_norm, new_bytes)
+        os.replace(str(tmp_path), str(zip_path))
+    finally:
+        # Rebuild failed partway (e.g. disk full) — don't leave a stray
+        # .dd_tmp file behind; the original archive is untouched either way
+        # since os.replace only runs after the rebuild succeeds.
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+# One lock per resolved pack path so two requests touching the SAME sloppak
+# (e.g. a library-wide sweep and a single-song click, or two arrangements of
+# one multi-arrangement song) serialize instead of each reading the original
+# file, then racing to os.replace — which would silently drop whichever
+# write lost the race. FastAPI runs sync `def` routes in a threadpool, so
+# without this, concurrent requests really can interleave.
+_pack_locks: dict[str, threading.Lock] = {}
+_pack_locks_guard = threading.Lock()
+
+
+def _lock_for_pack(pack_path: Path) -> threading.Lock:
+    key = str(pack_path.resolve())
+    with _pack_locks_guard:
+        lk = _pack_locks.get(key)
+        if lk is None:
+            lk = threading.Lock()
+            _pack_locks[key] = lk
+        return lk
 
 
 def _write_member_bytes(pack_path: Path, rel: str, data: bytes) -> None:
@@ -532,19 +583,25 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
 
 
 def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log) -> dict:
-    rel, arr, skip_reason = _load_manifest_and_arrangement(pack_path, arrangement_index)
-    if skip_reason:
-        return {"ok": True, "skipped": skip_reason, "arrangement_index": arrangement_index}
-    if not force and arr.get("phrases"):
-        return {"ok": True, "skipped": "already-has-phrases", "arrangement_index": arrangement_index}
+    # Hold the pack's lock across the whole read-modify-write span. Without
+    # this, two requests touching the same pack (a library sweep + a manual
+    # click, or two arrangements of one multi-arrangement song) can each read
+    # the original zip before either writes, then race to os.replace() —
+    # whichever finishes last silently discards the other's phrases.
+    with _lock_for_pack(pack_path):
+        rel, arr, skip_reason = _load_manifest_and_arrangement(pack_path, arrangement_index)
+        if skip_reason:
+            return {"ok": True, "skipped": skip_reason, "arrangement_index": arrangement_index}
+        if not force and arr.get("phrases"):
+            return {"ok": True, "skipped": "already-has-phrases", "arrangement_index": arrangement_index}
 
-    phrases = generate_phrases_for_arrangement(arr, n_levels=n_levels)
-    if phrases is None:
-        return {"ok": True, "skipped": "not-enough-content-or-unsupported-instrument", "arrangement_index": arrangement_index}
+        phrases = generate_phrases_for_arrangement(arr, n_levels=n_levels)
+        if phrases is None:
+            return {"ok": True, "skipped": "not-enough-content-or-unsupported-instrument", "arrangement_index": arrangement_index}
 
-    arr["phrases"] = phrases
-    new_bytes = json.dumps(arr, ensure_ascii=False).encode("utf-8")
-    _write_member_bytes(pack_path, rel, new_bytes)
+        arr["phrases"] = phrases
+        new_bytes = json.dumps(arr, ensure_ascii=False).encode("utf-8")
+        _write_member_bytes(pack_path, rel, new_bytes)
     log.info("dynamic_difficulty: generated %d phrases for %s arrangement %d",
               len(phrases), pack_path.name, arrangement_index)
     return {
@@ -605,16 +662,26 @@ def setup(app, context):
 
         generated, skipped, failed = 0, 0, []
         scanned = 0
-        for entry in sorted(root.iterdir()):
+        # Recursive, matching feedBack's own library scanner (lib/scan.py:
+        # `dlc.rglob(f"*{ext}")` across both SONG_EXTS) — a shallow
+        # root.iterdir() would silently miss any song organized in a
+        # subfolder (e.g. DLC/ArtistName/Song.feedpak), which is a layout
+        # core's own scan explicitly supports.
+        candidates = sorted(
+            {p for ext in sloppak.SONG_EXTS for p in root.rglob(f"*{ext}")},
+            key=lambda p: p.relative_to(root).as_posix(),
+        )
+        for entry in candidates:
             if scanned >= max_songs:
                 break
             if not sloppak.is_sloppak(entry):
                 continue
+            label = entry.relative_to(root).as_posix()
             scanned += 1
             try:
                 manifest = sloppak.load_manifest(entry)
             except Exception as e:  # noqa: BLE001
-                failed.append({"filename": entry.name, "error": str(e)})
+                failed.append({"filename": label, "error": str(e)})
                 continue
             arr_entries = manifest.get("arrangements", []) or []
             for idx, arr_entry in enumerate(arr_entries):
@@ -623,10 +690,10 @@ def setup(app, context):
                 try:
                     result = _generate_one(entry, idx, n_levels=n_levels, force=force, log=log)
                 except HTTPException as e:
-                    failed.append({"filename": entry.name, "arrangement_index": idx, "error": e.detail})
+                    failed.append({"filename": label, "arrangement_index": idx, "error": e.detail})
                     continue
                 except Exception as e:  # noqa: BLE001 — keep the sweep going
-                    failed.append({"filename": entry.name, "arrangement_index": idx, "error": str(e)})
+                    failed.append({"filename": label, "arrangement_index": idx, "error": str(e)})
                     continue
                 if result.get("skipped"):
                     skipped += 1
