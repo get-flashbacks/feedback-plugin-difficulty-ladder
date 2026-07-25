@@ -37,6 +37,16 @@ Arrangement type is detected the same way core does: the manifest's
 `type` field (`"piano"`/`"keys"`/`"drums"`), falling back to the same
 `/^(keys|piano|keyboard|synth)/i` name match the piano-roll chart mode uses.
 
+**Per-song difficulty memory**
+- Core persists master-difficulty as a single global value (whatever the
+  mastery slider was last set to, for any song). This plugin additionally
+  remembers each song's own last-used difficulty (keyed by filename +
+  arrangement, in `localStorage`) and restores it whenever you come back to
+  that song — so switching between a song you've mastered and one you're
+  still working through no longer carries one song's difficulty into the
+  other. Captures both manual slider moves and this plugin's own
+  auto-adjustments, for songs with phrase-level difficulty data only.
+
 **Live auto-adjustment**
 - Reads live per-note hit/miss judgments from whichever note-detection scorer
   is active (e.g. the `note_detect` plugin) via `highway.getNoteStateProvider()`

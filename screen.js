@@ -25,6 +25,89 @@
         try { localStorage.setItem(LS_PREFIX + key, JSON.stringify(val)); } catch (_) { /* noop */ }
     }
 
+    // ---- Per-song difficulty memory ----
+    // Core only persists master_difficulty as a single global (server.py's
+    // /api/settings) — switching songs mid-session keeps whatever % the
+    // previous song ended on. This remembers each song's own last-used value
+    // (Slopsmith's song_mastery plugin did the same, per-filename) so
+    // revisiting a song you'd auto-adjusted or manually set restores where
+    // you left off, instead of inheriting an unrelated song's difficulty.
+    var SONG_MASTERY_LS_KEY = LS_PREFIX + 'songMastery';
+    // Lazily loaded, kept in sync by saveSongMasteryMap() — avoids a fresh
+    // JSON.parse of the whole map on every window.setMastery() call, which
+    // slider drags can fire many times a second via oninput.
+    var _songMasteryMapCache = null;
+
+    function loadSongMasteryMap() {
+        if (_songMasteryMapCache) return _songMasteryMapCache;
+        try {
+            var parsed = JSON.parse(localStorage.getItem(SONG_MASTERY_LS_KEY) || '{}');
+            // typeof [] === 'object' too — an array here would make
+            // map[_songKey] = pct set a non-index property that
+            // JSON.stringify silently drops from array output, so per-song
+            // mastery would never actually persist. Reject arrays explicitly.
+            _songMasteryMapCache = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+        } catch (_) {
+            _songMasteryMapCache = {};
+        }
+        return _songMasteryMapCache;
+    }
+    function saveSongMasteryMap(map) {
+        _songMasteryMapCache = map;
+        try { localStorage.setItem(SONG_MASTERY_LS_KEY, JSON.stringify(map)); } catch (_) { /* noop */ }
+    }
+
+    // Wraps the single global entry point every mastery change already flows
+    // through — the manual player slider's oninput, the Gameplay-tab speed
+    // slider, and this plugin's own auto-adjust all call window.setMastery()
+    // (see feedBack's player-controls.js _applyMastery). Wrapping it here,
+    // rather than listening for a dedicated "mastery changed" event, catches
+    // every source without needing one. Idempotent — checks a marker so a
+    // plugin-runtime-idempotent.v1 re-run never double-wraps.
+    function ensureMasterySaveHook() {
+        if (typeof window.setMastery !== 'function' || window.setMastery.__ddWrapped) return;
+        var orig = window.setMastery;
+        function wrapped() {
+            // apply()/arguments/return-value forwarding: this is a general-
+            // purpose wrap of a shared core entry point, not a call site we
+            // control, so preserve `this`, every argument, and whatever orig
+            // hands back rather than assuming its current single-arg shape.
+            var result = orig.apply(this, arguments);
+            _onMasteryApplied(arguments[0]);
+            return result;
+        }
+        wrapped.__ddWrapped = true;
+        window.setMastery = wrapped;
+    }
+
+    function _onMasteryApplied(v) {
+        if (!_songKey) return; // no song loaded yet (e.g. core's own settings hydration)
+        var hw = window.highway;
+        if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return;
+        var pct = parseInt(v, 10);
+        if (!isFinite(pct)) return;
+        pct = Math.max(0, Math.min(100, pct));
+        var map = loadSongMasteryMap();
+        // Slider drags fire oninput per pixel — window.setMastery() (and thus
+        // this hook) can run many times a second. Skip the parse/stringify/
+        // write when the stored value hasn't actually changed.
+        if (map[_songKey] === pct) return;
+        map[_songKey] = pct;
+        saveSongMasteryMap(map);
+    }
+
+    // Called once per song change (see onSongEvent). Applies this song's own
+    // remembered difficulty, if any, over whatever global value core just
+    // carried over from the previous song.
+    function _maybeRestoreSongMastery(key) {
+        if (!key) return;
+        var hw = window.highway;
+        if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return;
+        var saved = loadSongMasteryMap()[key];
+        if (typeof saved !== 'number' || !isFinite(saved)) return;
+        if (typeof window.setMastery === 'function') window.setMastery(saved);
+    }
+
     // ---- Settings (localStorage-backed; see settings.html for the panel) ----
     var settings = {
         autoAdjust: lsGet('autoAdjust', false),
@@ -458,12 +541,14 @@
     }
 
     function onSongEvent() {
+        ensureMasterySaveHook();
         var hw = window.highway;
         var si = (hw && typeof hw.getSongInfo === 'function') ? hw.getSongInfo() : null;
         var key = songKeyOf(si);
         if (key !== _songKey) {
             _songKey = key;
             resetPerSongState();
+            _maybeRestoreSongMastery(key);
         }
         mountControls();
         updateGenerateButtonVisibility();
@@ -512,5 +597,6 @@
         contributeDiagnostics();
     });
 
+    ensureMasterySaveHook();
     startRafLoops();
 })();
