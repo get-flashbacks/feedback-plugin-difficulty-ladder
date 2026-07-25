@@ -33,14 +33,27 @@
     // revisiting a song you'd auto-adjusted or manually set restores where
     // you left off, instead of inheriting an unrelated song's difficulty.
     var SONG_MASTERY_LS_KEY = LS_PREFIX + 'songMastery';
+    // Lazily loaded, kept in sync by saveSongMasteryMap() — avoids a fresh
+    // JSON.parse of the whole map on every window.setMastery() call, which
+    // slider drags can fire many times a second via oninput.
+    var _songMasteryMapCache = null;
 
     function loadSongMasteryMap() {
+        if (_songMasteryMapCache) return _songMasteryMapCache;
         try {
             var parsed = JSON.parse(localStorage.getItem(SONG_MASTERY_LS_KEY) || '{}');
-            return (parsed && typeof parsed === 'object') ? parsed : {};
-        } catch (_) { return {}; }
+            // typeof [] === 'object' too — an array here would make
+            // map[_songKey] = pct set a non-index property that
+            // JSON.stringify silently drops from array output, so per-song
+            // mastery would never actually persist. Reject arrays explicitly.
+            _songMasteryMapCache = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+        } catch (_) {
+            _songMasteryMapCache = {};
+        }
+        return _songMasteryMapCache;
     }
     function saveSongMasteryMap(map) {
+        _songMasteryMapCache = map;
         try { localStorage.setItem(SONG_MASTERY_LS_KEY, JSON.stringify(map)); } catch (_) { /* noop */ }
     }
 
