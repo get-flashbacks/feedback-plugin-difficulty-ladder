@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Per-song difficulty memory: remembers each song's own last-used
+  master-difficulty % (`localStorage`, keyed by filename + arrangement) and
+  restores it on revisit, instead of inheriting whatever global value the
+  previously played song left the slider at. Captures both manual slider
+  moves and this plugin's own auto-adjustments by wrapping the shared
+  `window.setMastery()` entry point. Songs without phrase-level difficulty
+  data are unaffected (nothing to remember).
+
 ### Fixed
 - Generator ran the fretted guitar/bass fret-complexity heuristic against
   every arrangement indiscriminately, including keys/piano charts — which
