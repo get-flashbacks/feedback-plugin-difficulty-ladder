@@ -73,6 +73,7 @@
         _phraseTotal = 0;
         _curPhraseIdx = -1;
         _lastAutoAppliedPct = null;
+        _lastAutoAction = null;
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
@@ -83,9 +84,15 @@
 
     function commitPhraseResult(ratio) {
         _emaHitRate = (_emaHitRate == null) ? ratio : (EMA_ALPHA * ratio + (1 - EMA_ALPHA) * _emaHitRate);
-        if (!settings.autoAdjust) return;
+        if (!settings.autoAdjust) {
+            contributeDiagnostics();
+            return;
+        }
         var hw = window.highway;
-        if (!hw || typeof hw.getMastery !== 'function') return;
+        if (!hw || typeof hw.getMastery !== 'function') {
+            contributeDiagnostics();
+            return;
+        }
 
         var curPct = Math.round(hw.getMastery() * 100);
         // Manual-override doctrine: a human action always wins over automation.
@@ -95,6 +102,7 @@
             settings.autoAdjust = false;
             lsSet('autoAdjust', false);
             syncControlsUI();
+            contributeDiagnostics();
             return;
         }
 
@@ -113,8 +121,8 @@
                 pct: next,
                 reason: dir === 'up' ? 'ema_above_up_threshold' : 'ema_below_down_threshold',
             };
-            contributeDiagnostics();
         }
+        contributeDiagnostics();
     }
 
     function contributeDiagnostics() {
@@ -467,9 +475,23 @@
         window.feedBack.on('song:ready', onSongEvent);
         window.feedBack.on('highway:created', mountControls);
         window.feedBack.on('highway:visibility', function (ev) {
-            if (ev && ev.visible) startRafLoops();
+            if (ev && ev.visible) {
+                startRafLoops();
+            } else {
+                if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
+                if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
+                if (_hudCanvas) _hudCanvas.style.display = 'none';
+            }
         });
     }
+
+    // Safety net: if highway:visibility is not fired for every player-active
+    // transition (e.g. pause/resume without a song change), the document
+    // visibilitychange event ensures we restart both loops whenever the tab
+    // returns to the foreground while the player is active.
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') startRafLoops();
+    });
 
     // Settings panel writes localStorage directly (see settings.html) and
     // notifies us to re-read rather than us polling localStorage per frame.
