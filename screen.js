@@ -52,6 +52,7 @@
     var _phraseTotal = 0;
     var _curPhraseIdx = -1;
     var _lastAutoAppliedPct = null; // used to detect a manual slider override
+    var _lastAutoAction = null;     // { direction, pct, reason } — for diagnostics
     // Forward-advancing cursors into the time-sorted notes/chords arrays —
     // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
     // performance doctrine). Reset only on a backward seek (loop/rewind).
@@ -72,6 +73,7 @@
         _phraseTotal = 0;
         _curPhraseIdx = -1;
         _lastAutoAppliedPct = null;
+        _lastAutoAction = null;
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
@@ -82,9 +84,15 @@
 
     function commitPhraseResult(ratio) {
         _emaHitRate = (_emaHitRate == null) ? ratio : (EMA_ALPHA * ratio + (1 - EMA_ALPHA) * _emaHitRate);
-        if (!settings.autoAdjust) return;
+        if (!settings.autoAdjust) {
+            contributeDiagnostics();
+            return;
+        }
         var hw = window.highway;
-        if (!hw || typeof hw.getMastery !== 'function') return;
+        if (!hw || typeof hw.getMastery !== 'function') {
+            contributeDiagnostics();
+            return;
+        }
 
         var curPct = Math.round(hw.getMastery() * 100);
         // Manual-override doctrine: a human action always wins over automation.
@@ -94,6 +102,7 @@
             settings.autoAdjust = false;
             lsSet('autoAdjust', false);
             syncControlsUI();
+            contributeDiagnostics();
             return;
         }
 
@@ -106,7 +115,29 @@
         if (next !== curPct && typeof window.setMastery === 'function') {
             window.setMastery(next);
             _lastAutoAppliedPct = next;
+            var dir = next > curPct ? 'up' : 'down';
+            _lastAutoAction = {
+                direction: dir,
+                pct: next,
+                reason: dir === 'up' ? 'ema_above_up_threshold' : 'ema_below_down_threshold',
+            };
         }
+        contributeDiagnostics();
+    }
+
+    function contributeDiagnostics() {
+        var fb = window.feedBack;
+        if (!fb || !fb.diagnostics || typeof fb.diagnostics.contribute !== 'function') return;
+        var hw = window.highway;
+        var provider = hw && typeof hw.getNoteStateProvider === 'function' ? hw.getNoteStateProvider() : null;
+        fb.diagnostics.contribute(PLUGIN_ID, {
+            schema: 'dynamic_difficulty.v1',
+            ema_hit_rate: _emaHitRate,
+            last_auto_action: _lastAutoAction,
+            provider_registered: !!provider,
+            auto_adjust_enabled: settings.autoAdjust,
+            show_glasses: settings.showGlasses,
+        });
     }
 
     // Reads live per-note judgments through the note-state provider slot
@@ -115,6 +146,10 @@
     // getter documented for exactly this kind of consumption.
     var _scoreRafHandle = null;
     function tickScoring() {
+        if (!isPlayerActive()) {
+            _scoreRafHandle = null;
+            return;
+        }
         _scoreRafHandle = requestAnimationFrame(tickScoring);
 
         var hw = window.highway;
@@ -228,9 +263,14 @@
     }
 
     function drawHud() {
+        if (!isPlayerActive()) {
+            if (_hudCanvas) _hudCanvas.style.display = 'none';
+            _hudRafHandle = null;
+            return;
+        }
         _hudRafHandle = requestAnimationFrame(drawHud);
 
-        if (!settings.showGlasses || !isPlayerActive()) {
+        if (!settings.showGlasses) {
             if (_hudCanvas) _hudCanvas.style.display = 'none';
             return;
         }
@@ -412,6 +452,11 @@
     }
 
     // ---- Lifecycle ----
+    function startRafLoops() {
+        if (!_scoreRafHandle) tickScoring();
+        if (!_hudRafHandle) drawHud();
+    }
+
     function onSongEvent() {
         var hw = window.highway;
         var si = (hw && typeof hw.getSongInfo === 'function') ? hw.getSongInfo() : null;
@@ -422,12 +467,31 @@
         }
         mountControls();
         updateGenerateButtonVisibility();
+        startRafLoops();
+        contributeDiagnostics();
     }
 
     if (window.feedBack && typeof window.feedBack.on === 'function') {
         window.feedBack.on('song:ready', onSongEvent);
         window.feedBack.on('highway:created', mountControls);
+        window.feedBack.on('highway:visibility', function (ev) {
+            if (ev && ev.visible) {
+                startRafLoops();
+            } else {
+                if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
+                if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
+                if (_hudCanvas) _hudCanvas.style.display = 'none';
+            }
+        });
     }
+
+    // Safety net: if highway:visibility is not fired for every player-active
+    // transition (e.g. pause/resume without a song change), the document
+    // visibilitychange event ensures we restart both loops whenever the tab
+    // returns to the foreground while the player is active.
+    document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') startRafLoops();
+    });
 
     // Settings panel writes localStorage directly (see settings.html) and
     // notifies us to re-read rather than us polling localStorage per frame.
@@ -437,6 +501,7 @@
         if (short in settings) {
             try { settings[short] = JSON.parse(e.newValue); } catch (_) { /* noop */ }
             syncControlsUI();
+            contributeDiagnostics();
         }
     });
     window.addEventListener(PLUGIN_ID + ':settings-changed', function (ev) {
@@ -444,8 +509,8 @@
         if (!patch) return;
         Object.assign(settings, patch);
         syncControlsUI();
+        contributeDiagnostics();
     });
 
-    if (!_scoreRafHandle) tickScoring();
-    if (!_hudRafHandle) drawHud();
+    startRafLoops();
 })();
