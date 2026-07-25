@@ -54,9 +54,14 @@
     function ensureMasterySaveHook() {
         if (typeof window.setMastery !== 'function' || window.setMastery.__ddWrapped) return;
         var orig = window.setMastery;
-        function wrapped(v) {
-            orig(v);
-            _onMasteryApplied(v);
+        function wrapped() {
+            // apply()/arguments/return-value forwarding: this is a general-
+            // purpose wrap of a shared core entry point, not a call site we
+            // control, so preserve `this`, every argument, and whatever orig
+            // hands back rather than assuming its current single-arg shape.
+            var result = orig.apply(this, arguments);
+            _onMasteryApplied(arguments[0]);
+            return result;
         }
         wrapped.__ddWrapped = true;
         window.setMastery = wrapped;
@@ -70,6 +75,10 @@
         if (!isFinite(pct)) return;
         pct = Math.max(0, Math.min(100, pct));
         var map = loadSongMasteryMap();
+        // Slider drags fire oninput per pixel — window.setMastery() (and thus
+        // this hook) can run many times a second. Skip the parse/stringify/
+        // write when the stored value hasn't actually changed.
+        if (map[_songKey] === pct) return;
         map[_songKey] = pct;
         saveSongMasteryMap(map);
     }
