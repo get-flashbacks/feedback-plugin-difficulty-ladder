@@ -560,7 +560,8 @@
         window.feedBack.on('song:ready', onSongEvent);
         window.feedBack.on('highway:created', mountControls);
         window.feedBack.on('highway:visibility', function (ev) {
-            if (ev && ev.visible) {
+            var detail = ev && ev.detail;
+            if (detail && detail.visible) {
                 startRafLoops();
             } else {
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
