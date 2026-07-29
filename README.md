@@ -69,6 +69,10 @@ Arrangement type is detected the same way core does: the manifest's
 
 ## Requirements
 
+- Target Host: feedBack core implementing `plugin-spec-v1.md` with the v3 player chrome
+  (`window.feedBack.ui.playerControlSlot()`). The player-controls buttons (Auto-Difficulty,
+  Generate Difficulties) are v3-only today — see `COMPLIANCE.md` for the tracked v2 gap. The
+  glass-filling HUD itself does not depend on `uiVersion` and renders on either chrome.
 - feedBack core with the `note-detection` capability / `setNoteStateProvider`
   contract (spec 009) and phrase-level difficulty data (feedBack#48).
 - A note-detection scorer plugin installed and active for auto-adjust to have
