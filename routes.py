@@ -329,6 +329,28 @@ def _score_groups_keys(groups):
         )
 
 
+def _collapse_octave_duplicates(ns):
+    """Merge notes that are the same pitch class exactly one octave apart
+    down to a single note — a doubled root/octave voicing plays the same to
+    a beginner as the single note, so it's a free simplification on top of
+    the voice-thinning above. Keeps whichever note came first in `ns` (i.e.
+    whatever the existing keep-logic already selected as the surviving
+    voice), just drops the redundant octave partner."""
+    kept = []
+    dropped = set()
+    for i, n in enumerate(ns):
+        if id(n) in dropped:
+            continue
+        midi_n = _note_midi_keys(n)
+        for m in ns[i + 1:]:
+            if id(m) in dropped:
+                continue
+            if abs(_note_midi_keys(m) - midi_n) == 12:
+                dropped.add(id(m))
+        kept.append(n)
+    return kept
+
+
 def _notes_for_level_keys(groups, level, max_level):
     """Thin keys chords by pitch, keeping outer voices first — melody
     (highest pitch) + bass (lowest) at the bottom tier, growing inward,
@@ -358,6 +380,8 @@ def _notes_for_level_keys(groups, level, max_level):
                     seen.add(id(n))
                     deduped.append(n)
             ns = deduped
+            if len(ns) > 1:
+                ns = _collapse_octave_duplicates(ns)
         for n in ns:
             merged = dict(n)
             if is_explicit_chord or merged.get("t") is None:

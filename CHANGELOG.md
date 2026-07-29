@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Keys/piano difficulty thinning now also collapses octave-doubled voicings
+  (two notes of the same pitch class exactly 12 semitones apart) to a single
+  note at every reduced tier, on top of the existing outer-voice thinning —
+  a doubled root/octave plays identically to a beginner as the single note.
 - Per-song difficulty memory: remembers each song's own last-used
   master-difficulty % (`localStorage`, keyed by filename + arrangement) and
   restores it on revisit, instead of inheriting whatever global value the
