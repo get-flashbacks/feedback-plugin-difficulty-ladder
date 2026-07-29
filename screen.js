@@ -598,6 +598,18 @@
         contributeDiagnostics();
     });
 
+    // Node-only export hook for tests (mirrors the convention used by
+    // feedBack-plugin-sectionmap's screen.js): expose the pure/DOM-light
+    // helpers so they're unit-testable without a browser, and skip the
+    // side-effect wiring below (event-bus subscriptions, rAF loops) since
+    // there's no real window.feedBack/highway to wire up against in Node.
+    // Browsers never hit this branch (`module` is undefined), so runtime
+    // behavior is unchanged.
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = { thresholds: thresholds, songKeyOf: songKeyOf, judgmentKey: judgmentKey, settings: settings };
+        return;
+    }
+
     ensureMasterySaveHook();
     startRafLoops();
 })();

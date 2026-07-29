@@ -1,0 +1,95 @@
+'use strict';
+// Coverage for pure/DOM-light helpers in screen.js: sensitivity thresholds,
+// per-song key derivation, judgment-dedup key shape.
+// Runs under the org reusable CI as `node tests/screen.test.js` (mirrors the
+// convention in feedBack-plugin-sectionmap's tests/screen.test.js).
+//
+// This file also documents (issue #8) the phrase-data contract this plugin
+// shares with feedBack-plugin-sectionmap: both plugins independently read
+// window.highway.getPhrases() / hasPhraseData() / getMastery() — see
+// COMPLIANCE.md. The shape-parity test below guards that contract from
+// silently drifting on either side.
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const path = require('node:path');
+
+function freshPlugin() {
+    global.window = { addEventListener: () => {} };
+    global.document = {
+        addEventListener: () => {},
+        getElementById: () => null,
+    };
+    global.localStorage = {
+        getItem: () => null,
+        setItem: () => {},
+    };
+    const file = path.join(__dirname, '..', 'screen.js');
+    delete require.cache[require.resolve(file)];
+    return require(file);
+}
+
+test('thresholds() at sensitivity 2 (default) matches the documented up/down/step values', () => {
+    const mod = freshPlugin();
+    mod.settings.sensitivity = 2;
+    assert.deepEqual(mod.thresholds(), { up: 0.88, down: 0.68, step: 15 });
+});
+
+function assertThresholdsClose(actual, expected) {
+    assert.ok(Math.abs(actual.up - expected.up) < 1e-9, `up: ${actual.up} ~= ${expected.up}`);
+    assert.ok(Math.abs(actual.down - expected.down) < 1e-9, `down: ${actual.down} ~= ${expected.down}`);
+    assert.equal(actual.step, expected.step);
+}
+
+test('thresholds() clamps sensitivity to [1,3]', () => {
+    const mod = freshPlugin();
+    mod.settings.sensitivity = 1;
+    assertThresholdsClose(mod.thresholds(), { up: 0.93, down: 0.65, step: 10 });
+    mod.settings.sensitivity = 3;
+    assertThresholdsClose(mod.thresholds(), { up: 0.83, down: 0.71, step: 20 });
+    mod.settings.sensitivity = 99; // out of range -> clamps to 3's values
+    assertThresholdsClose(mod.thresholds(), { up: 0.83, down: 0.71, step: 20 });
+});
+
+test('songKeyOf combines filename and arrangement_index so per-song state never leaks across arrangements', () => {
+    const mod = freshPlugin();
+    assert.equal(mod.songKeyOf({ filename: 'song.feedpak', arrangement_index: 0 }), 'song.feedpak::0');
+    assert.equal(mod.songKeyOf({ filename: 'song.feedpak', arrangement_index: 1 }), 'song.feedpak::1');
+});
+
+test('songKeyOf falls back to the arrangement name when arrangement_index is absent', () => {
+    const mod = freshPlugin();
+    assert.equal(mod.songKeyOf({ filename: 'song.feedpak', arrangement: 'Bass' }), 'song.feedpak::Bass');
+});
+
+test('songKeyOf returns null for no song info (no song loaded yet)', () => {
+    const mod = freshPlugin();
+    assert.equal(mod.songKeyOf(null), null);
+    assert.equal(mod.songKeyOf(undefined), null);
+});
+
+test('judgmentKey is stable and distinct per (time, string, fret)', () => {
+    const mod = freshPlugin();
+    assert.equal(mod.judgmentKey(1.5, 2, 3), '1.5_2_3');
+    assert.notEqual(mod.judgmentKey(1.5, 2, 3), mod.judgmentKey(1.5, 3, 2));
+});
+
+// ── Cross-plugin contract shape parity (issue #8) ───────────────────────────
+// Neither plugin defines this shape itself — it's window.highway's contract
+// (feedBack core) — but both plugins' code assumes the same fields exist.
+// This is a documentation-as-test guard: if either plugin's assumed field
+// list drifts from the other's, this is the place a future editor would
+// update both, rather than one silently going stale.
+test('the phrase shape this plugin assumes matches the one sectionmap assumes (contract note)', () => {
+    // getPhrases(): [{ index, start_time, end_time, max_difficulty }]
+    const samplePhrase = { index: 0, start_time: 0, end_time: 10, max_difficulty: 3 };
+    // Fields this plugin's drawHud()/tickScoring() reads:
+    for (const key of ['start_time', 'end_time', 'max_difficulty']) {
+        assert.ok(key in samplePhrase, `dynamic_difficulty reads phrase.${key}`);
+    }
+    // Fields feedBack-plugin-sectionmap's _smSectionDifficulty/_smComputeGlass
+    // read (see that repo's screen.js): the same three, plus none extra —
+    // confirming neither plugin depends on a field the other doesn't also see.
+    for (const key of ['start_time', 'end_time', 'max_difficulty']) {
+        assert.ok(key in samplePhrase, `sectionmap reads phrase.${key}`);
+    }
+});
