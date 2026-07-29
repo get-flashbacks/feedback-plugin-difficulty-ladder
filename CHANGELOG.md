@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Library card badge (issue #4): songs with a remembered per-song difficulty now show an
+  indicator on their library card via `window.feedBack.libraryCardActions.register(...)`
+  (`placement: 'overlay'`), reading the existing `dynamic_difficulty.songMastery` map — no new
+  storage, no `MutationObserver`. Note: the card-actions capability's `label`/`icon` are static per
+  registration rather than computed per song, so the exact saved % isn't renderable as on-card
+  text through it today; see `screen.js`'s `registerLibraryCardBadge` for the full writeup.
+- `reactionSpeed` setting (1-3, issue #5): a second, independent auto-adjust axis mapping to
+  `EMA_ALPHA` (how much weight a single section's result carries in the rolling accuracy average).
+  `sensitivity` keeps its existing confidence-threshold/step-size meaning unchanged. Default
+  `reactionSpeed` (2) resolves to the same 0.35 `EMA_ALPHA` this plugin always used, so existing
+  users see no behavior change unless they touch the new slider.
 - Keys/piano difficulty thinning now also collapses octave-doubled voicings
   (two notes of the same pitch class exactly 12 semitones apart) to a single
   note at every reduced tier, on top of the existing outer-voice thinning —

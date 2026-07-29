@@ -88,8 +88,17 @@ Exposed via Settings → Plugins → Dynamic Difficulty:
 |---|---|
 | Auto-adjust difficulty | Master on/off switch for automatic `setMastery()` calls. |
 | Glass-filling section HUD | Show/hide the in-player glass row. |
-| Sensitivity (1-3) | How fast and how far each adjustment moves the slider. |
+| Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. |
+| Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
 | Min / Max % | Hard bounds auto-adjust will never cross. |
+
+**Library card badge** — songs with a remembered per-song difficulty (see above) show a small
+indicator on their library card via `window.feedBack.libraryCardActions` (`placement: 'overlay'`,
+never a `MutationObserver`). The exact saved percentage is available via the action's click
+result/title rather than as on-card text — see this repo's `COMPLIANCE.md`-adjacent note in
+`screen.js` (`registerLibraryCardBadge`) for why: the card-actions capability's `label`/`icon` are
+static per registration, not computed per song, so a literal "shows N%" on-card text isn't
+expressible through it as it exists today.
 
 All settings persist in `localStorage`, prefixed `dynamic_difficulty.`.
 

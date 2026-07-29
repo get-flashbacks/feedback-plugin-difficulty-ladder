@@ -57,6 +57,65 @@
         try { localStorage.setItem(SONG_MASTERY_LS_KEY, JSON.stringify(map)); } catch (_) { /* noop */ }
     }
 
+    // ---- Library card badge (issue #4) ----
+    // Surfaces the songMastery map above as a library-card decoration via the
+    // Host's registration API (window.feedBack.libraryCardActions) — never a
+    // MutationObserver on library DOM (CLAUDE.md's performance section calls
+    // that anti-pattern out explicitly; this is exactly the extension point
+    // the capability exists to replace it with).
+    //
+    // Known limitation (documented, not silently worked around): the
+    // registered action's `label`/`icon` are static strings fixed at
+    // register()-time — core's `list(song)` returns the SAME label/icon for
+    // every card the predicate applies to, with no per-song text hook in this
+    // capability's v1 shape (checked static/capabilities/library-card-actions.js
+    // and static/v3/songs.js's songCard() rendering — `label`/`icon` come from
+    // the registered spec object itself, not a value computed per `song`).
+    // A literal "badge showing this song's exact N%" therefore isn't
+    // expressible through `libraryCardActions` as it exists today; this
+    // registers an applies()-gated indicator (visible only on cards that HAVE
+    // a remembered difficulty) with the exact percentage in its title/aria
+    // label, and a generic glyph otherwise — the closest faithful
+    // approximation, with the exact-text gap filed as a follow-up.
+    function _dominantSongMastery(song) {
+        if (!song || !song.filename) return null;
+        var map = loadSongMasteryMap();
+        var prefix = song.filename + '::';
+        var fallback = null;
+        for (var k in map) {
+            if (!Object.prototype.hasOwnProperty.call(map, k) || k.indexOf(prefix) !== 0) continue;
+            var v = map[k];
+            if (typeof v !== 'number' || !isFinite(v)) continue;
+            if (k === prefix + '0') return v; // prefer the first/primary arrangement
+            if (fallback === null) fallback = v;
+        }
+        return fallback;
+    }
+
+    function registerLibraryCardBadge() {
+        var fb = window.feedBack;
+        if (!fb || !fb.libraryCardActions || typeof fb.libraryCardActions.register !== 'function') return;
+        if (window.__ddCardBadgeRegistered) return; // idempotent — see plugin-runtime-idempotent.v1 guard at top of file
+        window.__ddCardBadgeRegistered = true;
+        fb.libraryCardActions.register({
+            id: 'dynamic_difficulty.mastery_badge',
+            pluginId: PLUGIN_ID,
+            label: 'Last played at a remembered difficulty (see this song\'s card menu for the exact %)',
+            icon: '🥃',
+            placement: 'overlay',
+            order: 90,
+            // O(1)/allocation-light per card, per the capability's own contract
+            // (list(song) runs this once per visible card on every re-render).
+            applies: function (song) { return _dominantSongMastery(song) !== null; },
+            // Purely informational — nothing to run. Re-affirms the saved value
+            // so a click is harmless rather than surprising.
+            run: function (song) {
+                var pct = _dominantSongMastery(song);
+                return { ok: true, mastery: pct };
+            },
+        });
+    }
+
     // Wraps the single global entry point every mastery change already flows
     // through — the manual player slider's oninput, the Gameplay-tab speed
     // slider, and this plugin's own auto-adjust all call window.setMastery()
@@ -112,7 +171,8 @@
     var settings = {
         autoAdjust: lsGet('autoAdjust', false),
         showGlasses: lsGet('showGlasses', true),
-        sensitivity: lsGet('sensitivity', 2),   // 1 (cautious) .. 3 (aggressive)
+        sensitivity: lsGet('sensitivity', 2),     // 1 (lenient) .. 3 (strict) — confidence thresholds + step size
+        reactionSpeed: lsGet('reactionSpeed', 2), // 1 (slow) .. 3 (fast) — EMA_ALPHA, how much one phrase's result moves the rolling average
         minMastery: lsGet('minMastery', 0),     // percent
         maxMastery: lsGet('maxMastery', 100),   // percent
     };
@@ -126,10 +186,24 @@
         };
     }
 
+    // reactionSpeed's default (2) resolves to 0.35 — the value EMA_ALPHA was
+    // hardcoded to before this setting existed — so a user who never touches
+    // the new slider sees byte-identical auto-adjust behavior to before
+    // (issue #5's acceptance criterion). 1 (slow) smooths more, weighting a
+    // single phrase's result less; 3 (fast) reacts to a run of good/bad
+    // sections sooner.
+    function emaAlpha() {
+        var s = Math.max(1, Math.min(3, settings.reactionSpeed));
+        return 0.20 + (s - 1) * 0.15; // 1:0.20  2:0.35  3:0.50
+    }
+
     // ---- Per-song scoring state ----
     var _songKey = null;
     var _emaHitRate = null;        // null = no phrase scored yet this song
-    var EMA_ALPHA = 0.35;
+    // EMA weight is now the reactionSpeed setting (emaAlpha(), above) rather
+    // than a hardcoded constant — see issue #5. Read live (not cached) since
+    // the settings-changed listener below can update settings.reactionSpeed
+    // mid-song.
     var _judgedKeys = null;        // Set, reset every phrase to bound memory
     var _phraseHits = 0;
     var _phraseTotal = 0;
@@ -166,7 +240,8 @@
     function judgmentKey(time, s, f) { return time + '_' + s + '_' + f; }
 
     function commitPhraseResult(ratio) {
-        _emaHitRate = (_emaHitRate == null) ? ratio : (EMA_ALPHA * ratio + (1 - EMA_ALPHA) * _emaHitRate);
+        var alpha = emaAlpha();
+        _emaHitRate = (_emaHitRate == null) ? ratio : (alpha * ratio + (1 - alpha) * _emaHitRate);
         if (!settings.autoAdjust) {
             contributeDiagnostics();
             return;
@@ -556,8 +631,17 @@
         contributeDiagnostics();
     }
 
+    // Bind late (rule 21's "register into the host" pattern, applied here):
+    // plugins load alphabetically and window.feedBack.libraryCardActions may
+    // not exist the instant this script runs, so try now and again on the
+    // next couple of lifecycle events that fire regardless of whether the
+    // user ever opens the player — registerLibraryCardBadge() is idempotent,
+    // so extra calls after the first success are free no-ops.
+    registerLibraryCardBadge();
+
     if (window.feedBack && typeof window.feedBack.on === 'function') {
         window.feedBack.on('song:ready', onSongEvent);
+        window.feedBack.on('library:changed', registerLibraryCardBadge);
         window.feedBack.on('highway:created', mountControls);
         window.feedBack.on('highway:visibility', function (ev) {
             var detail = ev && ev.detail;
@@ -606,7 +690,12 @@
     // Browsers never hit this branch (`module` is undefined), so runtime
     // behavior is unchanged.
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { thresholds: thresholds, songKeyOf: songKeyOf, judgmentKey: judgmentKey, settings: settings };
+        module.exports = {
+            thresholds: thresholds, emaAlpha: emaAlpha, songKeyOf: songKeyOf,
+            judgmentKey: judgmentKey, settings: settings,
+            _dominantSongMastery: _dominantSongMastery,
+            loadSongMasteryMap: loadSongMasteryMap, saveSongMasteryMap: saveSongMasteryMap,
+        };
         return;
     }
 

@@ -73,6 +73,64 @@ test('judgmentKey is stable and distinct per (time, string, fret)', () => {
     assert.notEqual(mod.judgmentKey(1.5, 2, 3), mod.judgmentKey(1.5, 3, 2));
 });
 
+// ── reactionSpeed / EMA_ALPHA (issue #5) ────────────────────────────────────
+
+test('emaAlpha() at the default reactionSpeed (2) matches the plugin\'s original hardcoded EMA_ALPHA (0.35)', () => {
+    const mod = freshPlugin();
+    mod.settings.reactionSpeed = 2;
+    assert.ok(Math.abs(mod.emaAlpha() - 0.35) < 1e-9);
+});
+
+test('emaAlpha() clamps reactionSpeed to [1,3] and spans slow(0.20)..fast(0.50)', () => {
+    const mod = freshPlugin();
+    mod.settings.reactionSpeed = 1;
+    assert.ok(Math.abs(mod.emaAlpha() - 0.20) < 1e-9);
+    mod.settings.reactionSpeed = 3;
+    assert.ok(Math.abs(mod.emaAlpha() - 0.50) < 1e-9);
+    mod.settings.reactionSpeed = 0; // out of range -> clamps to 1's value
+    assert.ok(Math.abs(mod.emaAlpha() - 0.20) < 1e-9);
+});
+
+test('emaAlpha() and thresholds() are independent axes (sensitivity does not move emaAlpha and vice versa)', () => {
+    const mod = freshPlugin();
+    mod.settings.sensitivity = 3;
+    mod.settings.reactionSpeed = 1;
+    const th = mod.thresholds();
+    assert.equal(th.step, 20); // driven only by sensitivity
+    assert.ok(Math.abs(mod.emaAlpha() - 0.20) < 1e-9); // driven only by reactionSpeed
+});
+
+// ── Library card badge (issue #4) ───────────────────────────────────────────
+
+test('_dominantSongMastery returns null for a song with no saved mastery', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._dominantSongMastery({ filename: 'unplayed.feedpak' }), null);
+});
+
+test('_dominantSongMastery returns null for a song/undefined with no filename', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._dominantSongMastery(null), null);
+    assert.equal(mod._dominantSongMastery({}), null);
+});
+
+test('_dominantSongMastery prefers arrangement 0 when multiple arrangements have saved values', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::0': 40, 'song.feedpak::1': 90 });
+    assert.equal(mod._dominantSongMastery({ filename: 'song.feedpak' }), 40);
+});
+
+test('_dominantSongMastery falls back to whichever arrangement has a value when arrangement 0 has none', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::1': 65 });
+    assert.equal(mod._dominantSongMastery({ filename: 'song.feedpak' }), 65);
+});
+
+test('_dominantSongMastery does not match a different song sharing a filename prefix', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::0': 40 });
+    assert.equal(mod._dominantSongMastery({ filename: 'song' }), null); // 'song' is not a prefix match of 'song.feedpak::0'
+});
+
 // ── Cross-plugin contract shape parity (issue #8) ───────────────────────────
 // Neither plugin defines this shape itself — it's window.highway's contract
 // (feedBack core) — but both plugins' code assumes the same fields exist.

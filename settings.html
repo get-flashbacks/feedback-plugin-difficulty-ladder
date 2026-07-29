@@ -29,7 +29,18 @@
         <input type="range" id="dd-sensitivity" min="1" max="3" step="1" value="2"
                class="w-full accent-accent"
                oninput="window._ddSet('sensitivity', parseInt(this.value, 10))">
-        <p class="text-[11px] text-gray-500 mt-2">Cautious waits for a longer run of near-perfect (or rough) sections before changing difficulty. Aggressive reacts faster and moves difficulty in bigger steps.</p>
+        <p class="text-[11px] text-gray-500 mt-2">How confident auto-adjust must be before it moves the slider, and how big a step it takes: cautious waits for a longer run of near-perfect (or rough) sections; aggressive reacts on less evidence and moves difficulty in bigger steps.</p>
+    </div>
+
+    <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
+        <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-medium text-gray-200">Reaction speed</h3>
+            <span id="dd-reaction-speed-label" class="text-[11px] text-gray-500 font-mono">2</span>
+        </div>
+        <input type="range" id="dd-reaction-speed" min="1" max="3" step="1" value="2"
+               class="w-full accent-accent"
+               oninput="window._ddSet('reactionSpeed', parseInt(this.value, 10))">
+        <p class="text-[11px] text-gray-500 mt-2">How much weight a single section's result carries in your rolling accuracy average. Slow smooths over a longer run of sections before it counts; fast lets one great (or rough) section move the average sooner. Independent of Sensitivity above — this only changes how quickly evidence builds, not how confident auto-adjust needs to be. Default (2) matches this plugin's original, non-configurable behavior.</p>
     </div>
 
     <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
@@ -78,6 +89,10 @@
                 var lbl = document.getElementById('dd-sensitivity-label');
                 if (lbl) lbl.textContent = String(val);
             }
+            if (key === 'reactionSpeed') {
+                var rlbl = document.getElementById('dd-reaction-speed-label');
+                if (rlbl) rlbl.textContent = String(val);
+            }
         };
 
         function load() {
@@ -92,6 +107,12 @@
             if (sensEl) sensEl.value = String(sens);
             var sensLbl = document.getElementById('dd-sensitivity-label');
             if (sensLbl) sensLbl.textContent = String(sens);
+
+            var rspeed = lsGet('reactionSpeed', 2);
+            var rspeedEl = document.getElementById('dd-reaction-speed');
+            if (rspeedEl) rspeedEl.value = String(rspeed);
+            var rspeedLbl = document.getElementById('dd-reaction-speed-label');
+            if (rspeedLbl) rspeedLbl.textContent = String(rspeed);
 
             var minEl = document.getElementById('dd-min-mastery');
             if (minEl) minEl.value = String(lsGet('minMastery', 0));
