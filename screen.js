@@ -177,6 +177,7 @@
         reactionSpeed: lsGet('reactionSpeed', 2), // 1 (slow) .. 3 (fast) — EMA_ALPHA, how much one phrase's result moves the rolling average
         minMastery: lsGet('minMastery', 0),     // percent
         maxMastery: lsGet('maxMastery', 100),   // percent
+        generateLevels: lsGet('generateLevels', 4), // 2..8 cap — phrase-ladder tier cap sent to /generate
     };
 
     function thresholds() {
@@ -199,6 +200,15 @@
         return 0.20 + (s - 1) * 0.15; // 1:0.20  2:0.35  3:0.50
     }
 
+    // Fixed for now (not settings) — kept as named top-level constants, same
+    // treatment as thresholds()/emaAlpha() above, so a future settings-slider
+    // addition can follow the exact pattern already established for
+    // sensitivity/reactionSpeed.
+    var WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
+    var RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
+
+    function rampStep(th) { return Math.max(1, Math.round(th.step / RAMP_PHRASES)); }
+
     // ---- Per-song scoring state ----
     var _songKey = null;
     var _emaHitRate = null;        // null = no phrase scored yet this song
@@ -209,6 +219,7 @@
     var _judgedKeys = null;        // Set, reset every phrase to bound memory
     var _phraseHits = 0;
     var _phraseTotal = 0;
+    var _phrasesScored = 0;        // counts real phrases committed this song, gates WARMUP_PHRASES
     var _curPhraseIdx = -1;
     var _lastAutoAppliedPct = null; // used to detect a manual slider override
     var _lastAutoAction = null;     // { direction, pct, reason } — for diagnostics
@@ -230,6 +241,7 @@
         _judgedKeys = new Set();
         _phraseHits = 0;
         _phraseTotal = 0;
+        _phrasesScored = 0;
         _curPhraseIdx = -1;
         _lastAutoAppliedPct = null;
         _lastAutoAction = null;
@@ -244,12 +256,25 @@
     function commitPhraseResult(ratio) {
         var alpha = emaAlpha();
         _emaHitRate = (_emaHitRate == null) ? ratio : (alpha * ratio + (1 - alpha) * _emaHitRate);
+        // Counts every phrase actually played this song, regardless of
+        // autoAdjust — a warm-up satisfied while paused should still count
+        // once the user flips auto-adjust back on, rather than resetting.
+        _phrasesScored++;
         if (!settings.autoAdjust) {
             contributeDiagnostics();
             return;
         }
         var hw = window.highway;
         if (!hw || typeof hw.getMastery !== 'function') {
+            contributeDiagnostics();
+            return;
+        }
+        // Cold-start guard: don't let a single nervous/rusty first section on
+        // a fresh song swing the slider before there's enough signal. Safe to
+        // check before the override-check below only because
+        // _lastAutoAppliedPct is always null this early (freshly reset by
+        // resetPerSongState()) — that check would be a no-op here regardless.
+        if (_phrasesScored < WARMUP_PHRASES) {
             contributeDiagnostics();
             return;
         }
@@ -267,9 +292,10 @@
         }
 
         var th = thresholds();
+        var step = rampStep(th);
         var next = curPct;
-        if (_emaHitRate >= th.up) next = curPct + th.step;
-        else if (_emaHitRate <= th.down) next = curPct - th.step;
+        if (_emaHitRate >= th.up) next = curPct + step;
+        else if (_emaHitRate <= th.down) next = curPct - step;
         next = Math.max(settings.minMastery, Math.min(settings.maxMastery, next));
 
         if (next !== curPct && typeof window.setMastery === 'function') {
@@ -279,6 +305,7 @@
             _lastAutoAction = {
                 direction: dir,
                 pct: next,
+                step: step,
                 reason: dir === 'up' ? 'ema_above_up_threshold' : 'ema_below_down_threshold',
             };
         }
@@ -430,6 +457,12 @@
             var nst = provider(n, n.t);
             if (!nst) continue;
             var nname = typeof nst === 'string' ? nst : nst.state;
+            // 'active' (a sustain currently being held correctly) is
+            // deliberately NOT counted here — it's an ongoing render signal
+            // for the note's glow, not a separate scoring event, and the
+            // note's onset is assumed to already resolve to 'hit'/'miss' on
+            // its own judgment key elsewhere in the provider's lifecycle.
+            // Revisit if that assumption turns out wrong for a given scorer.
             if (nname === 'hit' || nname === 'miss') {
                 _judgedKeys.add(nk);
                 _phraseTotal++;
@@ -451,6 +484,7 @@
                 var cst = provider(cn, c.t);
                 if (!cst) continue;
                 var cname = typeof cst === 'string' ? cst : cst.state;
+                // 'active' excluded here too — same rationale as the note loop above.
                 if (cname === 'hit' || cname === 'miss') {
                     _judgedKeys.add(ck);
                     _phraseTotal++;
@@ -575,7 +609,12 @@
         var hw = window.highway;
         var si = hw && typeof hw.getSongInfo === 'function' ? hw.getSongInfo() : null;
         if (!si || !si.filename) return null;
-        return { filename: si.filename, arrangement_index: si.arrangement_index || 0 };
+        // Defensive clamp at point of use (settings.generateLevels came from
+        // localStorage and could be stale/out-of-range) — same convention as
+        // thresholds()/emaAlpha() clamping settings.sensitivity/reactionSpeed
+        // rather than trusting the stored value blindly.
+        var levels = Math.max(2, Math.min(8, parseInt(settings.generateLevels, 10) || 4));
+        return { filename: si.filename, arrangement_index: si.arrangement_index || 0, levels: levels };
     }
 
     function updateGenerateButtonVisibility() {
@@ -767,6 +806,9 @@
             _dominantSongMastery: _dominantSongMastery,
             loadSongMasteryMap: loadSongMasteryMap, saveSongMasteryMap: saveSongMasteryMap,
             calculateAndEmitSectionDifficulties: calculateAndEmitSectionDifficulties,
+            commitPhraseResult: commitPhraseResult, resetPerSongState: resetPerSongState,
+            rampStep: rampStep, WARMUP_PHRASES: WARMUP_PHRASES, RAMP_PHRASES: RAMP_PHRASES,
+            currentTarget: currentTarget,
         };
         return;
     }

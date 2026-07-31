@@ -62,6 +62,17 @@
         <p class="text-[11px] text-gray-500 mt-2">Auto-adjust never pushes the difficulty outside this range, even on a long streak.</p>
     </div>
 
+    <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
+        <div class="flex items-center justify-between mb-2">
+            <h3 class="text-sm font-medium text-gray-200">Generate ladder depth cap</h3>
+            <span id="dd-generate-levels-label" class="text-[11px] text-gray-500 font-mono">4</span>
+        </div>
+        <input type="range" id="dd-generate-levels" min="2" max="8" step="1" value="4"
+               class="w-full accent-accent"
+               oninput="window._ddSet('generateLevels', parseInt(this.value, 10))">
+        <p class="text-[11px] text-gray-500 mt-2">Maximum difficulty tiers "⚙️ Generate Difficulties" can give a phrase when building a ladder for a song that doesn't have one yet — simple phrases still get a short ladder, complex ones can use up to this many tiers.</p>
+    </div>
+
     <p class="text-[11px] text-gray-600 italic">Auto-adjust pauses itself whenever you move the difficulty slider manually — click the player's "Auto-Difficulty" pill to resume it.</p>
 
     <script>
@@ -93,6 +104,10 @@
                 var rlbl = document.getElementById('dd-reaction-speed-label');
                 if (rlbl) rlbl.textContent = String(val);
             }
+            if (key === 'generateLevels') {
+                var glbl = document.getElementById('dd-generate-levels-label');
+                if (glbl) glbl.textContent = String(val);
+            }
         };
 
         function load() {
@@ -118,6 +133,12 @@
             if (minEl) minEl.value = String(lsGet('minMastery', 0));
             var maxEl = document.getElementById('dd-max-mastery');
             if (maxEl) maxEl.value = String(lsGet('maxMastery', 100));
+
+            var glevels = lsGet('generateLevels', 4);
+            var glevelsEl = document.getElementById('dd-generate-levels');
+            if (glevelsEl) glevelsEl.value = String(glevels);
+            var glevelsLbl = document.getElementById('dd-generate-levels-label');
+            if (glevelsLbl) glevelsLbl.textContent = String(glevels);
         }
 
         load();
