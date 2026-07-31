@@ -110,6 +110,62 @@ All settings persist in `localStorage`, prefixed `dynamic_difficulty.`.
 | version | 0.1.0 |
 | category | practice |
 
+## Possible Upgrades
+
+Design notes only — not yet implemented. Each item should ship as an
+independent, opt-in setting so existing behavior doesn't change unless a
+user turns it on.
+
+**Recommended (low effort, self-contained):**
+
+| Upgrade | What it would do |
+|---|---|
+| Wire up ladder granularity to the Generate button | `/generate` already accepts a `levels` field (2–8); the frontend never sends it, so every generated ladder defaults to 4. Add a settings control and thread it through. |
+| Warm-up window before auto-adjust acts | Don't let auto-adjust react to phrase 1 of a cold, nervous first attempt — require a small minimum number of scored phrases first. |
+| Ramp instead of jump on a committed step | Split a full 10–20% adjustment into 2–3 smaller moves over consecutive qualifying phrases instead of one lurch. Only smooths the % value handed to `setMastery()` — true note-by-note incremental scaling would need the underlying note set per tier to interpolate, which is beyond what a plugin alone can do. |
+| Decide deliberately whether held-sustain (`active`) states count toward phrase accuracy | Today only `hit`/`miss` are counted — a note reported as `active` (a sustain currently being held correctly) contributes nothing to the phrase score unless it later resolves to hit/miss. Undocumented gap, not a deliberate choice. |
+| Hand-position continuity check in generated ladders | The note-thinning heuristic scores each note group in isolation, with no check on fret distance between consecutive kept notes, and no explicit preference for keeping each group's root note or landing on-beat. A generated lower tier could introduce an awkward hand jump or drop the harmonic/rhythmic anchor the full arrangement doesn't have. Medium effort — touches generation output, needs fixture tests. |
+| Punishment-drop resistance | Require a short run of consecutive below-threshold phrases (not just one dip in the rolling average) before a downward step commits, so a single isolated mistake doesn't trigger a full difficulty drop. |
+
+**Also considered:**
+
+- Standard ⇄ Adaptive difficulty mode toggle — an explicit two-mode
+  selector (fixed %, no automatic movement vs. today's live auto-adjust)
+  that, once in Adaptive, unlocks the finer toggles above as independently
+  switchable.
+- Per-section custom difficulty override — let a section being looped in
+  Section Practice carry its own difficulty %, independent of the
+  song-wide master-difficulty slider. A genuinely new capability, not
+  something the plugin does today; would need to interact cleanly with
+  auto-adjust and with any step-practice plugin active for the same
+  section, rather than duplicating it.
+- Adaptive baseline per instrument, shown on the Profile screen — a card
+  computed from this plugin's own per-song mastery memory, grouped by
+  instrument, using the v3 Profile screen's plugin extension point
+  (`v3:profile-rendered`). Informational only to start — no change to how
+  a brand-new song's starting difficulty is chosen.
+- Direction-asymmetric step size (larger downward steps than upward).
+- A passive "mastery streak" indicator on the glass HUD when accuracy
+  stays high at max difficulty for several consecutive phrases — visual
+  only.
+
+**Not planned:**
+
+- Forced note-fading or any step-through/note-reveal UI — that's the
+  separate `step_mode` plugin's job.
+- Real-time (sub-second) adjustment — would require a live per-note event
+  stream; no such channel exists today short of reimplementing detection
+  judgment.
+- Confidence/pitch/timing-weighted scoring — the note-state provider
+  contract is hard-capped to `hit`/`active`/`miss`; not something a
+  consuming plugin can add unilaterally.
+- Generating dozens of levels per phrase — the cap is trivial to raise,
+  but the thinning heuristic needs enough distinct note groups per phrase
+  to populate that many meaningfully different tiers.
+- A full cross-song, per-technique skill profile — a materially larger
+  feature than the scoped per-instrument baseline above, and lower value
+  for a tool where users pick what to practice.
+
 ## Design notes
 
 This plugin is a fresh, feedBack-native implementation. It does not port code
