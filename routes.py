@@ -167,13 +167,50 @@ def _score_groups(groups, n_strings):
         )
 
 
-def _assign_levels(groups, n_levels):
+# Retention-curve exponent: how sparse the bottom of a ladder is relative to
+# a flat percentile split. Tuned against a wide sample of authored ladders
+# (varied genres, both hand-tuned and tool-generated) — real ladders keep
+# roughly 10-20% of a phrase's content at the bottom tier and ramp up
+# convexly, not the ~1/n_levels flat share a plain percentile split gives.
+# Raising rank-fraction to this power before indexing into the sorted score
+# list pushes the low-tier cutoffs down without changing the top tier.
+_RETENTION_CURVE_EXPONENT = 1.35
+
+# Notes needed (per level of the cap) before a phrase is considered to have
+# enough raw content to justify a deep ladder, independent of how varied
+# that content is. A phrase can be short but still highly varied (or long
+# but monotonous) — depth needs both signals, not just one.
+_EVENTS_PER_LEVEL = 6
+
+
+def _phrase_level_count(groups, cap):
+    """Pick a per-phrase ladder depth (2..cap) from how much difficulty
+    *variation* the phrase actually has, instead of using the same depth
+    for every phrase in the arrangement (the single biggest gap between a
+    mechanical percentile-bucket ladder and one that reads as purpose-built:
+    a simple riff gets a short ladder, a technical passage gets a long one).
+
+    Score spread alone isn't enough — a two-note phrase can have maximal
+    spread but not enough raw content to fill out a deep ladder — so spread
+    is scaled down when there isn't much to grade.
+    """
+    if not groups:
+        return 2
+    scores = [g["score"] for g in groups]
+    spread = max(scores) - min(scores)
+    total_notes = sum(max(1, len(g["notes"])) for g in groups)
+    density_factor = min(1.0, total_notes / (_EVENTS_PER_LEVEL * cap))
+    estimate = 2 + round(spread * density_factor * (cap - 2))
+    return max(2, min(estimate, cap))
+
+
+def _assign_levels(groups, n_levels, curve_exponent=_RETENTION_CURVE_EXPONENT):
     if not groups:
         return
     scores_sorted = sorted(g["score"] for g in groups)
     total = len(scores_sorted)
     thresholds = [
-        scores_sorted[min(int((i + 1) / n_levels * total), total - 1)]
+        scores_sorted[min(int(((i + 1) / n_levels) ** curve_exponent * total), total - 1)]
         for i in range(n_levels - 1)
     ]
     for g in groups:
@@ -184,6 +221,42 @@ def _assign_levels(groups, n_levels):
         g["level"] = min(lvl, n_levels - 1)
 
 
+# Fraction of the way up a phrase's own ladder (0..1) at which a technique
+# is allowed to survive. Ordered coarsely from how corpus analysis (a wide
+# sample of authored ladders, hand-tuned and tool-generated, across genres)
+# showed these actually get introduced: sustain/legato-adjacent techniques
+# (bends, vibrato) show up earliest, palm mutes and slides in the middle,
+# harmonics/HOPO chains later, tremolo/tap reserved for the hardest tier.
+_TECH_GATE_FRAC = {
+    "bn": 0.50,
+    "pm": 0.55, "mt": 0.55,
+    "vb": 0.70,
+    "hm": 0.75,
+    "ho": 0.80, "po": 0.80,
+    "sl": 0.85, "slu": 0.85,
+    "tr": 0.90,
+    "hp": 0.95,
+    "tp": 0.95,
+}
+
+
+def _prune_techniques(note, diff_percent):
+    """Strip technique flags a phrase hasn't "earned" yet at this rung of
+    its own ladder, so a low tier reads as a simplified-but-intentional
+    version of the part rather than a random note subset that happens to
+    keep whatever techniques its underlying notes had."""
+    out = dict(note)
+    for key, gate in _TECH_GATE_FRAC.items():
+        if diff_percent < gate:
+            if key in ("sl", "slu"):
+                out[key] = -1
+            elif key == "bn":
+                out[key] = 0
+            else:
+                out.pop(key, None)
+    return out
+
+
 def _notes_for_level(groups, level, max_level):
     """Return (notes, chords) wire lists at/below `level`.
 
@@ -192,6 +265,7 @@ def _notes_for_level(groups, level, max_level):
     a level that never goes through chord reconstruction); the max-difficulty
     tier keeps chords intact and byte-identical to the source.
     """
+    diff_percent = (level + 1) / (max_level + 1) if max_level >= 0 else 1.0
     out_notes = []
     out_chords = []
     for g in groups:
@@ -209,23 +283,30 @@ def _notes_for_level(groups, level, max_level):
                 # (Rocksmith-derived): index 0 = highest-pitched string, so
                 # the highest index among a chord's notes is its root.
                 ranked = sorted(ch_notes, key=lambda n: n.get("s", 0), reverse=True)
-                if level == 0:
+                # root-only only very early, then a partial voicing — authored
+                # ladders widen chords quickly (root-only is a bottom-tier-only
+                # thing, not a mid-ladder state)
+                if diff_percent < 0.20:
                     ch_notes = [ranked[0]]
                 elif len(ranked) > 2:
                     ch_notes = ranked[:2]
             for cn in ch_notes:
-                merged = dict(cn)
+                merged = _prune_techniques(cn, diff_percent)
                 merged["t"] = ch_time
+                merged.pop("ln", None)
                 out_notes.append(merged)
         elif g["type"] == "arpeggio" and level < max_level:
             ns = g["notes"]
             if level == 0:
-                out_notes.append(ns[0])
+                out_notes.append(_prune_techniques(ns[0], diff_percent))
             else:
                 keep_n = max(1, (len(ns) * (level + 1)) // max_level)
-                out_notes.extend(ns[:keep_n])
+                out_notes.extend(_prune_techniques(n, diff_percent) for n in ns[:keep_n])
         else:
-            out_notes.extend(g["notes"])
+            if level < max_level:
+                out_notes.extend(_prune_techniques(n, diff_percent) for n in g["notes"])
+            else:
+                out_notes.extend(g["notes"])
     out_notes.sort(key=lambda n: float(n.get("t", 0)))
     out_chords.sort(key=lambda c: float(c.get("t", 0)))
     return out_notes, out_chords
@@ -451,20 +532,25 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4):
         groups_all = _group_notes(notes, chords)
         _score_groups(groups_all, n_strings)
     beat_times = [float(b.get("time", 0)) for b in beats]
-    max_level = n_levels - 1
 
     phrases_out = []
     for t0, t1 in windows:
         phrase_groups = [g for g in groups_all if t0 <= g["time"] < t1]
         if not phrase_groups:
             continue
-        _assign_levels(phrase_groups, n_levels)
+        # `n_levels` is a cap, not a fixed depth: a sparse phrase gets a
+        # short ladder and a dense one gets a long one, instead of every
+        # phrase in the arrangement sharing one global depth. Keys keeps a
+        # fixed depth for now (its scoring/curve wasn't tuned for this).
+        phrase_n_levels = n_levels if is_keys else _phrase_level_count(phrase_groups, n_levels)
+        phrase_max_level = phrase_n_levels - 1
+        _assign_levels(phrase_groups, phrase_n_levels)
         levels_out = []
-        for lvl in range(n_levels):
+        for lvl in range(phrase_n_levels):
             if is_keys:
-                lvl_notes, lvl_chords = _notes_for_level_keys(phrase_groups, lvl, max_level)
+                lvl_notes, lvl_chords = _notes_for_level_keys(phrase_groups, lvl, phrase_max_level)
             else:
-                lvl_notes, lvl_chords = _notes_for_level(phrase_groups, lvl, max_level)
+                lvl_notes, lvl_chords = _notes_for_level(phrase_groups, lvl, phrase_max_level)
             # Fret anchors and hand shapes are fretboard concepts the piano
             # renderer never consumes (mirrors feedBack's own editor plugin's
             # keys difficulty support) — leave them empty for keys.
@@ -479,7 +565,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4):
         phrases_out.append({
             "start_time": round(t0, 3),
             "end_time": round(t1, 3),
-            "max_difficulty": max_level,
+            "max_difficulty": phrase_max_level,
             "levels": levels_out,
         })
     return phrases_out if phrases_out else None

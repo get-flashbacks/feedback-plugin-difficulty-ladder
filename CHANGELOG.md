@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Fretted-instrument ladder generation reworked to read as authored rather than
+  mechanically bucketed, based on analysis of a wide sample of existing
+  authored difficulty ladders (varied genres, both hand-tuned and
+  tool-generated):
+  - **Per-phrase adaptive depth**: the `levels` request parameter is now a cap,
+    not a fixed depth — each phrase gets its own ladder length (2..cap) from
+    how much difficulty *variation* it actually contains, so a simple riff
+    gets a short ladder and a technical passage gets a long one instead of
+    every phrase in the arrangement sharing one depth (`_phrase_level_count`).
+  - **Convex retention curve**: the bottom tier now keeps a much smaller share
+    of a phrase's content than a flat percentile split would (was ~1/n_levels
+    per tier; now front-loaded via `_RETENTION_CURVE_EXPONENT`), matching how
+    authored bottom tiers read as a sparse skeleton rather than a lightly
+    trimmed copy.
+  - **Explicit technique gating** (`_TECH_GATE_FRAC`): bends, palm mutes,
+    vibrato, harmonics, hammer-ons/pull-offs, slides, tremolo, pinch
+    harmonics, and taps are now stripped below tuned per-technique ladder
+    fractions, instead of only being down-weighted through the composite
+    score. Ordered to match how these actually appear in authored ladders:
+    bends/mutes earliest, tremolo/pinch-harmonics/taps reserved for the top
+    tier or two.
+  - **Earlier chord widening**: partial-voicing chords now open up much
+    earlier in the ladder (was a single root/partial split near the middle;
+    now root-only is a bottom-tier-only state) — authored ladders widen
+    chords quickly rather than holding them back.
+  - Notes with a dangling `ln` (link-next) flag are now cleared when their
+    linked target isn't guaranteed to survive into the same tier.
+  - Keys/piano generation is unchanged (fixed depth) — its scoring wasn't
+    part of this pass.
+
 ### Added
 - Library card badge (issue #4): songs with a remembered per-song difficulty now show an
   indicator on their library card via `window.feedBack.libraryCardActions.register(...)`
