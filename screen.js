@@ -147,6 +147,8 @@
         if (!isFinite(pct)) return;
         pct = Math.max(0, Math.min(100, pct));
         var map = loadSongMasteryMap();
+        // Emit updated section difficulties when mastery changes
+        calculateAndEmitSectionDifficulties();
         // Slider drags fire oninput per pixel — window.setMastery() (and thus
         // this hook) can run many times a second. Skip the parse/stringify/
         // write when the stored value hasn't actually changed.
@@ -295,6 +297,73 @@
             provider_registered: !!provider,
             auto_adjust_enabled: settings.autoAdjust,
             show_glasses: settings.showGlasses,
+        });
+    }
+
+    // Calculate and emit section difficulty data for other plugins (e.g., sectionmap)
+    function calculateAndEmitSectionDifficulties() {
+        var hw = window.highway;
+        var fb = window.feedBack;
+
+        // Early exit if dependencies aren't available
+        if (!hw || typeof hw.getSections !== 'function' || !fb || typeof fb.emit !== 'function') return;
+        if (typeof hw.getPhrases !== 'function' || !hw.getPhrases()) return;
+
+        var sections = hw.getSections();
+        var phrases = hw.getPhrases();
+        var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : 0.5;
+
+        if (!sections || sections.length === 0 || !phrases || phrases.length === 0) return;
+
+        // Calculate max difficulty across all phrases
+        var maxDiff = 1;
+        for (var i = 0; i < phrases.length; i++) {
+            maxDiff = Math.max(maxDiff, phrases[i].max_difficulty);
+        }
+
+        // Map sections to difficulty data
+        var sectionDifficulties = {};
+        for (var si = 0; si < sections.length; si++) {
+            var section = sections[si];
+            var nextSectionTime = si < sections.length - 1 ? sections[si + 1].time : Infinity;
+
+            // Find phrases within this section's time range
+            var sectionDifficultiesInRange = [];
+            for (var pi = 0; pi < phrases.length; pi++) {
+                var phrase = phrases[pi];
+                // Check if phrase overlaps with section
+                if (phrase.end_time > section.time && phrase.start_time < nextSectionTime) {
+                    sectionDifficultiesInRange.push(phrase.max_difficulty);
+                }
+            }
+
+            if (sectionDifficultiesInRange.length > 0) {
+                // Use the average difficulty in this section
+                var avgDifficulty = sectionDifficultiesInRange.reduce(function(a, b) { return a + b; }, 0) / sectionDifficultiesInRange.length;
+                var maxSectionDifficulty = Math.max.apply(Math, sectionDifficultiesInRange);
+
+                // Calculate fill percentage based on mastery vs max difficulty
+                var fillPercentage = maxDiff > 0 ? Math.min(100, (mastery * maxSectionDifficulty / maxDiff) * 100) : 0;
+
+                // Determine glass size based on section difficulty
+                var glassSize = 'medium';
+                if (maxSectionDifficulty < maxDiff * 0.33) glassSize = 'small';
+                else if (maxSectionDifficulty > maxDiff * 0.66) glassSize = 'large';
+
+                sectionDifficulties[si] = {
+                    fillPercentage: fillPercentage,
+                    glassSize: glassSize,
+                    avgDifficulty: avgDifficulty,
+                    maxDifficulty: maxSectionDifficulty,
+                };
+            }
+        }
+
+        // Emit event for sectionmap and other interested plugins
+        fb.emit('difficulty:sections-updated', {
+            sectionDifficulties: sectionDifficulties,
+            mastery: mastery,
+            maxDifficulty: maxDiff,
         });
     }
 
@@ -629,6 +698,8 @@
         updateGenerateButtonVisibility();
         startRafLoops();
         contributeDiagnostics();
+        // Emit section difficulty data for sectionmap plugin
+        calculateAndEmitSectionDifficulties();
     }
 
     // Bind late (rule 21's "register into the host" pattern, applied here):
@@ -695,6 +766,7 @@
             judgmentKey: judgmentKey, settings: settings,
             _dominantSongMastery: _dominantSongMastery,
             loadSongMasteryMap: loadSongMasteryMap, saveSongMasteryMap: saveSongMasteryMap,
+            calculateAndEmitSectionDifficulties: calculateAndEmitSectionDifficulties,
         };
         return;
     }
