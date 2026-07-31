@@ -1,4 +1,4 @@
-# Dynamic Difficulty
+# Difficulty Ladder
 
 A feedBack plugin that keeps a song's difficulty matched to how well you're
 actually playing it, and shows upcoming sections as a row of glass-filling
@@ -82,7 +82,7 @@ Arrangement type is detected the same way core does: the manifest's
 
 ## Settings
 
-Exposed via Settings → Plugins → Dynamic Difficulty:
+Exposed via Settings → Plugins → Difficulty Ladder:
 
 | Setting | Effect |
 |---|---|
@@ -100,14 +100,14 @@ result/title rather than as on-card text — see this repo's `COMPLIANCE.md`-adj
 static per registration, not computed per song, so a literal "shows N%" on-card text isn't
 expressible through it as it exists today.
 
-All settings persist in `localStorage`, prefixed `dynamic_difficulty.`.
+All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 
 ## Plugin metadata
 
 | Field | Value |
 |-------|-------|
-| id | `dynamic_difficulty` |
-| version | 0.1.0 |
+| id | `difficulty_ladder` |
+| version | 0.3.0 |
 | category | practice |
 
 ## Possible Upgrades
