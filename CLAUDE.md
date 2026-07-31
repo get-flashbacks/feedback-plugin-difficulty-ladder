@@ -1,4 +1,4 @@
-# Dynamic Difficulty — AI Agent Guide
+# Difficulty Ladder — AI Agent Guide
 
 Keeps a song's difficulty matched to how well the player is doing, live,
 by watching accuracy and nudging note-filtering thresholds. Frontend-heavy

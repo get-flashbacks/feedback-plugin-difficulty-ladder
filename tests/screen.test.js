@@ -142,7 +142,7 @@ test('the phrase shape this plugin assumes matches the one sectionmap assumes (c
     const samplePhrase = { index: 0, start_time: 0, end_time: 10, max_difficulty: 3 };
     // Fields this plugin's drawHud()/tickScoring() reads:
     for (const key of ['start_time', 'end_time', 'max_difficulty']) {
-        assert.ok(key in samplePhrase, `dynamic_difficulty reads phrase.${key}`);
+        assert.ok(key in samplePhrase, `difficulty_ladder reads phrase.${key}`);
     }
     // Fields feedBack-plugin-sectionmap's _smSectionDifficulty/_smComputeGlass
     // read (see that repo's screen.js): the same three, plus none extra —

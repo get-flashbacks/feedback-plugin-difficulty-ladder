@@ -1,4 +1,4 @@
-"""Dynamic Difficulty plugin — backend routes.
+"""Difficulty Ladder plugin — backend routes.
 
 Generates a phrase-level difficulty ladder (Easy..Hard) for sloppak
 arrangements that don't have one yet, using a note/chord-density heuristic —
@@ -31,7 +31,7 @@ from dlc_paths import _resolve_dlc_path
 from jsonc import parse_jsonc
 from safepath import safe_join
 
-PLUGIN_ID = "dynamic_difficulty"
+PLUGIN_ID = "difficulty_ladder"
 
 MIN_EVENTS_FOR_GENERATION = 8  # skip near-empty arrangements — nothing to grade
 
@@ -712,7 +712,7 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
         arr["phrases"] = phrases
         new_bytes = json.dumps(arr, ensure_ascii=False).encode("utf-8")
         _write_member_bytes(pack_path, rel, new_bytes)
-    log.info("dynamic_difficulty: generated %d phrases for %s arrangement %d",
+    log.info("difficulty_ladder: generated %d phrases for %s arrangement %d",
               len(phrases), pack_path.name, arrangement_index)
     return {
         "ok": True, "arrangement_index": arrangement_index,
@@ -729,7 +729,7 @@ def setup(app, context):
         if safe is None:
             raise HTTPException(400, "invalid filename")
         if not sloppak.is_sloppak(safe):
-            raise HTTPException(400, "Dynamic Difficulty only generates phrase ladders for sloppak/feedpak songs")
+            raise HTTPException(400, "Difficulty Ladder only generates phrase ladders for sloppak/feedpak songs")
         if not safe.exists():
             raise HTTPException(404, "song not found")
         return safe
@@ -753,7 +753,7 @@ def setup(app, context):
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001 — surface as a clean 500, never crash the server
-            log.exception("dynamic_difficulty: generate failed for %r", filename)
+            log.exception("difficulty_ladder: generate failed for %r", filename)
             raise HTTPException(500, str(e))
 
     @app.post(f"/api/plugins/{PLUGIN_ID}/generate-library")
