@@ -612,8 +612,10 @@
         // Defensive clamp at point of use (settings.generateLevels came from
         // localStorage and could be stale/out-of-range) — same convention as
         // thresholds()/emaAlpha() clamping settings.sensitivity/reactionSpeed
-        // rather than trusting the stored value blindly.
-        var levels = Math.max(2, Math.min(8, parseInt(settings.generateLevels, 10) || 4));
+        // rather than trusting the stored value blindly. Parse once and default
+        // only on NaN — `|| 4` would also catch a legitimately parsed 0.
+        var parsedLevels = parseInt(settings.generateLevels, 10);
+        var levels = Math.max(2, Math.min(8, isNaN(parsedLevels) ? 4 : parsedLevels));
         return { filename: si.filename, arrangement_index: si.arrangement_index || 0, levels: levels };
     }
 

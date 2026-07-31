@@ -258,6 +258,13 @@ test('currentTarget() clamps generateLevels to [2,8] and includes it in the /gen
     assert.equal(mod.currentTarget().levels, 2);
 });
 
+test('currentTarget() clamps a parsed 0 to 2 instead of falling back to the default 4', () => {
+    const mod = freshPlugin();
+    global.window.highway = { getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 0 }) };
+    mod.settings.generateLevels = 0; // `|| 4` would misfire here — 0 is a legitimate parse, not NaN
+    assert.equal(mod.currentTarget().levels, 2);
+});
+
 test('currentTarget() returns null when there is no song loaded yet', () => {
     const mod = freshPlugin();
     global.window.highway = { getSongInfo: () => null };

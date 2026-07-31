@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Difficulties" can give a phrase. Threaded straight into `/generate`'s existing `levels`
   parameter (`routes.py` already accepted and clamped it) — the frontend previously never sent
   it, so every generated ladder silently defaulted to 4 regardless of arrangement complexity.
+  Clamping parses the stored value once and defaults only on `NaN` (a raw `|| 4` fallback would
+  also misfire on a legitimately parsed `0`), applied consistently at both the settings-page
+  render and the `/generate` request site; the range input also carries an accessible
+  programmatic label via `aria-labelledby`.
 
 ### Changed
 - **Renamed plugin: `dynamic_difficulty` → `difficulty_ladder`** (display name "Dynamic
