@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `generateLevels` setting (2-8, default 4): caps how many difficulty tiers "⚙️ Generate
+  Difficulties" can give a phrase. Threaded straight into `/generate`'s existing `levels`
+  parameter (`routes.py` already accepted and clamped it) — the frontend previously never sent
+  it, so every generated ladder silently defaulted to 4 regardless of arrangement complexity.
+  Clamping parses the stored value once and defaults only on `NaN` (a raw `|| 4` fallback would
+  also misfire on a legitimately parsed `0`), applied consistently at both the settings-page
+  render and the `/generate` request site; the range input also carries an accessible
+  programmatic label via `aria-labelledby`.
+
 ### Changed
 - **Renamed plugin: `dynamic_difficulty` → `difficulty_ladder`** (display name "Dynamic
   Difficulty" → "Difficulty Ladder"), matching the repository's new name
@@ -15,6 +25,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/api/plugins/difficulty_ladder/...` routes, the `window` settings-changed event name, and the
   diagnostics `schema` key. No migration path from the old `dynamic_difficulty.*` `localStorage`
   keys — existing per-song mastery memory and settings under the old id are not carried forward.
+- Auto-adjust no longer acts on the first phrase(s) of a fresh song: a `WARMUP_PHRASES` (2) window
+  must be scored first, counted whether or not auto-adjust happens to be enabled yet, so pausing
+  and resuming mid-song doesn't reset it.
+- A qualifying accuracy streak now moves the mastery slider by `rampStep(th)` per phrase (a full
+  `th.step` spread over `RAMP_PHRASES` (3) qualifying phrases) instead of jumping the whole step in
+  one call — reads as an adaptation rather than a lurch, and stops early if the signal fades before
+  a full step's worth of movement completes. `WARMUP_PHRASES`/`RAMP_PHRASES` are fixed constants for
+  now (not settings), named to make a future settings-slider addition straightforward.
+
+### Documented
+- `tickScoring()`'s phrase accuracy only counts notes the provider reports as `'hit'`/`'miss'` — a
+  sustain reported as `'active'` (currently being held correctly) doesn't contribute to the ratio.
+  No behavior change here: this is recorded as a deliberate, revisit-able choice (the note's onset
+  is assumed to already resolve to `'hit'`/`'miss'` elsewhere in the provider's lifecycle; `'active'`
+  is understood to be an ongoing render signal, not a separate scoring event), in the same
+  documented-not-silently-worked-around spirit as the library-card-badge entry above.
 - Fretted-instrument ladder generation reworked to read as authored rather than
   mechanically bucketed, based on analysis of a wide sample of existing
   authored difficulty ladders (varied genres, both hand-tuned and

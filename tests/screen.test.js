@@ -131,6 +131,146 @@ test('_dominantSongMastery does not match a different song sharing a filename pr
     assert.equal(mod._dominantSongMastery({ filename: 'song' }), null); // 'song' is not a prefix match of 'song.feedpak::0'
 });
 
+// ── Auto-adjust warm-up window + ramped stepping ────────────────────────────
+// (Rocksmith-comparison audit follow-up: a fresh song no longer acts before
+// WARMUP_PHRASES phrases are scored, and a qualifying streak now ramps
+// mastery by rampStep() per phrase instead of jumping the full th.step in
+// one call — see ROCKSMITH_COMPARISON.md.)
+
+function attachHighwayStub(initialPct) {
+    let masteryFrac = initialPct / 100;
+    const calls = [];
+    global.window.highway = { getMastery: () => masteryFrac };
+    global.window.setMastery = (pct) => { calls.push(pct); masteryFrac = pct / 100; };
+    return calls;
+}
+
+test('rampStep() spreads a full th.step over RAMP_PHRASES qualifying phrases', () => {
+    const mod = freshPlugin();
+    mod.settings.sensitivity = 1;
+    assert.equal(mod.rampStep(mod.thresholds()), 3); // step 10 / 3 -> round(3.33)
+    mod.settings.sensitivity = 2;
+    assert.equal(mod.rampStep(mod.thresholds()), 5); // step 15 / 3 -> exact
+    mod.settings.sensitivity = 3;
+    assert.equal(mod.rampStep(mod.thresholds()), 7); // step 20 / 3 -> round(6.67)
+});
+
+test('rampStep() never returns less than 1', () => {
+    const mod = freshPlugin();
+    assert.equal(mod.rampStep({ step: 1 }), 1);
+    assert.equal(mod.rampStep({ step: 0 }), 1);
+});
+
+test('commitPhraseResult() does not act before WARMUP_PHRASES phrases have been scored', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES - 1; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, 0, 'no auto-adjust call before warm-up is satisfied');
+    mod.commitPhraseResult(1.0); // the WARMUP_PHRASES-th qualifying phrase
+    assert.equal(calls.length, 1);
+});
+
+test('warm-up phrases scored while autoAdjust is off still count toward WARMUP_PHRASES', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = false;
+    mod.settings.sensitivity = 2;
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, 0, 'autoAdjust was off — nothing should have been applied');
+    mod.settings.autoAdjust = true;
+    mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, 1, 'warm-up was already satisfied while paused');
+});
+
+test('a qualifying streak ramps mastery by rampStep() per phrase, totalling a full th.step after RAMP_PHRASES qualifying phrases', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2; // step 15, rampStep 5
+    const calls = attachHighwayStub(50);
+    const th = mod.thresholds();
+    const step = mod.rampStep(th);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 50 + step);
+    for (let i = 1; i < mod.RAMP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, mod.RAMP_PHRASES);
+    assert.equal(calls[calls.length - 1] - 50, th.step);
+});
+
+test('auto-adjust stops ramping as soon as the signal returns to neutral (no full step committed in advance)', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2; // th.up 0.88, th.down 0.68, default reactionSpeed -> alpha 0.35
+    const calls = attachHighwayStub(50);
+    const th = mod.thresholds();
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, 1);
+    const movedSoFar = calls[0] - 50;
+    assert.ok(movedSoFar < th.step, 'a single ramped step should be smaller than a full step');
+    // ratio 0.4 pulls the EMA from 1.0 to 0.35*0.4 + 0.65*1.0 = 0.79 — inside
+    // the neutral band (0.68, 0.88), so no further action should be taken.
+    mod.commitPhraseResult(0.4);
+    assert.equal(calls.length, 1, 'no new setMastery call once the EMA is back in the neutral band');
+});
+
+test('min/maxMastery still clamps a ramped next value and stops repeat calls once saturated', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    mod.settings.maxMastery = 58;
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 55); // 50 + rampStep(5), under the 58 cap
+    mod.commitPhraseResult(1.0); // would ramp to 60 -> clamps to 58
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1], 58);
+    mod.commitPhraseResult(1.0); // already saturated -> next === curPct -> no call
+    assert.equal(calls.length, 2);
+});
+
+test('manual-override detection still disables autoAdjust after a ramped auto-apply', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, 1);
+    assert.equal(mod.settings.autoAdjust, true);
+    global.window.highway.getMastery = () => 0.42; // simulates a manual slider move
+    mod.commitPhraseResult(1.0);
+    assert.equal(mod.settings.autoAdjust, false);
+    assert.equal(calls.length, 1, 'stood down instead of fighting the manual move');
+});
+
+// ── Generate ladder depth cap (generateLevels) ──────────────────────────────
+
+test('currentTarget() clamps generateLevels to [2,8] and includes it in the /generate target', () => {
+    const mod = freshPlugin();
+    global.window.highway = { getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 1 }) };
+    mod.settings.generateLevels = 6;
+    assert.deepEqual(mod.currentTarget(), { filename: 'song.feedpak', arrangement_index: 1, levels: 6 });
+    mod.settings.generateLevels = 99; // out of range -> clamps to 8
+    assert.equal(mod.currentTarget().levels, 8);
+    mod.settings.generateLevels = 1; // out of range -> clamps to 2
+    assert.equal(mod.currentTarget().levels, 2);
+});
+
+test('currentTarget() clamps a parsed 0 to 2 instead of falling back to the default 4', () => {
+    const mod = freshPlugin();
+    global.window.highway = { getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 0 }) };
+    mod.settings.generateLevels = 0; // `|| 4` would misfire here — 0 is a legitimate parse, not NaN
+    assert.equal(mod.currentTarget().levels, 2);
+});
+
+test('currentTarget() returns null when there is no song loaded yet', () => {
+    const mod = freshPlugin();
+    global.window.highway = { getSongInfo: () => null };
+    assert.equal(mod.currentTarget(), null);
+});
+
 // ── Cross-plugin contract shape parity (issue #8) ───────────────────────────
 // Neither plugin defines this shape itself — it's window.highway's contract
 // (feedBack core) — but both plugins' code assumes the same fields exist.
