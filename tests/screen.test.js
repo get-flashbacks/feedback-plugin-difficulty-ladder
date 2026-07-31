@@ -131,6 +131,25 @@ test('_dominantSongMastery does not match a different song sharing a filename pr
     assert.equal(mod._dominantSongMastery({ filename: 'song' }), null); // 'song' is not a prefix match of 'song.feedpak::0'
 });
 
+// ── Generate ladder depth cap (generateLevels) ──────────────────────────────
+
+test('currentTarget() clamps generateLevels to [2,8] and includes it in the /generate target', () => {
+    const mod = freshPlugin();
+    global.window.highway = { getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 1 }) };
+    mod.settings.generateLevels = 6;
+    assert.deepEqual(mod.currentTarget(), { filename: 'song.feedpak', arrangement_index: 1, levels: 6 });
+    mod.settings.generateLevels = 99; // out of range -> clamps to 8
+    assert.equal(mod.currentTarget().levels, 8);
+    mod.settings.generateLevels = 1; // out of range -> clamps to 2
+    assert.equal(mod.currentTarget().levels, 2);
+});
+
+test('currentTarget() returns null when there is no song loaded yet (existing target behavior preserved)', () => {
+    const mod = freshPlugin();
+    global.window.highway = { getSongInfo: () => null };
+    assert.equal(mod.currentTarget(), null);
+});
+
 // ── Cross-plugin contract shape parity (issue #8) ───────────────────────────
 // Neither plugin defines this shape itself — it's window.highway's contract
 // (feedBack core) — but both plugins' code assumes the same fields exist.

@@ -177,6 +177,7 @@
         reactionSpeed: lsGet('reactionSpeed', 2), // 1 (slow) .. 3 (fast) — EMA_ALPHA, how much one phrase's result moves the rolling average
         minMastery: lsGet('minMastery', 0),     // percent
         maxMastery: lsGet('maxMastery', 100),   // percent
+        generateLevels: lsGet('generateLevels', 4), // 2..8 cap — phrase-ladder tier cap sent to /generate
     };
 
     function thresholds() {
@@ -575,7 +576,13 @@
         var hw = window.highway;
         var si = hw && typeof hw.getSongInfo === 'function' ? hw.getSongInfo() : null;
         if (!si || !si.filename) return null;
-        return { filename: si.filename, arrangement_index: si.arrangement_index || 0 };
+        // Defensive clamp at point of use (settings.generateLevels came from
+        // localStorage and could be stale/out-of-range) — same convention as
+        // thresholds()/emaAlpha() clamping settings.sensitivity/reactionSpeed
+        // rather than trusting the stored value blindly. Preserves the
+        // existing target shape/behavior; only adds this one field.
+        var levels = Math.max(2, Math.min(8, parseInt(settings.generateLevels, 10) || 4));
+        return { filename: si.filename, arrangement_index: si.arrangement_index || 0, levels: levels };
     }
 
     function updateGenerateButtonVisibility() {
@@ -767,6 +774,7 @@
             _dominantSongMastery: _dominantSongMastery,
             loadSongMasteryMap: loadSongMasteryMap, saveSongMasteryMap: saveSongMasteryMap,
             calculateAndEmitSectionDifficulties: calculateAndEmitSectionDifficulties,
+            currentTarget: currentTarget,
         };
         return;
     }

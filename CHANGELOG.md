@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `generateLevels` setting (2-8, default 4): caps how many difficulty tiers "⚙️ Generate
+  Difficulties" can give a phrase. Threaded straight into `/generate`'s existing `levels`
+  parameter (`routes.py` already accepted and clamped it) — the frontend previously never sent
+  it, so every generated ladder silently defaulted to 4 regardless of arrangement complexity.
+
 ### Changed
 - Fretted-instrument ladder generation reworked to read as authored rather than
   mechanically bucketed, based on analysis of a wide sample of existing

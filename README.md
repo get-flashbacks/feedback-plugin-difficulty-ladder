@@ -91,6 +91,7 @@ Exposed via Settings → Plugins → Dynamic Difficulty:
 | Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. |
 | Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
 | Min / Max % | Hard bounds auto-adjust will never cross. |
+| Generate ladder depth cap (2-8) | Maximum difficulty tiers "⚙️ Generate Difficulties" can give a phrase when building a ladder for a song that doesn't have one yet — threaded into `/generate`'s existing `levels` parameter. |
 
 **Library card badge** — songs with a remembered per-song difficulty (see above) show a small
 indicator on their library card via `window.feedBack.libraryCardActions` (`placement: 'overlay'`,
@@ -120,7 +121,6 @@ user turns it on.
 
 | Upgrade | What it would do |
 |---|---|
-| Wire up ladder granularity to the Generate button | `/generate` already accepts a `levels` field (2–8); the frontend never sends it, so every generated ladder defaults to 4. Add a settings control and thread it through. |
 | Warm-up window before auto-adjust acts | Don't let auto-adjust react to phrase 1 of a cold, nervous first attempt — require a small minimum number of scored phrases first. |
 | Ramp instead of jump on a committed step | Split a full 10–20% adjustment into 2–3 smaller moves over consecutive qualifying phrases instead of one lurch. Only smooths the % value handed to `setMastery()` — true note-by-note incremental scaling would need the underlying note set per tier to interpolate, which is beyond what a plugin alone can do. |
 | Decide deliberately whether held-sustain (`active`) states count toward phrase accuracy | Today only `hit`/`miss` are counted — a note reported as `active` (a sustain currently being held correctly) contributes nothing to the phrase score unless it later resolves to hit/miss. Undocumented gap, not a deliberate choice. |
