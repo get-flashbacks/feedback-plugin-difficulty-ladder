@@ -12,8 +12,8 @@
     if (_singleton.installed) return;
     _singleton.installed = true;
 
-    var PLUGIN_ID = 'dynamic_difficulty';
-    var LS_PREFIX = 'dynamic_difficulty.';
+    var PLUGIN_ID = 'difficulty_ladder';
+    var LS_PREFIX = 'difficulty_ladder.';
 
     function lsGet(key, def) {
         try {
@@ -98,7 +98,7 @@
         if (window.__ddCardBadgeRegistered) return; // idempotent — see plugin-runtime-idempotent.v1 guard at top of file
         window.__ddCardBadgeRegistered = true;
         fb.libraryCardActions.register({
-            id: 'dynamic_difficulty.mastery_badge',
+            id: 'difficulty_ladder.mastery_badge',
             pluginId: PLUGIN_ID,
             label: 'Last played at a remembered difficulty (see this song\'s card menu for the exact %)',
             icon: '🥃',
@@ -292,7 +292,7 @@
         var hw = window.highway;
         var provider = hw && typeof hw.getNoteStateProvider === 'function' ? hw.getNoteStateProvider() : null;
         fb.diagnostics.contribute(PLUGIN_ID, {
-            schema: 'dynamic_difficulty.v1',
+            schema: 'difficulty_ladder.v1',
             ema_hit_rate: _emaHitRate,
             last_auto_action: _lastAutoAction,
             provider_registered: !!provider,
@@ -612,7 +612,7 @@
             var data = null;
             try { data = await resp.json(); } catch (_) { /* noop */ }
             if (!resp.ok || !data || data.error) {
-                console.warn('[dynamic_difficulty] generate failed:', (data && data.error) || resp.status);
+                console.warn('[difficulty_ladder] generate failed:', (data && data.error) || resp.status);
                 _generateBtn.textContent = 'Generate failed';
                 setTimeout(_resetGenerateBtnLabel, 2500);
                 return;
@@ -631,7 +631,7 @@
                 hw.reconnect(target.filename, target.arrangement_index);
             }
         } catch (e) {
-            console.warn('[dynamic_difficulty] generate request failed:', e);
+            console.warn('[difficulty_ladder] generate request failed:', e);
             _generateBtn.textContent = 'Generate failed';
             setTimeout(_resetGenerateBtnLabel, 2500);
         } finally {
@@ -647,8 +647,8 @@
         _controlsBtn.classList.toggle('fb-primary', settings.autoAdjust);
         _controlsBtn.style.opacity = settings.autoAdjust ? '1' : '0.6';
         _controlsBtn.title = settings.autoAdjust
-            ? 'Dynamic Difficulty: auto-adjusting from your accuracy (click to pause)'
-            : 'Dynamic Difficulty: paused (click to resume auto-adjust)';
+            ? 'Difficulty Ladder: auto-adjusting from your accuracy (click to pause)'
+            : 'Difficulty Ladder: paused (click to resume auto-adjust)';
     }
 
     function mountControls() {

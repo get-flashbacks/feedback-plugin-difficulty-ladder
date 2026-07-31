@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it, so every generated ladder silently defaulted to 4 regardless of arrangement complexity.
 
 ### Changed
+- **Renamed plugin: `dynamic_difficulty` → `difficulty_ladder`** (display name "Dynamic
+  Difficulty" → "Difficulty Ladder"), matching the repository's new name
+  (`feedback-plugin-difficulty-ladder`). Every reference to the old id has been updated:
+  `plugin.json`'s `id`/`name`, the `localStorage` prefix, the player-controls button label, the
+  `/api/plugins/difficulty_ladder/...` routes, the `window` settings-changed event name, and the
+  diagnostics `schema` key. No migration path from the old `dynamic_difficulty.*` `localStorage`
+  keys — existing per-song mastery memory and settings under the old id are not carried forward.
 - Fretted-instrument ladder generation reworked to read as authored rather than
   mechanically bucketed, based on analysis of a wide sample of existing
   authored difficulty ladders (varied genres, both hand-tuned and
@@ -47,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Library card badge (issue #4): songs with a remembered per-song difficulty now show an
   indicator on their library card via `window.feedBack.libraryCardActions.register(...)`
-  (`placement: 'overlay'`), reading the existing `dynamic_difficulty.songMastery` map — no new
+  (`placement: 'overlay'`), reading the existing `difficulty_ladder.songMastery` map — no new
   storage, no `MutationObserver`. Note: the card-actions capability's `label`/`icon` are static per
   registration rather than computed per song, so the exact saved % isn't renderable as on-card
   text through it today; see `screen.js`'s `registerLibraryCardBadge` for the full writeup.
@@ -85,7 +92,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complexity, and technique load per section to build a fresh Easy..Hard
   phrase-level difficulty ladder for sloppak arrangements that don't have
   one, and writes it back into the sloppak (dir or zip form) in place.
-  `/api/plugins/dynamic_difficulty/generate` (single arrangement) and
+  `/api/plugins/difficulty_ladder/generate` (single arrangement) and
   `/generate-library` (best-effort library-wide sweep) routes; a
   "⚙️ Generate Difficulties" player-controls button surfaces the single-song
   path whenever `highway.hasPhraseData()` is false, with a double-submit

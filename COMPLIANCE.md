@@ -10,16 +10,20 @@ spec is intentionally non-normative about exact mechanics.
 ## Evidence
 
 - `python tools/validate.py` (the spec repo's reference validator, `schemas/plugin.schema.json`)
-  run against this plugin checked out under its manifest `id` (`dynamic_difficulty/`, matching how
-  it's actually deployed — this source repo's own directory name differs from the plugin `id`,
-  which is expected and immaterial: the repo is cloned/copied into an `id`-named directory at
-  install time, same as every other plugin in this org):
+  run against this plugin checked out under its manifest `id` (at the time, `dynamic_difficulty/`,
+  matching how it's actually deployed — this source repo's own directory name differs from the
+  plugin `id`, which is expected and immaterial: the repo is cloned/copied into an `id`-named
+  directory at install time, same as every other plugin in this org):
 
   ```
   ok   .../dynamic_difficulty
   ```
 
   No schema errors, no missing manifest-referenced files, no id mismatch once laid out correctly.
+  **Note:** the plugin was subsequently renamed `dynamic_difficulty` → `difficulty_ladder` (see
+  `CHANGELOG.md`); this evidence predates that rename and reflects a validator run against the old
+  `id`. The schema/contract checklist below has been updated to describe the current `id`, but the
+  validator itself has not been re-run since — worth doing before the next compliance sign-off.
 - Manual comparison of `screen.js` / `routes.py` / `plugin.json` / `settings.html` against every
   numbered rule in `best-practices.md` and every normative MUST/SHOULD in `plugin-spec-v1.md`.
 - Cross-referenced open questions (localStorage settings persistence, script-without-`screen`
@@ -29,15 +33,15 @@ spec is intentionally non-normative about exact mechanics.
 
 ## Schema / contract checklist (plugin-spec-v1.md)
 
-- [x] `id` (`dynamic_difficulty`) matches `^[a-z0-9][a-z0-9_-]*$` (§4.2).
+- [x] `id` (`difficulty_ladder`) matches `^[a-z0-9][a-z0-9_-]*$` (§4.2).
 - [x] Directory-name-equals-`id` rule (§5.2) — satisfied at deploy time; not meaningful for this
       source repo's own folder name (see Evidence above).
 - [x] No collision with a bundled plugin id — checked every `plugin.json` under
-      `feedBack/plugins/*`; no `dynamic_difficulty`.
+      `feedBack/plugins/*`; no `difficulty_ladder`.
 - [x] Every manifest-referenced file (`script`, `settings.html`, `routes`) exists (validator: pass).
 - [x] `routes.py setup(app, context)` does no work at import time — all logic is inside `setup`
       and the request handlers (§7.1, §7.3).
-- [x] Routes are namespaced under `/api/plugins/dynamic_difficulty/...` (§7.4) — `generate` and
+- [x] Routes are namespaced under `/api/plugins/difficulty_ladder/...` (§7.4) — `generate` and
       `generate-library`.
 - [x] Handlers are plain `def`, not `async def` — correct, since they do blocking file/zip I/O; the
       Host runs sync handlers in a threadpool (best-practices rule 35).
@@ -68,7 +72,7 @@ spec is intentionally non-normative about exact mechanics.
 - [x] `window.setMastery` wrap (rule 32) always calls through via `.apply(this, arguments)`,
       forwards the return value, is installed exactly once (guarded by `.__ddWrapped`).
 - [x] Diagnostics contribution via `window.feedBack.diagnostics.contribute(PLUGIN_ID, {...})` with
-      a `schema` field (`dynamic_difficulty.v1`) and no secrets/paths/usernames (rule 40/41).
+      a `schema` field (`difficulty_ladder.v1`) and no secrets/paths/usernames (rule 40/41).
 - [x] Player-controls buttons mount into `window.feedBack.ui.playerControlSlot()` (the v3 slot),
       feature-detected via `uiVersion === 'v3'` and the slot function's existence — not a hardcoded
       DOM container (rule 42, spec §6.3's contribution-registries guidance).
@@ -134,7 +138,7 @@ Documented explicitly per issue #9's acceptance criteria:
   glass-filling HUD (`screen.js`'s `drawHud()`) consumes.
 - `feedBack-plugin-sectionmap` should therefore read `window.highway.getPhrases()` /
   `hasPhraseData()` / `getMastery()` directly, the same way this plugin does, rather than expecting
-  `dynamic_difficulty` to forward or re-emit that data itself. There is no ordering dependency
+  `difficulty_ladder` to forward or re-emit that data itself. There is no ordering dependency
   between the two plugins at runtime — both are independent consumers of Host state — except that
   phrase data must actually exist for a song (via this plugin's `/generate` route, or hand-authored)
   before either plugin's glass HUD has anything non-trivial to show.

@@ -77,7 +77,7 @@
 
     <script>
     (function () {
-        var LS_PREFIX = 'dynamic_difficulty.';
+        var LS_PREFIX = 'difficulty_ladder.';
 
         function lsGet(key, def) {
             try {
@@ -93,7 +93,7 @@
             lsSet(key, val);
             // The storage event doesn't fire in the same tab that wrote it, so
             // tell the running plugin instance directly.
-            window.dispatchEvent(new CustomEvent('dynamic_difficulty:settings-changed', {
+            window.dispatchEvent(new CustomEvent('difficulty_ladder:settings-changed', {
                 detail: (function () { var o = {}; o[key] = val; return o; })()
             }));
             if (key === 'sensitivity') {
