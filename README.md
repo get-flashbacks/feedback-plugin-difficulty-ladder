@@ -148,23 +148,24 @@ user turns it on.
 - A passive "mastery streak" indicator on the glass HUD when accuracy
   stays high at max difficulty for several consecutive phrases — visual
   only.
+- Real-time (sub-second) adjustment, in coordination with the `note_detect`
+  plugin — no live per-note event stream exists today, so this would need
+  `note_detect` (or another scorer) to expose one; not something
+  `dynamic_difficulty` can add unilaterally on its own.
+- A full cross-song, per-technique skill profile — a materially larger
+  feature than the scoped per-instrument baseline above, and lower value
+  for a tool where users pick what to practice.
 
 **Not planned:**
 
 - Forced note-fading or any step-through/note-reveal UI — that's the
   separate `step_mode` plugin's job.
-- Real-time (sub-second) adjustment — would require a live per-note event
-  stream; no such channel exists today short of reimplementing detection
-  judgment.
 - Confidence/pitch/timing-weighted scoring — the note-state provider
   contract is hard-capped to `hit`/`active`/`miss`; not something a
   consuming plugin can add unilaterally.
 - Generating dozens of levels per phrase — the cap is trivial to raise,
   but the thinning heuristic needs enough distinct note groups per phrase
   to populate that many meaningfully different tiers.
-- A full cross-song, per-technique skill profile — a materially larger
-  feature than the scoped per-instrument baseline above, and lower value
-  for a tool where users pick what to practice.
 
 ## Design notes
 
