@@ -197,10 +197,10 @@ def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
 
 def test_unsupported_drums_skip_preserves_instrument_classification():
     class _Lock:
-        def __enter__(self):
+        def __enter__(self) -> "_Lock":
             return self
 
-        def __exit__(self, *args):
+        def __exit__(self, *args: object) -> bool:
             return False
 
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), patch.object(
