@@ -172,6 +172,7 @@
     // ---- Settings (localStorage-backed; see settings.html for the panel) ----
     var settings = {
         autoAdjust: lsGet('autoAdjust', false),
+        dropResistance: lsGet('dropResistance', false),
         showGlasses: lsGet('showGlasses', true),
         sensitivity: lsGet('sensitivity', 2),     // 1 (lenient) .. 3 (strict) — confidence thresholds + step size
         reactionSpeed: lsGet('reactionSpeed', 2), // 1 (slow) .. 3 (fast) — EMA_ALPHA, how much one phrase's result moves the rolling average
@@ -206,6 +207,7 @@
     // sensitivity/reactionSpeed.
     var WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
     var RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
+    var DOWN_CONFIRM_PHRASES = 2;
 
     function rampStep(th, progress) {
         var index = Math.max(0, Math.min(RAMP_PHRASES - 1, Number(progress) || 0));
@@ -230,6 +232,7 @@
     var _lastAutoAction = null;     // { direction, pct, reason } - for diagnostics
     var _rampDirection = null;
     var _rampProgress = 0;
+    var _downStreak = 0;
     // Forward-advancing cursors into the time-sorted notes/chords arrays —
     // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
     // performance doctrine). Reset only on a backward seek (loop/rewind).
@@ -254,6 +257,7 @@
         _lastAutoAction = null;
         _rampDirection = null;
         _rampProgress = 0;
+        _downStreak = 0;
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
@@ -272,6 +276,7 @@
         if (!settings.autoAdjust) {
             _rampDirection = null;
             _rampProgress = 0;
+            _downStreak = 0;
             contributeDiagnostics();
             return;
         }
@@ -279,6 +284,7 @@
         if (!hw || typeof hw.getMastery !== 'function') {
             _rampDirection = null;
             _rampProgress = 0;
+            _downStreak = 0;
             contributeDiagnostics();
             return;
         }
@@ -299,6 +305,7 @@
         if (_lastAutoAppliedPct != null && curPct !== _lastAutoAppliedPct) {
             _rampDirection = null;
             _rampProgress = 0;
+            _downStreak = 0;
             settings.autoAdjust = false;
             lsSet('autoAdjust', false);
             syncControlsUI();
@@ -308,7 +315,14 @@
 
         var th = thresholds();
         var direction = _emaHitRate >= th.up ? 'up' : _emaHitRate <= th.down ? 'down' : null;
+        _downStreak = direction === 'down' && settings.dropResistance ? _downStreak + 1 : 0;
         if (direction == null) {
+            _rampDirection = null;
+            _rampProgress = 0;
+            contributeDiagnostics();
+            return;
+        }
+        if (direction === 'down' && settings.dropResistance && _downStreak < DOWN_CONFIRM_PHRASES) {
             _rampDirection = null;
             _rampProgress = 0;
             contributeDiagnostics();
@@ -807,6 +821,7 @@
         var short = e.key.slice(LS_PREFIX.length);
         if (short in settings) {
             try { settings[short] = JSON.parse(e.newValue); } catch (_) { /* noop */ }
+            if (short === 'dropResistance') _downStreak = 0;
             syncControlsUI();
             contributeDiagnostics();
         }
@@ -815,6 +830,7 @@
         var patch = ev && ev.detail;
         if (!patch) return;
         Object.assign(settings, patch);
+        if (Object.prototype.hasOwnProperty.call(patch, 'dropResistance')) _downStreak = 0;
         syncControlsUI();
         contributeDiagnostics();
     });

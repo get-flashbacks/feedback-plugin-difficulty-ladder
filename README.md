@@ -87,6 +87,7 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 | Setting | Effect |
 |---|---|
 | Auto-adjust difficulty | Master on/off switch for automatic `setMastery()` calls. |
+| Resist isolated difficulty drops | Require two consecutive below-threshold sections before a downward adjustment; upward adjustments remain immediate. Off by default. |
 | Glass-filling section HUD | Show/hide the in-player glass row. |
 | Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. |
 | Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
@@ -108,7 +109,7 @@ All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 | Field | Value |
 |-------|-------|
 | id | `difficulty_ladder` |
-| version | 0.3.0 |
+| version | 0.5.0 |
 | category | practice |
 
 ## Possible Upgrades
@@ -122,7 +123,6 @@ user turns it on.
 | Upgrade | What it would do |
 |---|---|
 | Hand-position continuity check in generated ladders | The note-thinning heuristic scores each note group in isolation, with no check on fret distance between consecutive kept notes, and no explicit preference for keeping each group's root note or landing on-beat. A generated lower tier could introduce an awkward hand jump or drop the harmonic/rhythmic anchor the full arrangement doesn't have. Medium effort — touches generation output, needs fixture tests. |
-| Punishment-drop resistance | Require a short run of consecutive below-threshold phrases (not just one dip in the rolling average) before a downward step commits, so a single isolated mistake doesn't trigger a full difficulty drop. |
 
 **Also considered:**
 

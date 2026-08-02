@@ -12,6 +12,17 @@
 
     <div class="flex items-center justify-between bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
         <div>
+            <h3 class="text-sm font-medium text-gray-200">Resist isolated difficulty drops</h3>
+            <p class="text-[11px] text-gray-500">Require two consecutive below-threshold sections before lowering difficulty. Upward adjustments are unchanged.</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="dd-drop-resistance" class="sr-only peer" onchange="window._ddSet('dropResistance', this.checked)">
+            <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
+        </label>
+    </div>
+
+    <div class="flex items-center justify-between bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
+        <div>
             <h3 class="text-sm font-medium text-gray-200">Glass-filling section HUD</h3>
             <p class="text-[11px] text-gray-500">Show upcoming song sections as glasses in the player — glass size reflects each section's peak difficulty, fill level reflects the current master-difficulty setting.</p>
         </div>
@@ -113,6 +124,9 @@
         function load() {
             var autoEl = document.getElementById('dd-auto-adjust');
             if (autoEl) autoEl.checked = lsGet('autoAdjust', false) === true;
+
+            var resistanceEl = document.getElementById('dd-drop-resistance');
+            if (resistanceEl) resistanceEl.checked = lsGet('dropResistance', false) === true;
 
             var glassesEl = document.getElementById('dd-show-glasses');
             if (glassesEl) glassesEl.checked = lsGet('showGlasses', true) !== false;
