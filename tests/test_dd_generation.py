@@ -192,3 +192,15 @@ def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
 
     assert nearby[1]["score"] > after_rest[1]["score"]
     assert abs(nearby[1]["score"] - after_rest[1]["score"] - 0.18) < 1e-9
+
+
+def test_lower_tier_refinement_does_not_bridge_a_repositioning_rest():
+    groups = [
+        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 2}]},
+        {"time": 1.0, "score": 0.2, "level": 2, "notes": [{"s": 5, "f": 7}]},
+        {"time": 2.0, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 12}]},
+    ]
+
+    routes._refine_lower_tier_path(groups, [], max_level=2)
+
+    assert groups[1]["level"] == 2

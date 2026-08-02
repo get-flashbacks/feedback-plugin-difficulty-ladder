@@ -286,6 +286,8 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7):
             kept = sorted((g for g in groups if g["level"] <= level), key=lambda g: g["time"])
             promoted = False
             for left, right in pairwise(kept):
+                if float(right["time"]) - float(left["time"]) > FRET_JUMP_WINDOW_SECONDS:
+                    continue
                 left_anchor = _group_anchor_note(left)
                 right_anchor = _group_anchor_note(right)
                 if not left_anchor or not right_anchor:
