@@ -207,7 +207,12 @@
     var WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
     var RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
 
-    function rampStep(th) { return Math.max(1, Math.round(th.step / RAMP_PHRASES)); }
+    function rampStep(th, progress) {
+        var index = Math.max(0, Math.min(RAMP_PHRASES - 1, Number(progress) || 0));
+        var before = Math.round(th.step * index / RAMP_PHRASES);
+        var after = Math.round(th.step * (index + 1) / RAMP_PHRASES);
+        return Math.max(1, after - before);
+    }
 
     // ---- Per-song scoring state ----
     var _songKey = null;
@@ -222,7 +227,9 @@
     var _phrasesScored = 0;        // counts real phrases committed this song, gates WARMUP_PHRASES
     var _curPhraseIdx = -1;
     var _lastAutoAppliedPct = null; // used to detect a manual slider override
-    var _lastAutoAction = null;     // { direction, pct, reason } — for diagnostics
+    var _lastAutoAction = null;     // { direction, pct, reason } - for diagnostics
+    var _rampDirection = null;
+    var _rampProgress = 0;
     // Forward-advancing cursors into the time-sorted notes/chords arrays —
     // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
     // performance doctrine). Reset only on a backward seek (loop/rewind).
@@ -245,6 +252,8 @@
         _curPhraseIdx = -1;
         _lastAutoAppliedPct = null;
         _lastAutoAction = null;
+        _rampDirection = null;
+        _rampProgress = 0;
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
@@ -261,11 +270,15 @@
         // once the user flips auto-adjust back on, rather than resetting.
         _phrasesScored++;
         if (!settings.autoAdjust) {
+            _rampDirection = null;
+            _rampProgress = 0;
             contributeDiagnostics();
             return;
         }
         var hw = window.highway;
         if (!hw || typeof hw.getMastery !== 'function') {
+            _rampDirection = null;
+            _rampProgress = 0;
             contributeDiagnostics();
             return;
         }
@@ -284,6 +297,8 @@
         // If the live value has drifted from what we last applied, someone
         // moved the slider themselves — stand down instead of fighting them.
         if (_lastAutoAppliedPct != null && curPct !== _lastAutoAppliedPct) {
+            _rampDirection = null;
+            _rampProgress = 0;
             settings.autoAdjust = false;
             lsSet('autoAdjust', false);
             syncControlsUI();
@@ -292,15 +307,25 @@
         }
 
         var th = thresholds();
-        var step = rampStep(th);
-        var next = curPct;
-        if (_emaHitRate >= th.up) next = curPct + step;
-        else if (_emaHitRate <= th.down) next = curPct - step;
+        var direction = _emaHitRate >= th.up ? 'up' : _emaHitRate <= th.down ? 'down' : null;
+        if (direction == null) {
+            _rampDirection = null;
+            _rampProgress = 0;
+            contributeDiagnostics();
+            return;
+        }
+        if (_rampDirection !== direction) {
+            _rampDirection = direction;
+            _rampProgress = 0;
+        }
+        var step = rampStep(th, _rampProgress);
+        var next = direction === 'up' ? curPct + step : curPct - step;
         next = Math.max(settings.minMastery, Math.min(settings.maxMastery, next));
 
         if (next !== curPct && typeof window.setMastery === 'function') {
             window.setMastery(next);
             _lastAutoAppliedPct = next;
+            _rampProgress = (_rampProgress + 1) % RAMP_PHRASES;
             var dir = next > curPct ? 'up' : 'down';
             _lastAutoAction = {
                 direction: dir,
