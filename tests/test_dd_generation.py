@@ -5,6 +5,7 @@ conftest of its own) so `pytest tests/` works from this directory directly.
 """
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 _PLUGIN_DIR = Path(__file__).resolve().parent.parent
 _CORE_LIB = _PLUGIN_DIR.parent / "feedBack" / "lib"
@@ -192,6 +193,29 @@ def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
 
     assert nearby[1]["score"] > after_rest[1]["score"]
     assert abs(nearby[1]["score"] - after_rest[1]["score"] - 0.18) < 1e-9
+
+
+def test_unsupported_drums_skip_preserves_instrument_classification():
+    class _Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    with patch.object(routes, "_lock_for_pack", return_value=_Lock()), patch.object(
+        routes,
+        "_load_manifest_and_arrangement",
+        return_value=(None, None, "unsupported-instrument-drums"),
+    ):
+        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=None)
+
+    assert result == {
+        "ok": True,
+        "skipped": "unsupported-instrument-drums",
+        "arrangement_index": 0,
+        "instrument": "drums",
+    }
 
 
 def test_lower_tier_refinement_does_not_bridge_a_repositioning_rest():

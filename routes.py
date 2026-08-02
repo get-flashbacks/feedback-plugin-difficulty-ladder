@@ -791,7 +791,11 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
     with _lock_for_pack(pack_path):
         rel, arr, skip_reason = _load_manifest_and_arrangement(pack_path, arrangement_index)
         if skip_reason:
-            return {"ok": True, "skipped": skip_reason, "arrangement_index": arrangement_index}
+            instrument = "drums" if skip_reason == "unsupported-instrument-drums" else None
+            response = {"ok": True, "skipped": skip_reason, "arrangement_index": arrangement_index}
+            if instrument:
+                response["instrument"] = instrument
+            return response
         instrument = _instrument_kind(arr.get("type", ""), arr.get("name", ""))
         if not force and arr.get("phrases"):
             return {
