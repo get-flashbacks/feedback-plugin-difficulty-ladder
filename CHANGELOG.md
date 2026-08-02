@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   programmatic label via `aria-labelledby`.
 
 ### Changed
+- Generated fretted lower tiers now favor beat landmarks, preserve arpeggio roots, and add
+  intermediate authored groups when they avoid abrupt hand-position jumps. Long rests are not
+  penalized because they provide time to reposition.
+- Per-arrangement mastery records now retain the backend's instrument classification while
+  remaining compatible with legacy numeric records.
+- Drop-resistance settings now reject malformed or non-boolean persisted values and invalidate
+  pending downward confirmation after manual mastery or settings changes.
 - **Renamed plugin: `dynamic_difficulty` → `difficulty_ladder`** (display name "Dynamic
   Difficulty" → "Difficulty Ladder"), matching the repository's new name
   (`feedback-plugin-difficulty-ladder`). Every reference to the old id has been updated:

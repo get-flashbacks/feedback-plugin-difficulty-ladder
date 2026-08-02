@@ -56,6 +56,18 @@
         _songMasteryMapCache = map;
         try { localStorage.setItem(SONG_MASTERY_LS_KEY, JSON.stringify(map)); } catch (_) { /* noop */ }
     }
+    function _masteryPct(record) {
+        var value = record && typeof record === 'object' ? record.mastery : record;
+        return (typeof value === 'number' && isFinite(value)) ? value : null;
+    }
+    function _rememberSongInstrument(key, instrument) {
+        if (!key || !instrument) return;
+        var map = loadSongMasteryMap();
+        var pct = _masteryPct(map[key]);
+        if (map[key] && typeof map[key] === 'object' && map[key].instrument === instrument) return;
+        map[key] = { mastery: pct, instrument: instrument };
+        saveSongMasteryMap(map);
+    }
 
     // ---- Library card badge (issue #4) ----
     // Surfaces the songMastery map above as a library-card decoration via the
@@ -84,8 +96,8 @@
         var fallback = null;
         for (var k in map) {
             if (!Object.prototype.hasOwnProperty.call(map, k) || k.indexOf(prefix) !== 0) continue;
-            var v = map[k];
-            if (typeof v !== 'number' || !isFinite(v)) continue;
+            var v = _masteryPct(map[k]);
+            if (v === null) continue;
             if (k === prefix + '0') return v; // prefer the first/primary arrangement
             if (fallback === null) fallback = v;
         }
@@ -152,8 +164,14 @@
         // Slider drags fire oninput per pixel — window.setMastery() (and thus
         // this hook) can run many times a second. Skip the parse/stringify/
         // write when the stored value hasn't actually changed.
-        if (map[_songKey] === pct) return;
-        map[_songKey] = pct;
+        var current = map[_songKey];
+        var instrument = _songInstrument
+            || (current && typeof current === 'object' ? current.instrument : null);
+        if (_masteryPct(current) === pct
+            && (!instrument || (current && current.instrument === instrument))) return;
+        map[_songKey] = instrument
+            ? { mastery: pct, instrument: instrument }
+            : pct;
         saveSongMasteryMap(map);
     }
 
@@ -164,15 +182,15 @@
         if (!key) return;
         var hw = window.highway;
         if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return;
-        var saved = loadSongMasteryMap()[key];
-        if (typeof saved !== 'number' || !isFinite(saved)) return;
+        var saved = _masteryPct(loadSongMasteryMap()[key]);
+        if (saved === null) return;
         if (typeof window.setMastery === 'function') window.setMastery(saved);
     }
 
     // ---- Settings (localStorage-backed; see settings.html for the panel) ----
     var settings = {
         autoAdjust: lsGet('autoAdjust', false),
-        dropResistance: lsGet('dropResistance', false),
+        dropResistance: lsGet('dropResistance', false) === true,
         showGlasses: lsGet('showGlasses', true),
         sensitivity: lsGet('sensitivity', 2),     // 1 (lenient) .. 3 (strict) — confidence thresholds + step size
         reactionSpeed: lsGet('reactionSpeed', 2), // 1 (slow) .. 3 (fast) — EMA_ALPHA, how much one phrase's result moves the rolling average
@@ -218,6 +236,7 @@
 
     // ---- Per-song scoring state ----
     var _songKey = null;
+    var _songInstrument = null;    // authoritative routes.py classification when available
     var _emaHitRate = null;        // null = no phrase scored yet this song
     // EMA weight is now the reactionSpeed setting (emaAlpha(), above) rather
     // than a hardcoded constant — see issue #5. Read live (not cached) since
@@ -228,7 +247,7 @@
     var _phraseTotal = 0;
     var _phrasesScored = 0;        // counts real phrases committed this song, gates WARMUP_PHRASES
     var _curPhraseIdx = -1;
-    var _lastAutoAppliedPct = null; // used to detect a manual slider override
+    var _lastObservedMasteryPct = null; // detects manual slider changes before or after auto-apply
     var _lastAutoAction = null;     // { direction, pct, reason } - for diagnostics
     var _rampDirection = null;
     var _rampProgress = 0;
@@ -253,7 +272,7 @@
         _phraseTotal = 0;
         _phrasesScored = 0;
         _curPhraseIdx = -1;
-        _lastAutoAppliedPct = null;
+        _lastObservedMasteryPct = null;
         _lastAutoAction = null;
         _rampDirection = null;
         _rampProgress = 0;
@@ -289,10 +308,7 @@
             return;
         }
         // Cold-start guard: don't let a single nervous/rusty first section on
-        // a fresh song swing the slider before there's enough signal. Safe to
-        // check before the override-check below only because
-        // _lastAutoAppliedPct is always null this early (freshly reset by
-        // resetPerSongState()) — that check would be a no-op here regardless.
+        // a fresh song swing the slider before there's enough signal.
         if (_phrasesScored < WARMUP_PHRASES) {
             contributeDiagnostics();
             return;
@@ -300,9 +316,9 @@
 
         var curPct = Math.round(hw.getMastery() * 100);
         // Manual-override doctrine: a human action always wins over automation.
-        // If the live value has drifted from what we last applied, someone
+        // If the live value has drifted from what we last observed, someone
         // moved the slider themselves — stand down instead of fighting them.
-        if (_lastAutoAppliedPct != null && curPct !== _lastAutoAppliedPct) {
+        if (_lastObservedMasteryPct != null && curPct !== _lastObservedMasteryPct) {
             _rampDirection = null;
             _rampProgress = 0;
             _downStreak = 0;
@@ -322,6 +338,7 @@
             contributeDiagnostics();
             return;
         }
+        _lastObservedMasteryPct = curPct;
         if (direction === 'down' && settings.dropResistance && _downStreak < DOWN_CONFIRM_PHRASES) {
             _rampDirection = null;
             _rampProgress = 0;
@@ -338,7 +355,7 @@
 
         if (next !== curPct && typeof window.setMastery === 'function') {
             window.setMastery(next);
-            _lastAutoAppliedPct = next;
+            _lastObservedMasteryPct = next;
             _rampProgress = (_rampProgress + 1) % RAMP_PHRASES;
             var dir = next > curPct ? 'up' : 'down';
             _lastAutoAction = {
@@ -690,6 +707,13 @@
                 setTimeout(_resetGenerateBtnLabel, 2500);
                 return;
             }
+            if (data.instrument) {
+                _songInstrument = data.instrument;
+                _rememberSongInstrument(songKeyOf({
+                    filename: target.filename,
+                    arrangement_index: target.arrangement_index,
+                }), data.instrument);
+            }
             if (data.skipped) {
                 _generateBtn.textContent = data.skipped === 'already-has-phrases'
                     ? 'Already has difficulties' : 'Not enough content';
@@ -742,7 +766,7 @@
         _controlsBtn.onclick = function () {
             settings.autoAdjust = !settings.autoAdjust;
             lsSet('autoAdjust', settings.autoAdjust);
-            _lastAutoAppliedPct = null;
+            _lastObservedMasteryPct = null;
             syncControlsUI();
         };
         slot.appendChild(_controlsBtn);
@@ -771,6 +795,7 @@
         var key = songKeyOf(si);
         if (key !== _songKey) {
             _songKey = key;
+            _songInstrument = null;
             resetPerSongState();
             _maybeRestoreSongMastery(key);
         }
@@ -820,8 +845,13 @@
         if (!e.key || e.key.indexOf(LS_PREFIX) !== 0) return;
         var short = e.key.slice(LS_PREFIX.length);
         if (short in settings) {
-            try { settings[short] = JSON.parse(e.newValue); } catch (_) { /* noop */ }
-            if (short === 'dropResistance') _downStreak = 0;
+            try { settings[short] = JSON.parse(e.newValue); } catch (_) {
+                if (short === 'dropResistance') settings[short] = false;
+            }
+            if (short === 'dropResistance') {
+                settings[short] = settings[short] === true;
+                _downStreak = 0;
+            }
             syncControlsUI();
             contributeDiagnostics();
         }
@@ -830,7 +860,10 @@
         var patch = ev && ev.detail;
         if (!patch) return;
         Object.assign(settings, patch);
-        if (Object.prototype.hasOwnProperty.call(patch, 'dropResistance')) _downStreak = 0;
+        if (Object.prototype.hasOwnProperty.call(patch, 'dropResistance')) {
+            settings.dropResistance = patch.dropResistance === true;
+            _downStreak = 0;
+        }
         syncControlsUI();
         contributeDiagnostics();
     });
@@ -847,6 +880,7 @@
             thresholds: thresholds, emaAlpha: emaAlpha, songKeyOf: songKeyOf,
             judgmentKey: judgmentKey, settings: settings,
             _dominantSongMastery: _dominantSongMastery,
+            _masteryPct: _masteryPct, _rememberSongInstrument: _rememberSongInstrument,
             loadSongMasteryMap: loadSongMasteryMap, saveSongMasteryMap: saveSongMasteryMap,
             calculateAndEmitSectionDifficulties: calculateAndEmitSectionDifficulties,
             commitPhraseResult: commitPhraseResult, resetPerSongState: resetPerSongState,
