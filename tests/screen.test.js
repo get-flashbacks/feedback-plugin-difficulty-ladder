@@ -13,15 +13,25 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
-function freshPlugin() {
-    global.window = { addEventListener: () => {} };
+function freshPlugin({ stored = {} } = {}) {
+    const listeners = new Map();
+    const store = new Map(Object.entries(stored));
+    global.window = {
+        addEventListener(type, listener) {
+            if (!listeners.has(type)) listeners.set(type, []);
+            listeners.get(type).push(listener);
+        },
+        dispatchEvent(event) {
+            for (const listener of listeners.get(event.type) || []) listener(event);
+        },
+    };
     global.document = {
         addEventListener: () => {},
         getElementById: () => null,
     };
     global.localStorage = {
-        getItem: () => null,
-        setItem: () => {},
+        getItem: (key) => store.has(key) ? store.get(key) : null,
+        setItem: (key, value) => store.set(key, String(value)),
     };
     const file = path.join(__dirname, '..', 'screen.js');
     delete require.cache[require.resolve(file)];
@@ -131,6 +141,38 @@ test('_dominantSongMastery does not match a different song sharing a filename pr
     assert.equal(mod._dominantSongMastery({ filename: 'song' }), null); // 'song' is not a prefix match of 'song.feedpak::0'
 });
 
+test('mastery readers accept instrument-tagged records without breaking legacy numeric records', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({
+        'keys.feedpak::0': { mastery: 72, instrument: 'keys' },
+        'guitar.feedpak::0': 64,
+    });
+    assert.equal(mod._dominantSongMastery({ filename: 'keys.feedpak' }), 72);
+    assert.equal(mod._dominantSongMastery({ filename: 'guitar.feedpak' }), 64);
+});
+
+test('_rememberSongInstrument upgrades an existing mastery record and preserves its identifiers', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::2': 81 });
+
+    mod._rememberSongInstrument('song.feedpak::2', 'fretted');
+
+    assert.deepEqual(mod.loadSongMasteryMap(), {
+        'song.feedpak::2': { mastery: 81, instrument: 'fretted' },
+    });
+});
+
+test('_rememberSongInstrument persists classification before the first mastery value exists', () => {
+    const mod = freshPlugin();
+
+    mod._rememberSongInstrument('new.feedpak::0', 'keys');
+
+    assert.deepEqual(mod.loadSongMasteryMap(), {
+        'new.feedpak::0': { mastery: null, instrument: 'keys' },
+    });
+    assert.equal(mod._dominantSongMastery({ filename: 'new.feedpak' }), null);
+});
+
 // ── Auto-adjust warm-up window + ramped stepping ────────────────────────────
 // (Rocksmith-comparison audit follow-up: a fresh song no longer acts before
 // WARMUP_PHRASES phrases are scored, and a qualifying streak now ramps
@@ -143,6 +185,14 @@ function attachHighwayStub(initialPct) {
     global.window.highway = { getMastery: () => masteryFrac };
     global.window.setMastery = (pct) => { calls.push(pct); masteryFrac = pct / 100; };
     return calls;
+}
+
+function setDropResistance(value) {
+    global.localStorage.setItem('difficulty_ladder.dropResistance', JSON.stringify(value));
+    global.window.dispatchEvent({
+        type: 'difficulty_ladder:settings-changed',
+        detail: { dropResistance: value },
+    });
 }
 
 test('rampStep() increments total the exact full step at every sensitivity', () => {
@@ -201,6 +251,12 @@ test('qualifying streaks total the configured step for every sensitivity and dir
     }
 });
 
+test('dropResistance loads true only from persisted boolean true', () => {
+    const key = 'difficulty_ladder.dropResistance';
+    assert.equal(freshPlugin({ stored: { [key]: JSON.stringify('false') } }).settings.dropResistance, false);
+    assert.equal(freshPlugin({ stored: { [key]: JSON.stringify(true) } }).settings.dropResistance, true);
+});
+
 test('auto-adjust stops ramping as soon as the signal returns to neutral (no full step committed in advance)', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
@@ -221,6 +277,7 @@ test('changing ramp direction restarts at the first exact-remainder increment', 
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
     mod.settings.sensitivity = 1; // exact sequence is 3, 4, 3
+    mod.settings.reactionSpeed = 3; // alpha 0.5: one miss moves EMA 1.0 -> 0.5, below th.down 0.65
     const calls = attachHighwayStub(50);
     for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
     assert.equal(calls[0], 53);
@@ -243,19 +300,37 @@ test('per-song reset clears exact-remainder ramp progress', () => {
 test('drop resistance requires two consecutive below-threshold signals when enabled', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
-    mod.settings.dropResistance = true;
+    setDropResistance(true);
     const calls = attachHighwayStub(50);
     for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(0.0);
     assert.equal(calls.length, 0, 'first eligible low signal is held');
+    setDropResistance(true); // public settings event invalidates the pending confirmation
+    assert.equal(global.localStorage.getItem('difficulty_ladder.dropResistance'), 'true');
+    mod.commitPhraseResult(0.0);
+    assert.equal(calls.length, 0, 'first low signal after a setting event is held again');
     mod.commitPhraseResult(0.0);
     assert.equal(calls.length, 1);
     assert.equal(calls[0], 45);
 });
 
+test('manual mastery change invalidates a resisted drop before the first auto-apply', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    setDropResistance(true);
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(0.0);
+    assert.equal(calls.length, 0, 'one low signal is pending');
+
+    global.window.highway.getMastery = () => 0.60;
+    mod.commitPhraseResult(0.0);
+    assert.equal(calls.length, 0, 'manual value is preserved instead of applying the stale drop');
+    assert.equal(mod.settings.autoAdjust, false);
+});
+
 test('drop resistance streak resets when the rolling signal returns neutral', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
-    mod.settings.dropResistance = true;
+    setDropResistance(true);
     mod.settings.reactionSpeed = 3;
     const calls = attachHighwayStub(50);
     for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(0.6);
@@ -270,7 +345,7 @@ test('drop resistance streak resets when the rolling signal returns neutral', ()
 test('drop resistance does not delay upward adjustments', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
-    mod.settings.dropResistance = true;
+    setDropResistance(true);
     const calls = attachHighwayStub(50);
     for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
     assert.equal(calls.length, 1);

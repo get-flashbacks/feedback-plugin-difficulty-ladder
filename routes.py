@@ -142,7 +142,21 @@ def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4):
     return groups
 
 
-def _score_groups(groups, n_strings):
+def _group_anchor_note(group):
+    """Return the fretted group's harmonic/hand-position anchor.
+
+    Rocksmith string indices run high pitch to low pitch, so the highest
+    string index is the same root convention used by chord reduction below.
+    """
+    notes = group.get("notes", []) or []
+    return max(notes, key=lambda n: n.get("s", 0), default=None)
+
+
+def _is_beat_aligned(time, beat_times, tolerance=0.06):
+    return any(abs(float(time) - beat) <= tolerance for beat in beat_times)
+
+
+def _score_groups(groups, n_strings, beat_times=()):
     total = len(groups)
     for gi, g in enumerate(groups):
         ns = g["notes"]
@@ -165,6 +179,17 @@ def _score_groups(groups, n_strings):
         g["score"] = (
             0.35 * fretting + 0.30 * technique + 0.20 * density + 0.15 * (1.0 - sustain_ease)
         )
+        # Easier tiers should retain rhythmic landmarks and avoid introducing
+        # hand jumps that are absent between neighbouring authored groups.
+        if _is_beat_aligned(g["time"], beat_times):
+            g["score"] -= 0.12
+        if gi:
+            prev = _group_anchor_note(groups[gi - 1])
+            cur = _group_anchor_note(g)
+            if prev and cur:
+                jump = abs(int(cur.get("f", 0)) - int(prev.get("f", 0)))
+                g["score"] += min(0.18, max(0, jump - 5) * 0.03)
+        g["score"] = max(0.0, min(1.0, g["score"]))
 
 
 # Retention-curve exponent: how sparse the bottom of a ladder is relative to
@@ -219,6 +244,57 @@ def _assign_levels(groups, n_levels, curve_exponent=_RETENTION_CURVE_EXPONENT):
             if g["score"] > t:
                 lvl += 1
         g["level"] = min(lvl, n_levels - 1)
+
+
+def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7):
+    """Promote anchors needed for a playable, rhythmically grounded path.
+
+    Promotions only add source groups to lower tiers, preserving nesting and
+    providing a conservative fallback when percentile thinning omits every
+    beat landmark or creates a large avoidable jump.
+    """
+    if not groups or max_level <= 0:
+        return
+    beat_groups = [g for g in groups if _is_beat_aligned(g["time"], beat_times)]
+    for level in range(max_level):
+        kept = [g for g in groups if g["level"] <= level]
+        if beat_groups and not any(g in beat_groups for g in kept):
+            min(beat_groups, key=lambda g: (g["score"], g["time"]))["level"] = level
+            kept = [g for g in groups if g["level"] <= level]
+
+        while True:
+            kept = sorted((g for g in groups if g["level"] <= level), key=lambda g: g["time"])
+            promoted = False
+            for left, right in zip(kept, kept[1:]):
+                left_anchor = _group_anchor_note(left)
+                right_anchor = _group_anchor_note(right)
+                if not left_anchor or not right_anchor:
+                    continue
+                left_fret = int(left_anchor.get("f", 0))
+                right_fret = int(right_anchor.get("f", 0))
+                original_jump = abs(right_fret - left_fret)
+                if original_jump <= max_jump:
+                    continue
+                candidates = []
+                for candidate in groups:
+                    if candidate["level"] <= level or not (left["time"] < candidate["time"] < right["time"]):
+                        continue
+                    anchor = _group_anchor_note(candidate)
+                    if not anchor:
+                        continue
+                    fret = int(anchor.get("f", 0))
+                    worst_jump = max(abs(fret - left_fret), abs(right_fret - fret))
+                    if worst_jump < original_jump:
+                        # Continuity is the primary score; authored difficulty
+                        # and beat alignment break ties without replacing it.
+                        beat_penalty = 0 if _is_beat_aligned(candidate["time"], beat_times) else 1
+                        candidates.append((worst_jump, beat_penalty, candidate["score"], candidate["time"], candidate))
+                if candidates:
+                    min(candidates, key=lambda item: item[:4])[4]["level"] = level
+                    promoted = True
+                    break
+            if not promoted:
+                break
 
 
 # Fraction of the way up a phrase's own ladder (0..1) at which a technique
@@ -298,7 +374,8 @@ def _notes_for_level(groups, level, max_level):
         elif g["type"] == "arpeggio" and level < max_level:
             ns = g["notes"]
             if level == 0:
-                out_notes.append(_prune_techniques(ns[0], diff_percent))
+                anchor = _group_anchor_note(g) or ns[0]
+                out_notes.append(_prune_techniques(anchor, diff_percent))
             else:
                 keep_n = max(1, (len(ns) * (level + 1)) // max_level)
                 out_notes.extend(_prune_techniques(n, diff_percent) for n in ns[:keep_n])
@@ -525,13 +602,13 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4):
     if not windows:
         windows = [(0.0, duration)]
 
+    beat_times = [float(b.get("time", 0)) for b in beats]
     if is_keys:
         groups_all = _group_notes_keys(notes, chords)
         _score_groups_keys(groups_all)
     else:
         groups_all = _group_notes(notes, chords)
-        _score_groups(groups_all, n_strings)
-    beat_times = [float(b.get("time", 0)) for b in beats]
+        _score_groups(groups_all, n_strings, beat_times)
 
     phrases_out = []
     for t0, t1 in windows:
@@ -545,6 +622,8 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4):
         phrase_n_levels = n_levels if is_keys else _phrase_level_count(phrase_groups, n_levels)
         phrase_max_level = phrase_n_levels - 1
         _assign_levels(phrase_groups, phrase_n_levels)
+        if not is_keys:
+            _refine_lower_tier_path(phrase_groups, beat_times, phrase_max_level)
         levels_out = []
         for lvl in range(phrase_n_levels):
             if is_keys:
@@ -702,8 +781,12 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
         rel, arr, skip_reason = _load_manifest_and_arrangement(pack_path, arrangement_index)
         if skip_reason:
             return {"ok": True, "skipped": skip_reason, "arrangement_index": arrangement_index}
+        instrument = _instrument_kind(arr.get("type", ""), arr.get("name", ""))
         if not force and arr.get("phrases"):
-            return {"ok": True, "skipped": "already-has-phrases", "arrangement_index": arrangement_index}
+            return {
+                "ok": True, "skipped": "already-has-phrases",
+                "arrangement_index": arrangement_index, "instrument": instrument,
+            }
 
         phrases = generate_phrases_for_arrangement(arr, n_levels=n_levels)
         if phrases is None:
@@ -717,6 +800,7 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
     return {
         "ok": True, "arrangement_index": arrangement_index,
         "phrases": len(phrases), "max_difficulty": n_levels - 1,
+        "instrument": instrument,
     }
 
 

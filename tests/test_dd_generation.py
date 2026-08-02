@@ -139,3 +139,40 @@ def test_chords_are_thinned_below_the_top_tier_and_intact_at_the_top():
                 f"not kept whole below the top tier"
             )
             break
+
+
+def test_lower_tier_refinement_promotes_a_beat_anchor_and_continuity_bridge():
+    groups = [
+        {"time": 0.1, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 2}]},
+        {"time": 0.5, "score": 0.3, "level": 2, "notes": [{"s": 5, "f": 7}]},
+        {"time": 1.0, "score": 0.2, "level": 0, "notes": [{"s": 5, "f": 12}]},
+    ]
+
+    routes._refine_lower_tier_path(groups, [0.0, 0.5, 1.0], max_level=2)
+
+    assert groups[1]["level"] == 0, (
+        "the omitted beat-aligned group should bridge the otherwise 10-fret lower-tier jump"
+    )
+
+
+def test_lower_tier_refinement_falls_back_to_a_beat_group_when_none_was_kept():
+    groups = [
+        {"time": 0.1, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 3}]},
+        {"time": 0.5, "score": 0.2, "level": 2, "notes": [{"s": 5, "f": 4}]},
+    ]
+
+    routes._refine_lower_tier_path(groups, [0.0, 0.5], max_level=2)
+
+    assert groups[1]["level"] == 0
+
+
+def test_bottom_arpeggio_voice_preserves_the_root_string():
+    groups = [{
+        "type": "arpeggio", "level": 0, "time": 0.0, "chord": None,
+        "notes": [{"t": 0.0, "s": 1, "f": 7}, {"t": 0.04, "s": 5, "f": 3}],
+    }]
+
+    notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
+
+    assert chords == []
+    assert [(n["s"], n["f"]) for n in notes] == [(5, 3)]
