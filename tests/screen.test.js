@@ -240,6 +240,43 @@ test('per-song reset clears exact-remainder ramp progress', () => {
     assert.equal(calls[1], 56, 'new song starts with 3 rather than the prior ramp\'s next 4');
 });
 
+test('drop resistance requires two consecutive below-threshold signals when enabled', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.dropResistance = true;
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(0.0);
+    assert.equal(calls.length, 0, 'first eligible low signal is held');
+    mod.commitPhraseResult(0.0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 45);
+});
+
+test('drop resistance streak resets when the rolling signal returns neutral', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.dropResistance = true;
+    mod.settings.reactionSpeed = 3;
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(0.6);
+    assert.equal(calls.length, 0);
+    mod.commitPhraseResult(1.0); // EMA 0.8: neutral, clears the one-signal streak
+    mod.commitPhraseResult(0.0); // EMA 0.4: first new low signal
+    assert.equal(calls.length, 0);
+    mod.commitPhraseResult(0.0); // second consecutive low signal
+    assert.equal(calls.length, 1);
+});
+
+test('drop resistance does not delay upward adjustments', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.dropResistance = true;
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 55);
+});
+
 test('min/maxMastery still clamps a ramped next value and stops repeat calls once saturated', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
