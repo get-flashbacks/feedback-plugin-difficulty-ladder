@@ -145,14 +145,14 @@ function attachHighwayStub(initialPct) {
     return calls;
 }
 
-test('rampStep() spreads a full th.step over RAMP_PHRASES qualifying phrases', () => {
+test('rampStep() increments total the exact full step at every sensitivity', () => {
     const mod = freshPlugin();
     mod.settings.sensitivity = 1;
-    assert.equal(mod.rampStep(mod.thresholds()), 3); // step 10 / 3 -> round(3.33)
+    assert.deepEqual([0, 1, 2].map(i => mod.rampStep(mod.thresholds(), i)), [3, 4, 3]);
     mod.settings.sensitivity = 2;
-    assert.equal(mod.rampStep(mod.thresholds()), 5); // step 15 / 3 -> exact
+    assert.deepEqual([0, 1, 2].map(i => mod.rampStep(mod.thresholds(), i)), [5, 5, 5]);
     mod.settings.sensitivity = 3;
-    assert.equal(mod.rampStep(mod.thresholds()), 7); // step 20 / 3 -> round(6.67)
+    assert.deepEqual([0, 1, 2].map(i => mod.rampStep(mod.thresholds(), i)), [7, 6, 7]);
 });
 
 test('rampStep() never returns less than 1', () => {
@@ -184,19 +184,21 @@ test('warm-up phrases scored while autoAdjust is off still count toward WARMUP_P
     assert.equal(calls.length, 1, 'warm-up was already satisfied while paused');
 });
 
-test('a qualifying streak ramps mastery by rampStep() per phrase, totalling a full th.step after RAMP_PHRASES qualifying phrases', () => {
-    const mod = freshPlugin();
-    mod.settings.autoAdjust = true;
-    mod.settings.sensitivity = 2; // step 15, rampStep 5
-    const calls = attachHighwayStub(50);
-    const th = mod.thresholds();
-    const step = mod.rampStep(th);
-    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0], 50 + step);
-    for (let i = 1; i < mod.RAMP_PHRASES; i++) mod.commitPhraseResult(1.0);
-    assert.equal(calls.length, mod.RAMP_PHRASES);
-    assert.equal(calls[calls.length - 1] - 50, th.step);
+test('qualifying streaks total the configured step for every sensitivity and direction', () => {
+    for (const sensitivity of [1, 2, 3]) {
+        for (const [ratio, sign] of [[1.0, 1], [0.0, -1]]) {
+            const mod = freshPlugin();
+            mod.settings.autoAdjust = true;
+            mod.settings.sensitivity = sensitivity;
+            const calls = attachHighwayStub(50);
+            const th = mod.thresholds();
+            for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(ratio);
+            for (let i = 1; i < mod.RAMP_PHRASES; i++) mod.commitPhraseResult(ratio);
+            assert.equal(calls.length, mod.RAMP_PHRASES);
+            assert.equal(calls[calls.length - 1] - 50, sign * th.step,
+                `sensitivity ${sensitivity}, direction ${sign > 0 ? 'up' : 'down'}`);
+        }
+    }
 });
 
 test('auto-adjust stops ramping as soon as the signal returns to neutral (no full step committed in advance)', () => {
@@ -213,6 +215,29 @@ test('auto-adjust stops ramping as soon as the signal returns to neutral (no ful
     // the neutral band (0.68, 0.88), so no further action should be taken.
     mod.commitPhraseResult(0.4);
     assert.equal(calls.length, 1, 'no new setMastery call once the EMA is back in the neutral band');
+});
+
+test('changing ramp direction restarts at the first exact-remainder increment', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 1; // exact sequence is 3, 4, 3
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls[0], 53);
+    mod.commitPhraseResult(0.0); // EMA reaches the down threshold; direction flips
+    assert.equal(calls[1], 50, 'downward ramp restarts with 3 rather than continuing with 4');
+});
+
+test('per-song reset clears exact-remainder ramp progress', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 1;
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls[0], 53);
+    mod.resetPerSongState();
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls[1], 56, 'new song starts with 3 rather than the prior ramp\'s next 4');
 });
 
 test('min/maxMastery still clamps a ramped next value and stops repeat calls once saturated', () => {
