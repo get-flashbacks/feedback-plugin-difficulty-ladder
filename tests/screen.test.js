@@ -257,6 +257,19 @@ test('dropResistance loads true only from persisted boolean true', () => {
     assert.equal(freshPlugin({ stored: { [key]: JSON.stringify(true) } }).settings.dropResistance, true);
 });
 
+test('malformed dropResistance storage updates reset the setting to false', () => {
+    const mod = freshPlugin();
+    mod.settings.dropResistance = true;
+
+    global.window.dispatchEvent({
+        type: 'storage',
+        key: 'difficulty_ladder.dropResistance',
+        newValue: 'not-json',
+    });
+
+    assert.equal(mod.settings.dropResistance, false);
+});
+
 test('auto-adjust stops ramping as soon as the signal returns to neutral (no full step committed in advance)', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;

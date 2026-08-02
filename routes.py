@@ -22,6 +22,7 @@ import os
 import re
 import threading
 import zipfile
+from itertools import pairwise
 from pathlib import Path
 
 from fastapi import Body, HTTPException
@@ -34,6 +35,7 @@ from safepath import safe_join
 PLUGIN_ID = "difficulty_ladder"
 
 MIN_EVENTS_FOR_GENERATION = 8  # skip near-empty arrangements — nothing to grade
+FRET_JUMP_WINDOW_SECONDS = 1.0  # longer rests give the player time to reposition
 
 # Same convention core uses for piano-roll mode (CLAUDE.md: "Any arrangement
 # named Keys, Piano, Keyboard, or Synth renders as a piano-roll chart").
@@ -183,7 +185,7 @@ def _score_groups(groups, n_strings, beat_times=()):
         # hand jumps that are absent between neighbouring authored groups.
         if _is_beat_aligned(g["time"], beat_times):
             g["score"] -= 0.12
-        if gi:
+        if gi and float(g["time"]) - float(groups[gi - 1]["time"]) <= FRET_JUMP_WINDOW_SECONDS:
             prev = _group_anchor_note(groups[gi - 1])
             cur = _group_anchor_note(g)
             if prev and cur:
@@ -246,6 +248,24 @@ def _assign_levels(groups, n_levels, curve_exponent=_RETENTION_CURVE_EXPONENT):
         g["level"] = min(lvl, n_levels - 1)
 
 
+def _best_bridge_candidate(groups, left, right, level, beat_times, original_jump):
+    left_fret = int(_group_anchor_note(left).get("f", 0))
+    right_fret = int(_group_anchor_note(right).get("f", 0))
+    candidates = []
+    for candidate in groups:
+        if candidate["level"] <= level or not (left["time"] < candidate["time"] < right["time"]):
+            continue
+        anchor = _group_anchor_note(candidate)
+        if not anchor:
+            continue
+        fret = int(anchor.get("f", 0))
+        worst_jump = max(abs(fret - left_fret), abs(right_fret - fret))
+        if worst_jump < original_jump:
+            beat_penalty = 0 if _is_beat_aligned(candidate["time"], beat_times) else 1
+            candidates.append((worst_jump, beat_penalty, candidate["score"], candidate["time"], candidate))
+    return min(candidates, key=lambda item: item[:4])[4] if candidates else None
+
+
 def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7):
     """Promote anchors needed for a playable, rhythmically grounded path.
 
@@ -265,7 +285,7 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7):
         while True:
             kept = sorted((g for g in groups if g["level"] <= level), key=lambda g: g["time"])
             promoted = False
-            for left, right in zip(kept, kept[1:]):
+            for left, right in pairwise(kept):
                 left_anchor = _group_anchor_note(left)
                 right_anchor = _group_anchor_note(right)
                 if not left_anchor or not right_anchor:
@@ -275,22 +295,11 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7):
                 original_jump = abs(right_fret - left_fret)
                 if original_jump <= max_jump:
                     continue
-                candidates = []
-                for candidate in groups:
-                    if candidate["level"] <= level or not (left["time"] < candidate["time"] < right["time"]):
-                        continue
-                    anchor = _group_anchor_note(candidate)
-                    if not anchor:
-                        continue
-                    fret = int(anchor.get("f", 0))
-                    worst_jump = max(abs(fret - left_fret), abs(right_fret - fret))
-                    if worst_jump < original_jump:
-                        # Continuity is the primary score; authored difficulty
-                        # and beat alignment break ties without replacing it.
-                        beat_penalty = 0 if _is_beat_aligned(candidate["time"], beat_times) else 1
-                        candidates.append((worst_jump, beat_penalty, candidate["score"], candidate["time"], candidate))
-                if candidates:
-                    min(candidates, key=lambda item: item[:4])[4]["level"] = level
+                candidate = _best_bridge_candidate(
+                    groups, left, right, level, beat_times, original_jump,
+                )
+                if candidate:
+                    candidate["level"] = level
                     promoted = True
                     break
             if not promoted:
@@ -790,7 +799,10 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
 
         phrases = generate_phrases_for_arrangement(arr, n_levels=n_levels)
         if phrases is None:
-            return {"ok": True, "skipped": "not-enough-content-or-unsupported-instrument", "arrangement_index": arrangement_index}
+            return {
+                "ok": True, "skipped": "not-enough-content-or-unsupported-instrument",
+                "arrangement_index": arrangement_index, "instrument": instrument,
+            }
 
         arr["phrases"] = phrases
         new_bytes = json.dumps(arr, ensure_ascii=False).encode("utf-8")

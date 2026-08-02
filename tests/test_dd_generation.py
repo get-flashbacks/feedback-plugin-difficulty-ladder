@@ -176,3 +176,19 @@ def test_bottom_arpeggio_voice_preserves_the_root_string():
 
     assert chords == []
     assert [(n["s"], n["f"]) for n in notes] == [(5, 3)]
+
+
+def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
+    def groups(second_time):
+        return [
+            {"time": 0.0, "notes": [{"s": 5, "f": 2, "sus": 0}]},
+            {"time": second_time, "notes": [{"s": 5, "f": 15, "sus": 0}]},
+        ]
+
+    nearby = groups(0.5)
+    after_rest = groups(2.0)
+    routes._score_groups(nearby, n_strings=6)
+    routes._score_groups(after_rest, n_strings=6)
+
+    assert nearby[1]["score"] > after_rest[1]["score"]
+    assert abs(nearby[1]["score"] - after_rest[1]["score"] - 0.18) < 1e-9

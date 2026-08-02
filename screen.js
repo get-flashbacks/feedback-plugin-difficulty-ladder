@@ -845,7 +845,9 @@
         if (!e.key || e.key.indexOf(LS_PREFIX) !== 0) return;
         var short = e.key.slice(LS_PREFIX.length);
         if (short in settings) {
-            try { settings[short] = JSON.parse(e.newValue); } catch (_) { /* noop */ }
+            try { settings[short] = JSON.parse(e.newValue); } catch (_) {
+                if (short === 'dropResistance') settings[short] = false;
+            }
             if (short === 'dropResistance') {
                 settings[short] = settings[short] === true;
                 _downStreak = 0;
