@@ -1,0 +1,519 @@
+name: custom-checks
+
+# Self-contained pre-merge checks. This repo is an original (not a fork), so
+# there's no upstream org tooling to depend on — these checks are inlined
+# rather than referencing a shared reusable workflow.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+env:
+  PLUGIN_DIR: "."
+
+jobs:
+  no-print-in-routes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No print()/traceback.print_exc() in routes.py
+        run: |
+          set -eu
+          FILE="$PLUGIN_DIR/routes.py"
+          if [ ! -f "$FILE" ]; then
+            echo "No routes.py — skipping"
+            exit 0
+          fi
+          hits=$(grep -nE '(^|[^A-Za-z0-9_])(print|traceback\.print_exc)[[:space:]]*\(' "$FILE" || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error file=$FILE::print()/traceback.print_exc() found — use context['log'] instead"
+            exit 1
+          fi
+          echo "OK: no print()/traceback.print_exc() in routes.py"
+
+  safe-server-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: settings/diagnostics server_files must be safe relpaths
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          manifest_path = os.path.join(os.environ["PLUGIN_DIR"], "plugin.json")
+          manifest = json.load(open(manifest_path))
+          bad = []
+          for section in ("settings", "diagnostics"):
+              for entry in (manifest.get(section, {}) or {}).get("server_files", []) or []:
+                  parts = entry.split("/")
+                  if entry.startswith("/") or ".." in parts or "\\" in entry or entry.startswith("."):
+                      bad.append(f"{section}.server_files: {entry!r}")
+          if bad:
+              for b in bad:
+                  print(f"::error::{b}")
+              sys.exit(1)
+          print("OK: server_files entries are safe relpaths")
+          PY
+  sibling-imports-use-load-sibling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sibling modules must be loaded via load_sibling, not bare import
+        run: |
+          python3 - <<'PY'
+          import ast, os, sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          routes_path = os.path.join(plugin_dir, "routes.py")
+          if not os.path.isfile(routes_path):
+              print("No routes.py — skipping")
+              raise SystemExit(0)
+
+          sibling_names = set()
+          for fn in os.listdir(plugin_dir):
+              if fn.endswith(".py") and fn != "routes.py" and not fn.startswith("test_"):
+                  sibling_names.add(fn[:-3])
+
+          if not sibling_names:
+              print("No sibling .py modules in this plugin dir — skipping")
+              raise SystemExit(0)
+
+          src = open(routes_path, encoding="utf-8").read()
+          tree = ast.parse(src, filename=routes_path)
+          bad = []
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Import):
+                  for alias in node.names:
+                      top = alias.name.split(".")[0]
+                      if top in sibling_names:
+                          bad.append(f"line {node.lineno}: bare 'import {alias.name}'")
+              elif isinstance(node, ast.ImportFrom):
+                  if node.module and node.level == 0:
+                      top = node.module.split(".")[0]
+                      if top in sibling_names:
+                          bad.append(f"line {node.lineno}: bare 'from {node.module} import ...'")
+
+          if bad:
+              for b in bad:
+                  print(f"::error file={routes_path}::{b} — sibling modules must be loaded via context['load_sibling'](...)")
+              sys.exit(1)
+          print("OK: no bare imports of sibling plugin modules")
+          PY
+
+  routes-namespaced:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Routes must be namespaced under /api or /ws plugins/<id>
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          routes_path = os.path.join(plugin_dir, "routes.py")
+          if not os.path.isfile(routes_path):
+              print("No routes.py — skipping")
+              raise SystemExit(0)
+
+          manifest = json.load(open(os.path.join(plugin_dir, "plugin.json")))
+          pid = manifest.get("id", "")
+          src = open(routes_path, encoding="utf-8").read()
+
+          # Only match route-registration calls: an @-decorator (@app.get(...),
+          # @router.post(...)) or an explicit add_api_route/add_websocket_route
+          # call. Deliberately NOT a bare ".get(" — that's indistinguishable
+          # from dict.get(...) without this anchor, which produced dozens of
+          # false positives (n.get("f", 0), etc.) before this was added.
+          pattern = re.compile(
+              r'(?:@\w+\.(?:get|post|put|delete|patch|websocket)'
+              r'|\.(?:add_api_route|add_websocket_route))'
+              r'\(\s*f?["\']([^"\']*)["\']'
+          )
+          allowed_http = f"/api/plugins/{pid}/"
+          allowed_ws = f"/ws/plugins/{pid}/"
+          bad = []
+          for m in pattern.finditer(src):
+              path = m.group(1)
+              # f-string routes like f"/api/plugins/{PLUGIN_ID}/..." capture
+              # literally as "/api/plugins/{PLUGIN_ID}/..." since regex can't
+              # evaluate the interpolation — accept the brace-immediately-
+              # after-prefix shape as "namespaced via a variable".
+              interpolated = path.startswith("/api/plugins/{") or path.startswith("/ws/plugins/{")
+              if interpolated:
+                  continue
+              if not (path.startswith(allowed_http) or path.startswith(allowed_ws)
+                      or path == allowed_http.rstrip("/") or path == allowed_ws.rstrip("/")):
+                  line = src[:m.start()].count("\n") + 1
+                  bad.append(f"line {line}: route {path!r} is outside {allowed_http} / {allowed_ws}")
+
+          if bad:
+              for b in bad:
+                  print(f"::error file={routes_path}::{b}")
+              sys.exit(1)
+          print(f"OK: all matched routes are namespaced under /api or /ws plugins/{pid}/")
+          PY
+
+  blocking-handlers-use-def:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Blocking route handlers must be plain def, not async def
+        run: |
+          python3 - <<'PY'
+          import ast, os, sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          routes_path = os.path.join(plugin_dir, "routes.py")
+          if not os.path.isfile(routes_path):
+              print("No routes.py — skipping")
+              raise SystemExit(0)
+
+          src = open(routes_path, encoding="utf-8").read()
+          tree = ast.parse(src, filename=routes_path)
+
+          BLOCKING_NAMES = {"open", "sleep", "subprocess", "requests"}
+          EXECUTOR_HINTS = ("run_in_executor", "to_thread")
+
+          bad = []
+          for node in ast.walk(tree):
+              if not isinstance(node, ast.AsyncFunctionDef):
+                  continue
+              body_src = ast.get_source_segment(src, node) or ""
+              if any(hint in body_src for hint in EXECUTOR_HINTS):
+                  continue
+              for sub in ast.walk(node):
+                  if isinstance(sub, ast.Call):
+                      fn = sub.func
+                      name = None
+                      if isinstance(fn, ast.Name):
+                          name = fn.id
+                      elif isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
+                          name = fn.value.id
+                      if name in BLOCKING_NAMES:
+                          bad.append(f"line {sub.lineno}: async def {node.name} calls {name}(...) without run_in_executor/to_thread")
+                          break
+
+          if bad:
+              for b in bad:
+                  print(f"::error file={routes_path}::{b}")
+              sys.exit(1)
+          print("OK: no async handlers doing unwrapped blocking work")
+          PY
+
+  version-bumped-on-change:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: plugin.json version must bump when functional source changes
+        run: |
+          set -eu
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ]; then
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "No usable base commit to diff against — skipping"
+            exit 0
+          fi
+          DIR="$PLUGIN_DIR"
+          CHANGED=$(git diff --name-only "$BASE" HEAD -- "$DIR" || true)
+          FUNCTIONAL=$(echo "$CHANGED" | grep -E '\.(py|js|html)$' | grep -vE '(^|/)tests?/' | grep -v 'plugin\.json$' || true)
+          if [ -z "$FUNCTIONAL" ]; then
+            echo "No functional source changed — skipping"
+            exit 0
+          fi
+          MANIFEST_CHANGED=$(git diff --name-only "$BASE" HEAD -- "$DIR/plugin.json" || true)
+          if [ -z "$MANIFEST_CHANGED" ]; then
+            echo "::error file=$DIR/plugin.json::functional source changed ($FUNCTIONAL) but plugin.json was not — bump the version"
+            exit 1
+          fi
+          OLD_VERSION=$(git show "$BASE:$DIR/plugin.json" 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('version',''))" || echo "")
+          NEW_VERSION=$(python3 -c "import json; print(json.load(open('$DIR/plugin.json')).get('version',''))")
+          if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+            echo "::error file=$DIR/plugin.json::plugin.json changed but version is still $NEW_VERSION — bump it"
+            exit 1
+          fi
+          echo "OK: version bumped $OLD_VERSION -> $NEW_VERSION"
+
+  no-per-frame-dom-queries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No querySelector calls inside draw/rAF/short-interval paths
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          js_path = os.path.join(plugin_dir, "screen.js")
+          if not os.path.isfile(js_path):
+              print("No screen.js — skipping")
+              raise SystemExit(0)
+
+          src = open(js_path, encoding="utf-8").read()
+          lines = src.split("\n")
+
+          bad = []
+          for i, line in enumerate(lines):
+              trigger = None
+              if "requestAnimationFrame(" in line:
+                  trigger = "requestAnimationFrame"
+              elif re.search(r'function\s+draw\s*\(', line):
+                  trigger = "function draw("
+              else:
+                  m = re.search(r'setInterval\([^,]+,\s*(\d+)\s*\)', line)
+                  if m and int(m.group(1)) < 250:
+                      trigger = "setInterval(<250ms)"
+              if trigger:
+                  window = "\n".join(lines[i:i+6])
+                  if "querySelector" in window:
+                      bad.append(f"line {i+1}: querySelector near {trigger} — resolve/cache the element once outside the hot path")
+
+          if bad:
+              for b in bad:
+                  print(f"::error file={js_path}::{b}")
+              sys.exit(1)
+          print("OK: no querySelector calls found near draw/rAF/short-interval triggers")
+          PY
+
+  idempotent-top-level-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Top-level listeners/timers must be inside a reload guard
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          js_path = os.path.join(plugin_dir, "screen.js")
+          if not os.path.isfile(js_path):
+              print("No screen.js — skipping")
+              raise SystemExit(0)
+
+          src = open(js_path, encoding="utf-8").read()
+          has_hotpath = bool(re.search(r'(window\.addEventListener|document\.addEventListener|setInterval)\s*\(', src))
+          # Guard naming varies across the org (__xInstalled, __xHooksInstalled,
+          # __feedBackDynamicDifficulty, __ddCardBadgeRegistered, ...) — no
+          # single suffix covers them, so just require *some* window.__ flag
+          # reference rather than pattern-matching a specific naming style.
+          has_guard = bool(re.search(r'window\.__\w+', src))
+
+          if has_hotpath and not has_guard:
+              print(f"::error file={js_path}::found addEventListener/setInterval but no window.__*Installed-style reload guard — screen.js can re-execute on plugin reload")
+              sys.exit(1)
+          print("OK: no unguarded top-level listeners detected (or none present)")
+          PY
+
+  shortcuts-unregistered:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: registerShortcut calls must have a matching unregister/clear
+        run: |
+          python3 - <<'PY'
+          import os, sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          js_path = os.path.join(plugin_dir, "screen.js")
+          if not os.path.isfile(js_path):
+              print("No screen.js — skipping")
+              raise SystemExit(0)
+
+          src = open(js_path, encoding="utf-8").read()
+          if "registerShortcut(" not in src:
+              print("No registerShortcut calls — skipping")
+              raise SystemExit(0)
+
+          if "unregisterShortcut(" not in src and "clearShortcuts(" not in src:
+              print(f"::error file={js_path}::registerShortcut() is called but no unregisterShortcut()/clearShortcuts() cleanup was found")
+              sys.exit(1)
+          print("OK: shortcut registration has matching cleanup")
+          PY
+
+  overlay-gates-on-default-renderer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: highway.project/fretX usage must be gated on isDefaultRenderer
+        run: |
+          python3 - <<'PY'
+          import os, sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          js_path = os.path.join(plugin_dir, "screen.js")
+          if not os.path.isfile(js_path):
+              print("No screen.js — skipping")
+              raise SystemExit(0)
+
+          src = open(js_path, encoding="utf-8").read()
+          uses_geometry = (".project(" in src) or (".fretX(" in src)
+          if not uses_geometry:
+              print("No highway.project/fretX usage — skipping")
+              raise SystemExit(0)
+
+          if "isDefaultRenderer(" not in src:
+              print(f"::error file={js_path}::uses highway.project/fretX but never checks isDefaultRenderer() — coordinates won't match a custom renderer's scene")
+              sys.exit(1)
+          print("OK: geometry usage is gated on isDefaultRenderer")
+          PY
+
+  v3-mounts-via-slot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: player-controls injections must use playerControlSlot in v3
+        run: |
+          python3 - <<'PY'
+          import os, sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          js_path = os.path.join(plugin_dir, "screen.js")
+          if not os.path.isfile(js_path):
+              print("No screen.js — skipping")
+              raise SystemExit(0)
+
+          src = open(js_path, encoding="utf-8").read()
+          if "player-controls" not in src:
+              print("No #player-controls usage — skipping")
+              raise SystemExit(0)
+
+          if "playerControlSlot" not in src:
+              print(f"::error file={js_path}::references #player-controls but never uses window.feedBack.ui.playerControlSlot() — injections will auto-hide/land wrong under the v3 chrome")
+              sys.exit(1)
+          print("OK: player-controls usage goes through playerControlSlot")
+          PY
+
+  setrenderer-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: setRenderer factory must implement init/draw (and destroy if it acquires resources)
+        run: |
+          python3 - <<'PY'
+          import json, os, re, sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          manifest = json.load(open(os.path.join(plugin_dir, "plugin.json")))
+          if manifest.get("type") != "visualization":
+              print("plugin.json type is not 'visualization' — skipping")
+              raise SystemExit(0)
+
+          js_path = os.path.join(plugin_dir, "screen.js")
+          if not os.path.isfile(js_path):
+              print("No screen.js — skipping")
+              raise SystemExit(0)
+
+          src = open(js_path, encoding="utf-8").read()
+          pid = manifest.get("id", "")
+          factory_marker = f"feedBackViz_{pid}"
+          if factory_marker not in src:
+              print(f"No window.{factory_marker} factory found in screen.js — skipping (viz contract may live elsewhere)")
+              raise SystemExit(0)
+
+          has_init = bool(re.search(r'\binit\s*\(', src))
+          has_draw = bool(re.search(r'\bdraw\s*\(', src))
+          if not (has_init and has_draw):
+              print(f"::error file={js_path}::window.{factory_marker} factory is missing init() or draw() on the returned renderer object")
+              sys.exit(1)
+
+          acquires_resources = bool(re.search(r'getContext\(|addEventListener\(', src))
+          has_destroy = bool(re.search(r'\bdestroy\s*\(', src))
+          if acquires_resources and not has_destroy:
+              print(f"::error file={js_path}::window.{factory_marker} acquires resources (getContext/addEventListener) but defines no destroy()")
+              sys.exit(1)
+
+          print("OK: setRenderer factory has the required lifecycle methods")
+          PY
+
+  changelog-updated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: CHANGELOG.md Unreleased section must be updated for functional changes
+        run: |
+          set -eu
+          if [ ! -f CHANGELOG.md ]; then
+            echo "No CHANGELOG.md in this repo — skipping"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ]; then
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "No usable base commit to diff against — skipping"
+            exit 0
+          fi
+          FUNCTIONAL=$(git diff --name-only "$BASE" HEAD -- "$PLUGIN_DIR" | grep -E '\.(py|js|html)$' | grep -vE '(^|/)tests?/' || true)
+          if [ -z "$FUNCTIONAL" ]; then
+            echo "No functional source changed — skipping"
+            exit 0
+          fi
+          CHANGELOG_DIFF=$(git diff --name-only "$BASE" HEAD -- CHANGELOG.md || true)
+          if [ -z "$CHANGELOG_DIFF" ]; then
+            echo "::error file=CHANGELOG.md::functional source changed but CHANGELOG.md was not updated"
+            exit 1
+          fi
+          echo "OK: CHANGELOG.md was updated"
+
+  new-modules-have-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: New Python modules should have matching test references
+        run: |
+          set -eu
+          if [ ! -d tests ] && [ ! -d test ]; then
+            echo "No tests/ directory in this repo — skipping"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$BASE" ]; then
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "No usable base commit to diff against — skipping"
+            exit 0
+          fi
+          NEW_FILES=$(git diff --name-only --diff-filter=A "$BASE" HEAD -- "$PLUGIN_DIR" | grep -E '\.py$' | grep -vE '(^|/)tests?/' || true)
+          if [ -z "$NEW_FILES" ]; then
+            echo "No new Python modules — skipping"
+            exit 0
+          fi
+          MISSING=""
+          for f in $NEW_FILES; do
+            base=$(basename "$f" .py)
+            if ! git grep -q "$base" -- tests test 2>/dev/null; then
+              MISSING="$MISSING $f"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::New modules with no test reference:$MISSING"
+            exit 1
+          fi
+          echo "OK: new modules are referenced from tests"
+
+  no-hardcoded-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No hardcoded secrets or tokens
+        run: |
+          set -eu
+          PATTERN='AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(_TOKEN|_SECRET|_API_KEY|_PASSWORD)[[:space:]]*[:=][[:space:]]*["'"'"'][^"'"'"']{6,}'
+          hits=$(git grep -nEI "$PATTERN" -- . ':(exclude).github/workflows/custom-checks.yml' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::possible hardcoded secret/token found — see lines above"
+            exit 1
+          fi
+          echo "OK: no hardcoded secrets found"
