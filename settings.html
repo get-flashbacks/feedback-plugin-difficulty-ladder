@@ -3,11 +3,11 @@
         <h3 class="text-sm font-medium text-gray-200 mb-1">Difficulty mode</h3>
         <p class="text-[11px] text-gray-500 mb-3">Standard keeps difficulty fixed at whatever you set it to. Adaptive raises or lowers the master-difficulty slider automatically between sections, based on your recent hit accuracy — requires a note-detection scorer (e.g. the note_detect plugin) to be active, and only affects songs with a phrase-level difficulty ladder.</p>
         <div class="flex gap-2">
-            <label class="flex-1 flex items-center justify-center gap-1.5 text-xs rounded-lg px-3 py-2 cursor-pointer border border-gray-800/50 has-[:checked]:border-accent has-[:checked]:bg-accent/10 has-[:checked]:text-white text-gray-400">
+            <label class="flex-1 flex items-center justify-center gap-1.5 text-xs rounded-lg px-3 py-2 cursor-pointer border border-gray-800/50 has-[:checked]:border-accent has-[:checked]:bg-accent/10 has-[:checked]:text-white text-gray-400 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent has-[:focus-visible]:ring-offset-1 has-[:focus-visible]:ring-offset-dark-900">
                 <input type="radio" name="dd-difficulty-mode" id="dd-mode-standard" class="sr-only" value="standard" onchange="window._ddSetMode('standard')">
                 Standard
             </label>
-            <label class="flex-1 flex items-center justify-center gap-1.5 text-xs rounded-lg px-3 py-2 cursor-pointer border border-gray-800/50 has-[:checked]:border-accent has-[:checked]:bg-accent/10 has-[:checked]:text-white text-gray-400">
+            <label class="flex-1 flex items-center justify-center gap-1.5 text-xs rounded-lg px-3 py-2 cursor-pointer border border-gray-800/50 has-[:checked]:border-accent has-[:checked]:bg-accent/10 has-[:checked]:text-white text-gray-400 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent has-[:focus-visible]:ring-offset-1 has-[:focus-visible]:ring-offset-dark-900">
                 <input type="radio" name="dd-difficulty-mode" id="dd-mode-adaptive" class="sr-only" value="adaptive" onchange="window._ddSetMode('adaptive')">
                 Adaptive
             </label>

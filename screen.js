@@ -689,7 +689,12 @@
     async function onGenerateClick() {
         if (_generating) return; // guard: one in-flight generate at a time
         var target = currentTarget();
-        if (!target) return;
+        if (!target) {
+            console.warn('[difficulty_ladder] generate click ignored: no song loaded yet (highway.getSongInfo() returned nothing)');
+            _generateBtn.textContent = 'No song loaded';
+            setTimeout(_resetGenerateBtnLabel, 2000);
+            return;
+        }
         _generating = true;
         _generateBtn.disabled = true;
         _generateBtn.textContent = 'Generating…';
