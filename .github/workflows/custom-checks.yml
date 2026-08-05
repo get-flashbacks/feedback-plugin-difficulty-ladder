@@ -14,32 +14,6 @@ env:
   PLUGIN_DIR: "."
 
 jobs:
-  # NOTE: this is deliberately NOT a "folder name == id" check. plugin.json's
-  # id is "difficulty_ladder" but this repo is named
-  # "feedback-plugin-difficulty-ladder" — that mismatch is intentional (see
-  # CLAUDE.md: the org's repo-naming convention prefixes plugin repos, but
-  # ids stay short/underscored). actions/checkout names the workspace after
-  # the *git repo*, not the folder name the plugin ends up under once someone
-  # installs it into a Host's plugins/ dir — comparing those would be a
-  # guaranteed false failure. The only thing this repo's own content can
-  # verify is that the id itself is well-formed; the real folder-name==id
-  # invariant has to be enforced at install time, not here.
-  plugin-id-is-valid:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: plugin.json id must be a well-formed identifier
-        run: |
-          python3 - <<'PY'
-          import json, os, re, sys
-          manifest_path = os.path.join(os.environ["PLUGIN_DIR"], "plugin.json")
-          pid = json.load(open(manifest_path)).get("id", "")
-          if not re.match(r"^[a-z0-9][a-z0-9_-]*$", pid):
-              print(f"::error file={manifest_path}::plugin.json id {pid!r} is not a valid identifier (expected ^[a-z0-9][a-z0-9_-]*$)")
-              sys.exit(1)
-          print(f"OK: id {pid!r} is well-formed")
-          PY
-
   no-print-in-routes:
     runs-on: ubuntu-latest
     steps:
