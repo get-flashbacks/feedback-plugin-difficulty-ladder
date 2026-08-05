@@ -401,7 +401,7 @@ test('currentTarget() clamps generateLevels to [2,8] and includes it in the /gen
     const mod = freshPlugin();
     global.window.highway = { getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 1 }) };
     mod.settings.generateLevels = 6;
-    assert.deepEqual(mod.currentTarget(), { filename: 'song.feedpak', arrangement_index: 1, levels: 6 });
+    assert.deepEqual(mod.currentTarget(), { status: 'ready', filename: 'song.feedpak', arrangement_index: 1, levels: 6 });
     mod.settings.generateLevels = 99; // out of range -> clamps to 8
     assert.equal(mod.currentTarget().levels, 8);
     mod.settings.generateLevels = 1; // out of range -> clamps to 2
@@ -415,10 +415,16 @@ test('currentTarget() clamps a parsed 0 to 2 instead of falling back to the defa
     assert.equal(mod.currentTarget().levels, 2);
 });
 
-test('currentTarget() returns null when there is no song loaded yet', () => {
+test('currentTarget() reports no-song when the host API is present but no song is loaded yet', () => {
     const mod = freshPlugin();
     global.window.highway = { getSongInfo: () => null };
-    assert.equal(mod.currentTarget(), null);
+    assert.deepEqual(mod.currentTarget(), { status: 'no-song' });
+});
+
+test('currentTarget() reports unavailable when highway/getSongInfo is missing', () => {
+    const mod = freshPlugin();
+    global.window.highway = {};
+    assert.deepEqual(mod.currentTarget(), { status: 'unavailable' });
 });
 
 // ── Cross-plugin contract shape parity (issue #8) ───────────────────────────
