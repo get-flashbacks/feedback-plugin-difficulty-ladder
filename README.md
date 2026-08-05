@@ -86,7 +86,7 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 
 | Setting | Effect |
 |---|---|
-| Auto-adjust difficulty | Master on/off switch for automatic `setMastery()` calls. |
+| Difficulty mode | **Standard** (default) keeps difficulty fixed — no automatic movement. **Adaptive** enables today's live auto-adjust (`setMastery()` calls driven by accuracy). |
 | Resist isolated difficulty drops | Require two consecutive below-threshold sections before a downward adjustment; upward adjustments remain immediate. Off by default. |
 | Glass-filling section HUD | Show/hide the in-player glass row. |
 | Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. |
@@ -109,7 +109,7 @@ All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 | Field | Value |
 |-------|-------|
 | id | `difficulty_ladder` |
-| version | 0.5.0 |
+| version | 0.7.0 |
 | category | practice |
 
 ## Possible Upgrades
@@ -126,10 +126,6 @@ user turns it on.
 
 **Also considered:**
 
-- Standard ⇄ Adaptive difficulty mode toggle — an explicit two-mode
-  selector (fixed %, no automatic movement vs. today's live auto-adjust)
-  that, once in Adaptive, unlocks the finer toggles above as independently
-  switchable.
 - Per-section custom difficulty override — let a section being looped in
   Section Practice carry its own difficulty %, independent of the
   song-wide master-difficulty slider. A genuinely new capability, not

@@ -1,13 +1,17 @@
 <div class="space-y-6 py-2">
-    <div class="flex items-center justify-between bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
-        <div>
-            <h3 class="text-sm font-medium text-gray-200">Auto-adjust difficulty</h3>
-            <p class="text-[11px] text-gray-500">Raise or lower the master-difficulty slider automatically between sections, based on your recent hit accuracy. Requires a note-detection scorer (e.g. the note_detect plugin) to be active, and only affects songs with a phrase-level difficulty ladder.</p>
+    <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
+        <h3 class="text-sm font-medium text-gray-200 mb-1">Difficulty mode</h3>
+        <p class="text-[11px] text-gray-500 mb-3">Standard keeps difficulty fixed at whatever you set it to. Adaptive raises or lowers the master-difficulty slider automatically between sections, based on your recent hit accuracy — requires a note-detection scorer (e.g. the note_detect plugin) to be active, and only affects songs with a phrase-level difficulty ladder.</p>
+        <div class="flex gap-2">
+            <label class="flex-1 flex items-center justify-center gap-1.5 text-xs rounded-lg px-3 py-2 cursor-pointer border border-gray-800/50 has-[:checked]:border-accent has-[:checked]:bg-accent/10 has-[:checked]:text-white text-gray-400">
+                <input type="radio" name="dd-difficulty-mode" id="dd-mode-standard" class="sr-only" value="standard" onchange="window._ddSetMode('standard')">
+                Standard
+            </label>
+            <label class="flex-1 flex items-center justify-center gap-1.5 text-xs rounded-lg px-3 py-2 cursor-pointer border border-gray-800/50 has-[:checked]:border-accent has-[:checked]:bg-accent/10 has-[:checked]:text-white text-gray-400">
+                <input type="radio" name="dd-difficulty-mode" id="dd-mode-adaptive" class="sr-only" value="adaptive" onchange="window._ddSetMode('adaptive')">
+                Adaptive
+            </label>
         </div>
-        <label class="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" id="dd-auto-adjust" class="sr-only peer" onchange="window._ddSet('autoAdjust', this.checked)">
-            <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
-        </label>
     </div>
 
     <div class="flex items-center justify-between bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
@@ -102,6 +106,10 @@
             try { localStorage.setItem(LS_PREFIX + key, JSON.stringify(val)); } catch (_) { /* noop */ }
         }
 
+        window._ddSetMode = function (mode) {
+            window._ddSet('autoAdjust', mode === 'adaptive');
+        };
+
         window._ddSet = function (key, val) {
             lsSet(key, val);
             // The storage event doesn't fire in the same tab that wrote it, so
@@ -124,8 +132,13 @@
         };
 
         function load() {
-            var autoEl = document.getElementById('dd-auto-adjust');
-            if (autoEl) autoEl.checked = lsGet('autoAdjust', false) === true;
+            // Standard is the default for a fresh install (no automatic movement);
+            // existing users who already had autoAdjust on keep landing in Adaptive.
+            var isAdaptive = lsGet('autoAdjust', false) === true;
+            var standardEl = document.getElementById('dd-mode-standard');
+            var adaptiveEl = document.getElementById('dd-mode-adaptive');
+            if (standardEl) standardEl.checked = !isAdaptive;
+            if (adaptiveEl) adaptiveEl.checked = isAdaptive;
 
             var resistanceEl = document.getElementById('dd-drop-resistance');
             if (resistanceEl) resistanceEl.checked = lsGet('dropResistance', false) === true;
