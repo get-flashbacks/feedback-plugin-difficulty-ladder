@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Explicit **Standard ⇄ Adaptive** difficulty mode selector in Settings (#21), replacing the
+  bare "Auto-adjust difficulty" toggle. Standard (fixed %, no automatic movement) is the default
+  for new installs; existing users who already had auto-adjust enabled land in Adaptive so
+  their behavior doesn't change. Backed by the same `autoAdjust` storage key as before — no
+  migration needed.
 - `generateLevels` setting (2-8, default 4): caps how many difficulty tiers "⚙️ Generate
   Difficulties" can give a phrase. Threaded straight into `/generate`'s existing `levels`
   parameter (`routes.py` already accepted and clamped it) — the frontend previously never sent
@@ -16,6 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also misfire on a legitimately parsed `0`), applied consistently at both the settings-page
   render and the `/generate` request site; the range input also carries an accessible
   programmatic label via `aria-labelledby`.
+
+### Fixed
+- "⚙️ Generate Difficulties" was completely non-functional: `onGenerateClick()` called
+  `setGenerateLabel(...)`, a function that doesn't exist anywhere in this file, before the
+  `try` block — the resulting `ReferenceError` propagated out uncaught, so `_generating` and
+  the button's `disabled` state were never reset, permanently locking the button after the
+  first click and skipping the `fetch()` call entirely. Separately, the post-success reload
+  read a bare `hw` that was never declared in this function's scope (every other function
+  reads `window.highway` into a local `hw` first) — that `ReferenceError` was caught by the
+  `try`/`catch` and silently reported as "Generate failed" even when generation had actually
+  succeeded server-side. Both replaced with direct `_generateBtn.textContent` assignment and a
+  properly scoped `var hw = window.highway;`, matching the pattern used everywhere else in the
+  file.
 
 ### Changed
 - Generated fretted lower tiers now favor beat landmarks, preserve arpeggio roots, and add
