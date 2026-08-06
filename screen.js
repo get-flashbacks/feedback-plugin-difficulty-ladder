@@ -702,8 +702,6 @@
         if (_generateBtn) _generateBtn.textContent = '⚙️ Generate Difficulties';
     }
 
-    var _generateLabelTimer = null;
-
     function _clearGenerateLabelTimer() {
         if (_generateLabelTimer) clearTimeout(_generateLabelTimer);
         _generateLabelTimer = null;
@@ -715,6 +713,18 @@
             _generateLabelTimer = null;
             callback();
         }, delay);
+    }
+
+    function setGenerateLabel(text, resetDelay, resetFn) {
+        if (!_generateBtn) return;
+        _generateBtn.textContent = text;
+        if (_generateLabelTimer) { clearTimeout(_generateLabelTimer); _generateLabelTimer = null; }
+        if (resetDelay != null) {
+            _generateLabelTimer = setTimeout(function () {
+                _generateLabelTimer = null;
+                (resetFn || _resetGenerateBtnLabel)();
+            }, resetDelay);
+        }
     }
 
     async function onGenerateClick() {
@@ -931,6 +941,7 @@
             commitPhraseResult: commitPhraseResult, resetPerSongState: resetPerSongState,
             rampStep: rampStep, WARMUP_PHRASES: WARMUP_PHRASES, RAMP_PHRASES: RAMP_PHRASES,
             currentTarget: currentTarget, currentTargetStatus: currentTargetStatus,
+            mountControls: mountControls, onGenerateClick: onGenerateClick,
         };
         return;
     }

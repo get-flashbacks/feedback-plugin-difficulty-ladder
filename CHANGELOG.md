@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   render and the `/generate` request site; the range input also carries an accessible
   programmatic label via `aria-labelledby`.
 
+### Fixed
+- "⚙️ Generate Difficulties" was completely non-functional: `onGenerateClick()` called
+  `setGenerateLabel(...)`, a function that doesn't exist anywhere in this file, before the
+  `try` block — the resulting `ReferenceError` propagated out uncaught, so `_generating` and
+  the button's `disabled` state were never reset, permanently locking the button after the
+  first click and skipping the `fetch()` call entirely. Separately, the post-success reload
+  read a bare `hw` that was never declared in this function's scope (every other function
+  reads `window.highway` into a local `hw` first) — that `ReferenceError` was caught by the
+  `try`/`catch` and silently reported as "Generate failed" even when generation had actually
+  succeeded server-side. Both replaced with direct `_generateBtn.textContent` assignment and a
+  properly scoped `var hw = window.highway;`, matching the pattern used everywhere else in the
+  file.
+
 ### Changed
 - Generated fretted lower tiers now favor beat landmarks, preserve arpeggio roots, and add
   intermediate authored groups when they avoid abrupt hand-position jumps. Long rests are not
