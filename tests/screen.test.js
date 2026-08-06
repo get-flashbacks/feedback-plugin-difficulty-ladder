@@ -77,6 +77,27 @@ test('songKeyOf returns null for no song info (no song loaded yet)', () => {
     assert.equal(mod.songKeyOf(undefined), null);
 });
 
+test('currentTargetStatus distinguishes missing highway API from no loaded song', () => {
+    const mod = freshPlugin();
+    assert.deepEqual(mod.currentTargetStatus(), { ok: false, reason: 'unavailable' });
+
+    global.window.highway = { getSongInfo: () => null };
+    assert.deepEqual(mod.currentTargetStatus(), { ok: false, reason: 'unloaded' });
+});
+
+test('currentTargetStatus returns the generate target when a song is loaded', () => {
+    const mod = freshPlugin();
+    mod.settings.generateLevels = 99;
+    global.window.highway = {
+        getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 2 }),
+    };
+
+    assert.deepEqual(mod.currentTargetStatus(), {
+        ok: true,
+        target: { filename: 'song.feedpak', arrangement_index: 2, levels: 8 },
+    });
+});
+
 test('judgmentKey is stable and distinct per (time, string, fret)', () => {
     const mod = freshPlugin();
     assert.equal(mod.judgmentKey(1.5, 2, 3), '1.5_2_3');

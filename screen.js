@@ -660,11 +660,15 @@
     var _generating = false;   // double-submit guard — Slopsmith's editor plugin
                                 // shipped without one on its Build button and a
                                 // stray second click raced two concurrent jobs
+    var _generateLabelTimer = null;
 
-    function currentTarget() {
+    function currentTargetStatus() {
         var hw = window.highway;
-        var si = hw && typeof hw.getSongInfo === 'function' ? hw.getSongInfo() : null;
-        if (!si || !si.filename) return null;
+        if (!hw || typeof hw.getSongInfo !== 'function') {
+            return { ok: false, reason: 'unavailable' };
+        }
+        var si = hw.getSongInfo();
+        if (!si || !si.filename) return { ok: false, reason: 'unloaded' };
         // Defensive clamp at point of use (settings.generateLevels came from
         // localStorage and could be stale/out-of-range) — same convention as
         // thresholds()/emaAlpha() clamping settings.sensitivity/reactionSpeed
@@ -672,7 +676,19 @@
         // only on NaN — `|| 4` would also catch a legitimately parsed 0.
         var parsedLevels = parseInt(settings.generateLevels, 10);
         var levels = Math.max(2, Math.min(8, isNaN(parsedLevels) ? 4 : parsedLevels));
-        return { filename: si.filename, arrangement_index: si.arrangement_index || 0, levels: levels };
+        return {
+            ok: true,
+            target: {
+                filename: si.filename,
+                arrangement_index: si.arrangement_index || 0,
+                levels: levels,
+            },
+        };
+    }
+
+    function currentTarget() {
+        var status = currentTargetStatus();
+        return status.ok ? status.target : null;
     }
 
     function updateGenerateButtonVisibility() {
@@ -686,44 +702,37 @@
         if (_generateBtn) _generateBtn.textContent = '⚙️ Generate Difficulties';
     }
 
-    // Every transient label ("Generating…", "Generate failed", …) is set
-    // through here so there is at most one pending reset in flight — without
-    // this, a stale timer from an earlier click (e.g. a slow failed request)
-    // could fire mid-way through a later, still-in-progress or just-succeeded
-    // click and stomp its label back to the default.
     var _generateLabelTimer = null;
-    function setGenerateLabel(text, resetDelay, resetFn) {
-        if (!_generateBtn) return;
-        _generateBtn.textContent = text;
-        if (_generateLabelTimer) { clearTimeout(_generateLabelTimer); _generateLabelTimer = null; }
-        if (resetDelay != null) {
-            _generateLabelTimer = setTimeout(function () {
-                _generateLabelTimer = null;
-                (resetFn || _resetGenerateBtnLabel)();
-            }, resetDelay);
-        }
+
+    function _clearGenerateLabelTimer() {
+        if (_generateLabelTimer) clearTimeout(_generateLabelTimer);
+        _generateLabelTimer = null;
+    }
+
+    function _scheduleGenerateLabelReset(callback, delay) {
+        _clearGenerateLabelTimer();
+        _generateLabelTimer = setTimeout(function () {
+            _generateLabelTimer = null;
+            callback();
+        }, delay);
     }
 
     async function onGenerateClick() {
         if (_generating) return; // guard: one in-flight generate at a time
-        var hw = window.highway;
-        // Distinguish "highway API isn't available yet" (script mounted the
-        // button before the host finished wiring window.highway, or the host
-        // doesn't expose this contract at all) from "highway is fine, just no
-        // song loaded right now" (currentTarget() returning null) — these need
-        // different messages since only the latter is something the user can
-        // fix by loading a song.
-        if (!hw || typeof hw.getSongInfo !== 'function') {
-            console.warn('[difficulty_ladder] generate click ignored: highway API unavailable (window.highway.getSongInfo missing)');
-            setGenerateLabel('Difficulty Ladder unavailable', 2000);
+        var status = currentTargetStatus();
+        if (!status.ok) {
+            var unavailable = status.reason === 'unavailable';
+            console.warn(
+                unavailable
+                    ? '[difficulty_ladder] generate click ignored: highway.getSongInfo() is unavailable'
+                    : '[difficulty_ladder] generate click ignored: no song loaded yet (highway.getSongInfo() returned nothing)'
+            );
+            _generateBtn.textContent = unavailable ? 'Player unavailable' : 'No song loaded';
+            _scheduleGenerateLabelReset(_resetGenerateBtnLabel, 2000);
             return;
         }
-        var target = currentTarget();
-        if (!target) {
-            console.warn('[difficulty_ladder] generate click ignored: no song loaded yet (highway.getSongInfo() returned nothing)');
-            setGenerateLabel('No song loaded', 2000);
-            return;
-        }
+        var target = status.target;
+        _clearGenerateLabelTimer();
         _generating = true;
         _generateBtn.disabled = true;
         setGenerateLabel('Generating…', null);
@@ -737,7 +746,8 @@
             try { data = await resp.json(); } catch (_) { /* noop */ }
             if (!resp.ok || !data || data.error) {
                 console.warn('[difficulty_ladder] generate failed:', (data && data.error) || resp.status);
-                setGenerateLabel('Generate failed', 2500);
+                _generateBtn.textContent = 'Generate failed';
+                _scheduleGenerateLabelReset(_resetGenerateBtnLabel, 2500);
                 return;
             }
             if (data.instrument) {
@@ -748,11 +758,9 @@
                 }), data.instrument);
             }
             if (data.skipped) {
-                setGenerateLabel(
-                    data.skipped === 'already-has-phrases' ? 'Already has difficulties' : 'Not enough content',
-                    2500,
-                    updateGenerateButtonVisibility
-                );
+                _generateBtn.textContent = data.skipped === 'already-has-phrases'
+                    ? 'Already has difficulties' : 'Not enough content';
+                _scheduleGenerateLabelReset(updateGenerateButtonVisibility, 2500);
                 return;
             }
             // Reload the current song so the highway WS re-streams the new
@@ -763,7 +771,8 @@
             }
         } catch (e) {
             console.warn('[difficulty_ladder] generate request failed:', e);
-            setGenerateLabel('Generate failed', 2500);
+            _generateBtn.textContent = 'Generate failed';
+            _scheduleGenerateLabelReset(_resetGenerateBtnLabel, 2500);
         } finally {
             _generating = false;
             _generateBtn.disabled = false;
@@ -859,6 +868,7 @@
             } else {
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
                 if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
+                _clearGenerateLabelTimer();
                 if (_hudCanvas) _hudCanvas.style.display = 'none';
                 if (_generateLabelTimer) { clearTimeout(_generateLabelTimer); _generateLabelTimer = null; }
             }
@@ -919,7 +929,7 @@
             calculateAndEmitSectionDifficulties: calculateAndEmitSectionDifficulties,
             commitPhraseResult: commitPhraseResult, resetPerSongState: resetPerSongState,
             rampStep: rampStep, WARMUP_PHRASES: WARMUP_PHRASES, RAMP_PHRASES: RAMP_PHRASES,
-            currentTarget: currentTarget,
+            currentTarget: currentTarget, currentTargetStatus: currentTargetStatus,
         };
         return;
     }
