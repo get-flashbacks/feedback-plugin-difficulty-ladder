@@ -702,8 +702,6 @@
         if (_generateBtn) _generateBtn.textContent = '⚙️ Generate Difficulties';
     }
 
-    var _generateLabelTimer = null;
-
     function _clearGenerateLabelTimer() {
         if (_generateLabelTimer) clearTimeout(_generateLabelTimer);
         _generateLabelTimer = null;
@@ -735,7 +733,7 @@
         _clearGenerateLabelTimer();
         _generating = true;
         _generateBtn.disabled = true;
-        setGenerateLabel('Generating…', null);
+        _generateBtn.textContent = 'Generating…';
         try {
             var resp = await fetch('/api/plugins/' + PLUGIN_ID + '/generate', {
                 method: 'POST',
@@ -766,7 +764,8 @@
             // Reload the current song so the highway WS re-streams the new
             // phrase data (it was written server-side after this song's
             // websocket already sent its snapshot).
-            if (typeof hw.reconnect === 'function') {
+            var hw = window.highway;
+            if (hw && typeof hw.reconnect === 'function') {
                 hw.reconnect(target.filename, target.arrangement_index);
             }
         } catch (e) {
@@ -930,6 +929,7 @@
             commitPhraseResult: commitPhraseResult, resetPerSongState: resetPerSongState,
             rampStep: rampStep, WARMUP_PHRASES: WARMUP_PHRASES, RAMP_PHRASES: RAMP_PHRASES,
             currentTarget: currentTarget, currentTargetStatus: currentTargetStatus,
+            mountControls: mountControls, onGenerateClick: onGenerateClick,
         };
         return;
     }

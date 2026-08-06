@@ -462,3 +462,98 @@ test('the phrase shape this plugin assumes matches the one sectionmap assumes (c
         assert.ok(key in samplePhrase, `sectionmap reads phrase.${key}`);
     }
 });
+
+// ── Generate-difficulties CTA request path (PR #37 follow-up) ──────────────
+// onGenerateClick() had two bugs that only threw at runtime, never in a type
+// check: `setGenerateLabel(...)` called a function that doesn't exist
+// anywhere in this file (ReferenceError, thrown *before* the try block, so
+// it isn't caught and the `finally` that clears `_generating` /
+// `_generateBtn.disabled` never runs — the button locks up permanently
+// after one click), and the post-success reconnect read a bare `hw` that
+// was never declared in this function's scope (every other function does
+// `var hw = window.highway;` locally) — a second ReferenceError, this one
+// inside the try block, so it was swallowed and silently reported as
+// "Generate failed" even though the backend generation had already
+// succeeded. Both only manifest by actually invoking onGenerateClick(),
+// which no prior test in this file did.
+
+function fakeElement() {
+    var el = {
+        style: {}, title: '', id: '', disabled: false,
+        classList: { toggle: function () {}, add: function () {}, remove: function () {} },
+        appendChild: function () {},
+        contains: function () { return false; },
+        onclick: null,
+    };
+    return el;
+}
+
+function mountGenerateBtn(mod) {
+    var created = [];
+    global.document.createElement = function () {
+        var el = fakeElement();
+        created.push(el);
+        return el;
+    };
+    var slot = fakeElement();
+    global.window.feedBack = { uiVersion: 'v3', ui: { playerControlSlot: function () { return slot; } } };
+    mod.mountControls();
+    return created.filter(function (el) { return el.id === 'dynamic-difficulty-generate'; })[0];
+}
+
+test('onGenerateClick reaches fetch() instead of throwing on the undefined setGenerateLabel() call', async () => {
+    const mod = freshPlugin();
+    const btn = mountGenerateBtn(mod);
+    global.window.highway = {
+        getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 0 }),
+        hasPhraseData: () => false,
+        reconnect: () => {},
+    };
+    let fetchCalled = false;
+    global.fetch = async () => {
+        fetchCalled = true;
+        return { ok: true, json: async () => ({}) };
+    };
+
+    await mod.onGenerateClick();
+
+    assert.equal(fetchCalled, true, 'a ReferenceError on setGenerateLabel() before the try block would prevent fetch() from ever running');
+    assert.notEqual(btn.textContent, 'Generate failed');
+});
+
+test('onGenerateClick calls window.highway.reconnect() after a successful (non-skipped) generation', async () => {
+    const mod = freshPlugin();
+    const btn = mountGenerateBtn(mod);
+    const reconnectCalls = [];
+    global.window.highway = {
+        getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 2 }),
+        hasPhraseData: () => false,
+        reconnect: (filename, idx) => reconnectCalls.push([filename, idx]),
+    };
+    global.fetch = async () => ({ ok: true, json: async () => ({}) });
+
+    await mod.onGenerateClick();
+
+    assert.deepEqual(reconnectCalls, [['song.feedpak', 2]], 'a bare undeclared `hw` reference here used to throw and get reported as "Generate failed"');
+    assert.notEqual(btn.textContent, 'Generate failed');
+});
+
+test('onGenerateClick releases the _generating guard after success, so a follow-up click is not permanently blocked', async () => {
+    const mod = freshPlugin();
+    mountGenerateBtn(mod);
+    global.window.highway = {
+        getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 0 }),
+        hasPhraseData: () => false,
+        reconnect: () => {},
+    };
+    let fetchCallCount = 0;
+    global.fetch = async () => {
+        fetchCallCount++;
+        return { ok: true, json: async () => ({}) };
+    };
+
+    await mod.onGenerateClick();
+    await mod.onGenerateClick();
+
+    assert.equal(fetchCallCount, 2, 'the pre-try ReferenceError used to skip the finally block, leaving _generating stuck true forever');
+});
