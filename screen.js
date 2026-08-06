@@ -766,7 +766,8 @@
             // Reload the current song so the highway WS re-streams the new
             // phrase data (it was written server-side after this song's
             // websocket already sent its snapshot).
-            if (typeof hw.reconnect === 'function') {
+            var hw = window.highway;
+            if (hw && typeof hw.reconnect === 'function') {
                 hw.reconnect(target.filename, target.arrangement_index);
             }
         } catch (e) {
