@@ -707,18 +707,16 @@
         _generateLabelTimer = null;
     }
 
-    function _scheduleGenerateLabelReset(callback, delay) {
-        _clearGenerateLabelTimer();
-        _generateLabelTimer = setTimeout(function () {
-            _generateLabelTimer = null;
-            callback();
-        }, delay);
-    }
-
+    // Single choke point for every "⚙️ Generate Difficulties" label change —
+    // all five states the button can show (idle, unavailable/no-song,
+    // generating, failed, skipped) go through this, so _generateLabelTimer
+    // only ever has one owner. `resetDelay` omitted/null means the label
+    // sticks (no scheduled revert); `resetFn` defaults to restoring the
+    // idle "⚙️ Generate Difficulties" text.
     function setGenerateLabel(text, resetDelay, resetFn) {
         if (!_generateBtn) return;
         _generateBtn.textContent = text;
-        if (_generateLabelTimer) { clearTimeout(_generateLabelTimer); _generateLabelTimer = null; }
+        _clearGenerateLabelTimer();
         if (resetDelay != null) {
             _generateLabelTimer = setTimeout(function () {
                 _generateLabelTimer = null;
@@ -737,12 +735,10 @@
                     ? '[difficulty_ladder] generate click ignored: highway.getSongInfo() is unavailable'
                     : '[difficulty_ladder] generate click ignored: no song loaded yet (highway.getSongInfo() returned nothing)'
             );
-            _generateBtn.textContent = unavailable ? 'Player unavailable' : 'No song loaded';
-            _scheduleGenerateLabelReset(_resetGenerateBtnLabel, 2000);
+            setGenerateLabel(unavailable ? 'Player unavailable' : 'No song loaded', 2000);
             return;
         }
         var target = status.target;
-        _clearGenerateLabelTimer();
         _generating = true;
         _generateBtn.disabled = true;
         setGenerateLabel('Generating…', null);
@@ -756,8 +752,7 @@
             try { data = await resp.json(); } catch (_) { /* noop */ }
             if (!resp.ok || !data || data.error) {
                 console.warn('[difficulty_ladder] generate failed:', (data && data.error) || resp.status);
-                _generateBtn.textContent = 'Generate failed';
-                _scheduleGenerateLabelReset(_resetGenerateBtnLabel, 2500);
+                setGenerateLabel('Generate failed', 2500);
                 return;
             }
             if (data.instrument) {
@@ -768,9 +763,10 @@
                 }), data.instrument);
             }
             if (data.skipped) {
-                _generateBtn.textContent = data.skipped === 'already-has-phrases'
-                    ? 'Already has difficulties' : 'Not enough content';
-                _scheduleGenerateLabelReset(updateGenerateButtonVisibility, 2500);
+                setGenerateLabel(
+                    data.skipped === 'already-has-phrases' ? 'Already has difficulties' : 'Not enough content',
+                    2500, updateGenerateButtonVisibility
+                );
                 return;
             }
             // Reload the current song so the highway WS re-streams the new
@@ -782,8 +778,7 @@
             }
         } catch (e) {
             console.warn('[difficulty_ladder] generate request failed:', e);
-            _generateBtn.textContent = 'Generate failed';
-            _scheduleGenerateLabelReset(_resetGenerateBtnLabel, 2500);
+            setGenerateLabel('Generate failed', 2500);
         } finally {
             _generating = false;
             _generateBtn.disabled = false;

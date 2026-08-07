@@ -25,19 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - "⚙️ Generate Difficulties" was completely non-functional: `onGenerateClick()` called
-  `setGenerateLabel(...)`, a function that doesn't exist anywhere in this file, before the
+  `setGenerateLabel(...)` before that function was defined anywhere in the file, before the
   `try` block — the resulting `ReferenceError` propagated out uncaught, so `_generating` and
   the button's `disabled` state were never reset, permanently locking the button after the
   first click and skipping the `fetch()` call entirely. Separately, the post-success reload
   read a bare `hw` that was never declared in this function's scope (every other function
   reads `window.highway` into a local `hw` first) — that `ReferenceError` was caught by the
   `try`/`catch` and silently reported as "Generate failed" even when generation had actually
-  succeeded server-side. Both replaced with direct `_generateBtn.textContent` assignment and a
-  properly scoped `var hw = window.highway;`, matching the pattern used everywhere else in the
-  file.
-- Added a `setGenerateLabel(text, resetDelay, resetFn)` helper for the "⚙️ Generate Difficulties"
-  button so setting its label and (optionally) scheduling the label's reset happen as one step
-  instead of two separately-ordered calls; the "Generating…" state now goes through it.
+  succeeded server-side. Fixed with a properly-defined `setGenerateLabel(text, resetDelay,
+  resetFn)` helper — now the single choke point for every label change the "⚙️ Generate
+  Difficulties" button can show (idle, unavailable/no-song, generating, failed, skipped) — and
+  a properly scoped `var hw = window.highway;`, matching the pattern used everywhere else in
+  the file.
 
 ### Changed
 - Generated fretted lower tiers now favor beat landmarks, preserve arpeggio roots, and add
