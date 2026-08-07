@@ -10,9 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Explicit **Standard ⇄ Adaptive** difficulty mode selector in Settings (#21), replacing the
   bare "Auto-adjust difficulty" toggle. Standard (fixed %, no automatic movement) is the default
-  for new installs; existing users who already had auto-adjust enabled land in Adaptive so
-  their behavior doesn't change. Backed by the same `autoAdjust` storage key as before — no
-  migration needed.
+  for new installs; existing users on the `difficulty_ladder` key who already had auto-adjust
+  enabled land in Adaptive so their behavior doesn't change. Backed by the same `autoAdjust`
+  storage key as before — no additional migration needed beyond the plugin rename (see "Changed"
+  section below for `dynamic_difficulty` → `difficulty_ladder` rename details).
 - `generateLevels` setting (2-8, default 4): caps how many difficulty tiers "⚙️ Generate
   Difficulties" can give a phrase. Threaded straight into `/generate`'s existing `levels`
   parameter (`routes.py` already accepted and clamped it) — the frontend previously never sent
@@ -24,16 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - "⚙️ Generate Difficulties" was completely non-functional: `onGenerateClick()` called
-  `setGenerateLabel(...)`, a function that doesn't exist anywhere in this file, before the
+  `setGenerateLabel(...)` before that function was defined anywhere in the file, before the
   `try` block — the resulting `ReferenceError` propagated out uncaught, so `_generating` and
   the button's `disabled` state were never reset, permanently locking the button after the
   first click and skipping the `fetch()` call entirely. Separately, the post-success reload
   read a bare `hw` that was never declared in this function's scope (every other function
   reads `window.highway` into a local `hw` first) — that `ReferenceError` was caught by the
   `try`/`catch` and silently reported as "Generate failed" even when generation had actually
-  succeeded server-side. Both replaced with direct `_generateBtn.textContent` assignment and a
-  properly scoped `var hw = window.highway;`, matching the pattern used everywhere else in the
-  file.
+  succeeded server-side. Fixed with a properly-defined `setGenerateLabel(text, resetDelay,
+  resetFn)` helper and a properly scoped `var hw = window.highway;`, matching the pattern used
+  everywhere else in the file.
+- All five label states the "⚙️ Generate Difficulties" button can show (idle, unavailable/no-song,
+  generating, failed, skipped) now go through the `setGenerateLabel` helper above instead of four
+  of them separately assigning `_generateBtn.textContent` and calling a duplicate
+  `_scheduleGenerateLabelReset`, so `_generateLabelTimer` has exactly one owner.
 
 ### Changed
 - Generated fretted lower tiers now favor beat landmarks, preserve arpeggio roots, and add

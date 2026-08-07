@@ -464,18 +464,21 @@ test('the phrase shape this plugin assumes matches the one sectionmap assumes (c
 });
 
 // ── Generate-difficulties CTA request path (PR #37 follow-up) ──────────────
-// onGenerateClick() had two bugs that only threw at runtime, never in a type
-// check: `setGenerateLabel(...)` called a function that doesn't exist
-// anywhere in this file (ReferenceError, thrown *before* the try block, so
-// it isn't caught and the `finally` that clears `_generating` /
-// `_generateBtn.disabled` never runs — the button locks up permanently
-// after one click), and the post-success reconnect read a bare `hw` that
-// was never declared in this function's scope (every other function does
-// `var hw = window.highway;` locally) — a second ReferenceError, this one
-// inside the try block, so it was swallowed and silently reported as
-// "Generate failed" even though the backend generation had already
-// succeeded. Both only manifest by actually invoking onGenerateClick(),
-// which no prior test in this file did.
+// onGenerateClick() originally had two bugs that only threw at runtime,
+// never in a type check: it called `setGenerateLabel(...)` before that
+// function was defined anywhere in the file (ReferenceError, thrown
+// *before* the try block, so it wasn't caught and the `finally` that
+// clears `_generating` / `_generateBtn.disabled` never ran — the button
+// locked up permanently after one click), and the post-success reconnect
+// read a bare `hw` that was never declared in this function's scope
+// (every other function does `var hw = window.highway;` locally) — a
+// second ReferenceError, this one inside the try block, so it was
+// swallowed and silently reported as "Generate failed" even though the
+// backend generation had already succeeded. Both only manifested by
+// actually invoking onGenerateClick(), which no prior test in this file
+// did. `setGenerateLabel` is now a real, properly-defined helper (#41) —
+// these tests still guard the underlying invariants (fetch is reached,
+// reconnect fires, the button doesn't get stuck).
 
 function fakeElement() {
     var el = {
@@ -501,7 +504,7 @@ function mountGenerateBtn(mod) {
     return created.filter(function (el) { return el.id === 'dynamic-difficulty-generate'; })[0];
 }
 
-test('onGenerateClick reaches fetch() instead of throwing on the undefined setGenerateLabel() call', async () => {
+test('onGenerateClick reaches fetch() without throwing on the way in (setGenerateLabel/hw setup)', async () => {
     const mod = freshPlugin();
     const btn = mountGenerateBtn(mod);
     global.window.highway = {
@@ -517,7 +520,7 @@ test('onGenerateClick reaches fetch() instead of throwing on the undefined setGe
 
     await mod.onGenerateClick();
 
-    assert.equal(fetchCalled, true, 'a ReferenceError on setGenerateLabel() before the try block would prevent fetch() from ever running');
+    assert.equal(fetchCalled, true, 'a ReferenceError before the try block (originally: an undefined setGenerateLabel()) would prevent fetch() from ever running');
     assert.notEqual(btn.textContent, 'Generate failed');
 });
 
