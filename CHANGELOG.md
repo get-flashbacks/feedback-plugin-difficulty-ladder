@@ -35,6 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   succeeded server-side. Both replaced with direct `_generateBtn.textContent` assignment and a
   properly scoped `var hw = window.highway;`, matching the pattern used everywhere else in the
   file.
+- Added a `setGenerateLabel(text, resetDelay, resetFn)` helper for the "⚙️ Generate Difficulties"
+  button so setting its label and (optionally) scheduling the label's reset happen as one step
+  instead of two separately-ordered calls; the "Generating…" state now goes through it.
 
 ### Changed
 - Generated fretted lower tiers now favor beat landmarks, preserve arpeggio roots, and add
