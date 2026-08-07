@@ -10,9 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Explicit **Standard ⇄ Adaptive** difficulty mode selector in Settings (#21), replacing the
   bare "Auto-adjust difficulty" toggle. Standard (fixed %, no automatic movement) is the default
-  for new installs; existing users who already had auto-adjust enabled land in Adaptive so
-  their behavior doesn't change. Backed by the same `autoAdjust` storage key as before — no
-  migration needed.
+  for new installs; existing users on the `difficulty_ladder` key who already had auto-adjust
+  enabled land in Adaptive so their behavior doesn't change. Backed by the same `autoAdjust`
+  storage key as before — no additional migration needed beyond the plugin rename (see "Changed"
+  section below for `dynamic_difficulty` → `difficulty_ladder` rename details).
 - `generateLevels` setting (2-8, default 4): caps how many difficulty tiers "⚙️ Generate
   Difficulties" can give a phrase. Threaded straight into `/generate`'s existing `levels`
   parameter (`routes.py` already accepted and clamped it) — the frontend previously never sent
