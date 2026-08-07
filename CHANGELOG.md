@@ -33,10 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads `window.highway` into a local `hw` first) — that `ReferenceError` was caught by the
   `try`/`catch` and silently reported as "Generate failed" even when generation had actually
   succeeded server-side. Fixed with a properly-defined `setGenerateLabel(text, resetDelay,
-  resetFn)` helper — now the single choke point for every label change the "⚙️ Generate
-  Difficulties" button can show (idle, unavailable/no-song, generating, failed, skipped) — and
-  a properly scoped `var hw = window.highway;`, matching the pattern used everywhere else in
-  the file.
+  resetFn)` helper and a properly scoped `var hw = window.highway;`, matching the pattern used
+  everywhere else in the file.
+- All five label states the "⚙️ Generate Difficulties" button can show (idle, unavailable/no-song,
+  generating, failed, skipped) now go through the `setGenerateLabel` helper above instead of four
+  of them separately assigning `_generateBtn.textContent` and calling a duplicate
+  `_scheduleGenerateLabelReset`, so `_generateLabelTimer` has exactly one owner.
 
 ### Changed
 - Generated fretted lower tiers now favor beat landmarks, preserve arpeggio roots, and add
