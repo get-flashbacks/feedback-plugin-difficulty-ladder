@@ -195,6 +195,64 @@ def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
     assert abs(nearby[1]["score"] - after_rest[1]["score"] - 0.18) < 1e-9
 
 
+def test_group_anchor_note_prefers_a_fretted_note_over_an_incidental_open_string():
+    # An open string needs no hand position at all, so it must not be picked
+    # as the hand-position anchor when the group also has fretted notes —
+    # even though it's the highest string index (the usual root convention).
+    group = {"notes": [
+        {"s": 0, "f": 12}, {"s": 1, "f": 12}, {"s": 2, "f": 13},
+        {"s": 3, "f": 13}, {"s": 4, "f": 12}, {"s": 5, "f": 0},
+    ]}
+    anchor = routes._group_anchor_note(group)
+    assert anchor["f"] > 0
+
+    # All-open group: falls back to the highest-string-index note as before.
+    open_group = {"notes": [{"s": 5, "f": 0}, {"s": 4, "f": 0}]}
+    assert routes._group_anchor_note(open_group) == {"s": 5, "f": 0}
+
+
+def test_fret_jump_penalty_reflects_the_true_fretted_position_not_an_incidental_open_string():
+    # group1 is IDENTICAL in both scenarios (so its own fretting/technique/
+    # density terms don't change); only group0's note count-preserving fret
+    # value changes, isolating the jump-bonus term exactly like the
+    # long-rest test above. group1's anchor string (s=5) is played open, but
+    # its true hand position is fret 13 (on s=0).
+    def groups(prev_fret):
+        return [
+            {"time": 0.0, "notes": [{"s": 0, "f": prev_fret, "sus": 0}]},
+            {"time": 0.4, "notes": [{"s": 0, "f": 13, "sus": 0}, {"s": 5, "f": 0, "sus": 0}]},
+        ]
+
+    close_position = groups(12)   # true jump 13->12 = 1, below the penalty threshold
+    far_position = groups(2)      # true jump 13->2 = 11, should trigger the penalty
+    routes._score_groups(close_position, n_strings=6)
+    routes._score_groups(far_position, n_strings=6)
+
+    assert far_position[1]["score"] > close_position[1]["score"], (
+        "a real large hand-position jump must still be penalized even when "
+        "the anchor string happens to be open in the current group"
+    )
+    assert abs(far_position[1]["score"] - close_position[1]["score"] - 0.18) < 1e-9, (
+        "an incidental open string on the anchor string must not itself "
+        "read as a hand-position jump — the bonus must track the true "
+        "fretted position (s=0), not the coincidentally-open anchor string"
+    )
+
+
+def test_lower_tier_refinement_does_not_insert_a_needless_bridge_for_an_open_anchor():
+    groups = [
+        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 12}]},
+        # Would look like a plausible bridge under the old (buggy) jump
+        # computation, but nothing here actually needs bridging.
+        {"time": 0.2, "score": 0.5, "level": 2, "notes": [{"s": 0, "f": 6}]},
+        {"time": 0.5, "score": 0.1, "level": 0, "notes": [
+            {"s": 0, "f": 13}, {"s": 5, "f": 0},
+        ]},
+    ]
+    routes._refine_lower_tier_path(groups, [], max_level=2)
+    assert groups[1]["level"] == 2
+
+
 def test_unsupported_drums_skip_preserves_instrument_classification():
     class _Lock:
         def __enter__(self) -> "_Lock":

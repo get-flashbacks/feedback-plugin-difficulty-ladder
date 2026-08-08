@@ -149,9 +149,15 @@ def _group_anchor_note(group):
 
     Rocksmith string indices run high pitch to low pitch, so the highest
     string index is the same root convention used by chord reduction below.
+    Prefer a fretted note (f > 0): an open string needs no hand position at
+    all, so picking it as the anchor when the group also has fretted notes
+    hides where the hand actually is, producing bogus fret-jump distances
+    in the scoring/bridging above. Fall back to the full note set only when
+    every note in the group is open.
     """
     notes = group.get("notes", []) or []
-    return max(notes, key=lambda n: n.get("s", 0), default=None)
+    fretted = [n for n in notes if n.get("f", 0) > 0]
+    return max(fretted or notes, key=lambda n: n.get("s", 0), default=None)
 
 
 def _is_beat_aligned(time, beat_times, tolerance=0.06):

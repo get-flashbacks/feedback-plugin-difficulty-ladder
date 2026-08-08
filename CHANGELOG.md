@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   programmatic label via `aria-labelledby`.
 
 ### Fixed
+- Lower-tier generation's hand-position anchor (`_group_anchor_note`, used by the fret-jump
+  penalty and the beat-anchor/continuity bridging added below) could pick an open string
+  (fret 0) as the "current hand position" whenever that note happened to be the group's
+  highest-string-index note, even when the group also had fretted notes at a real position
+  elsewhere. An open string needs no hand position at all, so this produced bogus fret-jump
+  distances — inflating difficulty scores or inserting needless bridge notes for groups that
+  hadn't actually moved position, while a genuinely large jump could go undetected if it landed
+  on a different string than the open anchor. The anchor now prefers a fretted note (`f > 0`)
+  when the group has one, falling back to the open-string note only when every note in the
+  group is open.
 - "⚙️ Generate Difficulties" was completely non-functional: `onGenerateClick()` called
   `setGenerateLabel(...)` before that function was defined anywhere in the file, before the
   `try` block — the resulting `ReferenceError` propagated out uncaught, so `_generating` and
