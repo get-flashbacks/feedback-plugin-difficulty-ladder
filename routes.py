@@ -144,20 +144,27 @@ def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4):
     return groups
 
 
-def _group_anchor_note(group):
+def _group_anchor_note(group, *, prefer_fretted=True):
     """Return the fretted group's harmonic/hand-position anchor.
 
     Rocksmith string indices run high pitch to low pitch, so the highest
     string index is the same root convention used by chord reduction below.
-    Prefer a fretted note (f > 0): an open string needs no hand position at
-    all, so picking it as the anchor when the group also has fretted notes
-    hides where the hand actually is, producing bogus fret-jump distances
-    in the scoring/bridging above. Fall back to the full note set only when
-    every note in the group is open.
+
+    `prefer_fretted` (default True — used by the fret-jump scoring and
+    lower-tier bridging below) picks a fretted note (f > 0) over an open
+    one when the group has both: an open string needs no hand position at
+    all, so letting it win as the anchor hides where the hand actually is,
+    producing bogus fret-jump distances. `_notes_for_level`'s bottom-tier
+    arpeggio note selection passes `prefer_fretted=False` — there the goal
+    is the harmonic root regardless of fretted state, since an open root
+    is a valid (indeed easier) simplification for the bottom tier, not a
+    hand-position signal.
     """
     notes = group.get("notes", []) or []
-    fretted = [n for n in notes if n.get("f", 0) > 0]
-    return max(fretted or notes, key=lambda n: n.get("s", 0), default=None)
+    if prefer_fretted:
+        fretted = [n for n in notes if n.get("f", 0) > 0]
+        notes = fretted or notes
+    return max(notes, key=lambda n: n.get("s", 0), default=None)
 
 
 def _is_beat_aligned(time, beat_times, tolerance=0.06):
@@ -391,7 +398,10 @@ def _notes_for_level(groups, level, max_level):
         elif g["type"] == "arpeggio" and level < max_level:
             ns = g["notes"]
             if level == 0:
-                anchor = _group_anchor_note(g) or ns[0]
+                # Root string, not hand-position: an open root is a valid,
+                # easier bottom-tier simplification, so don't skew toward a
+                # fretted note here the way the jump-scoring anchor does.
+                anchor = _group_anchor_note(g, prefer_fretted=False) or ns[0]
                 out_notes.append(_prune_techniques(anchor, diff_percent))
             else:
                 keep_n = max(1, (len(ns) * (level + 1)) // max_level)

@@ -33,7 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hadn't actually moved position, while a genuinely large jump could go undetected if it landed
   on a different string than the open anchor. The anchor now prefers a fretted note (`f > 0`)
   when the group has one, falling back to the open-string note only when every note in the
-  group is open.
+  group is open. Scoped to the scoring/bridging call sites only (`prefer_fretted=True`,
+  the default) — `_notes_for_level`'s bottom-tier arpeggio note selection passes
+  `prefer_fretted=False` to keep preserving an open root string there, since that call site
+  wants the harmonic root regardless of fretted state, not a hand-position signal.
 - "⚙️ Generate Difficulties" was completely non-functional: `onGenerateClick()` called
   `setGenerateLabel(...)` before that function was defined anywhere in the file, before the
   `try` block — the resulting `ReferenceError` propagated out uncaught, so `_generating` and

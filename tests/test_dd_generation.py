@@ -179,6 +179,22 @@ def test_bottom_arpeggio_voice_preserves_the_root_string():
     assert [(n["s"], n["f"]) for n in notes] == [(5, 3)]
 
 
+def test_bottom_arpeggio_voice_preserves_an_open_root_string():
+    # The root string (s=5) is played open here. Bottom-tier arpeggio
+    # selection cares about the harmonic root, not hand position — an open
+    # root is a valid, easier simplification, so it must not be skipped in
+    # favor of the fretted note the way the jump-scoring anchor now is.
+    groups = [{
+        "type": "arpeggio", "level": 0, "time": 0.0, "chord": None,
+        "notes": [{"t": 0.0, "s": 5, "f": 0}, {"t": 0.04, "s": 2, "f": 5}],
+    }]
+
+    notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
+
+    assert chords == []
+    assert [(n["s"], n["f"]) for n in notes] == [(5, 0)]
+
+
 def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
     def groups(second_time):
         return [
@@ -251,6 +267,21 @@ def test_lower_tier_refinement_does_not_insert_a_needless_bridge_for_an_open_anc
     ]
     routes._refine_lower_tier_path(groups, [], max_level=2)
     assert groups[1]["level"] == 2
+
+
+def test_lower_tier_refinement_still_bridges_a_genuine_fretted_anchor_jump():
+    # Same shape as the open-anchor case above, but every note is fretted:
+    # the fretted-note preference in _group_anchor_note must not suppress
+    # bridging for a real, large hand-position jump.
+    groups = [
+        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 2}]},
+        {"time": 0.2, "score": 0.5, "level": 2, "notes": [{"s": 0, "f": 8}]},
+        {"time": 0.5, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 15}]},
+    ]
+    routes._refine_lower_tier_path(groups, [], max_level=2)
+    assert groups[1]["level"] == 0, (
+        "a genuine fret-2-to-fret-15 jump should still get bridged"
+    )
 
 
 def test_unsupported_drums_skip_preserves_instrument_classification():
