@@ -813,6 +813,16 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
                 response["instrument"] = instrument
             return response
         instrument = _instrument_kind(arr.get("type", ""), arr.get("name", ""))
+        # Usually drums are identified from the manifest entry before we read
+        # this file.  Keep this second check because older/malformed packs can
+        # label the manifest entry as Lead while the arrangement itself says
+        # Drums.  Drum data has different semantics and must never be passed
+        # through the fretted/keys phrase generator.
+        if instrument == "drums":
+            return {
+                "ok": True, "skipped": "unsupported-instrument-drums",
+                "arrangement_index": arrangement_index, "instrument": instrument,
+            }
         if not force and arr.get("phrases"):
             return {
                 "ok": True, "skipped": "already-has-phrases",
@@ -838,6 +848,42 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
     }
 
 
+def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
+    """Generate every eligible arrangement in one song.
+
+    Arrangement indices are manifest/storage indices, not the player UI's
+    sorted display positions.  Each arrangement is classified independently
+    by ``_generate_one`` so mixed guitar/bass/keys packs work correctly and
+    drums are explicitly reported as skipped.
+    """
+    manifest = sloppak.load_manifest(pack_path)
+    entries = manifest.get("arrangements", []) or []
+    results = []
+    generated = skipped = failed = 0
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            results.append({"arrangement_index": index, "skipped": "malformed-arrangement"})
+            skipped += 1
+            continue
+        try:
+            result = _generate_one(pack_path, index, n_levels=n_levels, force=force, log=log)
+        except HTTPException as exc:
+            # A bad arrangement must not prevent the remaining arrangements
+            # in the song from receiving their difficulty ladders.
+            result = {"arrangement_index": index, "error": exc.detail}
+        results.append(result)
+        if result.get("skipped") or result.get("error"):
+            skipped += 1
+            if result.get("error"):
+                failed += 1
+        else:
+            generated += 1
+    return {
+        "ok": True, "generated": generated, "skipped": skipped,
+        "failed": failed, "arrangements": results,
+    }
+
+
 def setup(app, context):
     log = context["log"]
     get_dlc_dir = context["get_dlc_dir"]
@@ -857,7 +903,6 @@ def setup(app, context):
         filename = str((body or {}).get("filename") or "").strip()
         if not filename:
             raise HTTPException(400, "filename required")
-        arrangement_index = int((body or {}).get("arrangement_index", 0) or 0)
         n_levels = max(2, min(int((body or {}).get("levels", 4) or 4), 8))
         force = bool((body or {}).get("force", False))
 
@@ -867,7 +912,7 @@ def setup(app, context):
         pack_path = _resolve_pack(Path(dlc_root), filename)
 
         try:
-            return _generate_one(pack_path, arrangement_index, n_levels=n_levels, force=force, log=log)
+            return _generate_song(pack_path, n_levels=n_levels, force=force, log=log)
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001 — surface as a clean 500, never crash the server

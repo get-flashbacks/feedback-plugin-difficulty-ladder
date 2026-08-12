@@ -11,9 +11,10 @@ difficulty indicators.
   Easy/Medium/Hard data at all — `highway.hasPhraseData()` is `false` and the
   mastery slider has nothing to filter. The "⚙️ Generate Difficulties" button
   (shown automatically whenever the current song lacks phrase data) analyzes
-  the arrangement's note/chord density, fret complexity, and technique load
-  per section, and writes a fresh multi-tier phrase ladder directly into the
-  sloppak on disk (`routes.py`'s `/generate` route) — after which the button
+  every non-drum arrangement in the song independently. It uses the matching
+  fretted or keys heuristic for that arrangement, writes fresh multi-tier
+  phrase ladders directly into the sloppak on disk (`routes.py`'s `/generate`
+  route), and skips drum arrangements cleanly — after which the button
   reconnects the highway so the new data streams in immediately.
 - A `/generate-library` route does the same as a best-effort sweep over every
   sloppak in the DLC folder, for filling in a whole library at once.

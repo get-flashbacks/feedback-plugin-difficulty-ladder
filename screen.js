@@ -15,6 +15,15 @@
     var PLUGIN_ID = 'difficulty_ladder';
     var LS_PREFIX = 'difficulty_ladder.';
 
+    // Section Map's released integration probe predates this plugin's rename
+    // from dynamic_difficulty.  It subscribes to our public
+    // `difficulty:sections-updated` event only after seeing this capability
+    // marker. Keep the compatibility surface deliberately minimal: section
+    // boundaries remain the host's canonical highway.getSections() data, and
+    // the event payload is indexed against that exact array.
+    window._ddCapabilities = window._ddCapabilities || {};
+    window._ddCapabilities.sectionDifficulty = true;
+
     function lsGet(key, def) {
         try {
             var v = localStorage.getItem(LS_PREFIX + key);
@@ -667,8 +676,20 @@
         if (!hw || typeof hw.getSongInfo !== 'function') {
             return { ok: false, reason: 'unavailable' };
         }
-        var si = hw.getSongInfo();
-        if (!si || !si.filename) return { ok: false, reason: 'unloaded' };
+        // highway.getSongInfo() is chart metadata only.  In particular, its
+        // song_info payload has no filename; the host publishes that separately
+        // as feedBack.currentSong.filename.  Requiring si.filename here made
+        // every real host song look unloaded, despite the player being active.
+        var si = hw.getSongInfo() || {};
+        var currentSong = (window.feedBack && window.feedBack.currentSong) || {};
+        var filename = currentSong.filename || si.filename;
+        if (!filename) return { ok: false, reason: 'unloaded' };
+        // Highway's snake_case index describes the currently streamed
+        // arrangement.  currentSong uses camelCase and is the fallback for
+        // hosts that expose only the plugin-context object.
+        var arrangementIndex = si.arrangement_index;
+        if (arrangementIndex == null) arrangementIndex = currentSong.arrangementIndex;
+        if (arrangementIndex == null) arrangementIndex = 0;
         // Defensive clamp at point of use (settings.generateLevels came from
         // localStorage and could be stale/out-of-range) — same convention as
         // thresholds()/emaAlpha() clamping settings.sensitivity/reactionSpeed
@@ -679,8 +700,8 @@
         return {
             ok: true,
             target: {
-                filename: si.filename,
-                arrangement_index: si.arrangement_index || 0,
+                filename: filename,
+                arrangement_index: arrangementIndex,
                 levels: levels,
             },
         };
@@ -755,20 +776,21 @@
                 setGenerateLabel('Generate failed', 2500);
                 return;
             }
-            if (data.instrument) {
-                _songInstrument = data.instrument;
-                _rememberSongInstrument(songKeyOf({
-                    filename: target.filename,
-                    arrangement_index: target.arrangement_index,
-                }), data.instrument);
-            }
-            if (data.skipped) {
+            // /generate processes the full song.  A pack can mix guitar,
+            // bass and keys arrangements; routes.py classifies each one and
+            // intentionally skips drums.  Do not treat a partial skip as a
+            // failure when other arrangements were generated successfully.
+            if (data.generated === 0) {
                 setGenerateLabel(
-                    data.skipped === 'already-has-phrases' ? 'Already has difficulties' : 'Not enough content',
+                    data.failed ? 'Generate failed' : 'Difficulties already exist',
                     2500, updateGenerateButtonVisibility
                 );
                 return;
             }
+            setGenerateLabel(
+                data.generated === 1 ? 'Generated 1 arrangement' : 'Generated ' + data.generated + ' arrangements',
+                2500, updateGenerateButtonVisibility
+            );
             // Reload the current song so the highway WS re-streams the new
             // phrase data (it was written server-side after this song's
             // websocket already sent its snapshot).
@@ -824,7 +846,7 @@
         _generateBtn.id = 'dynamic-difficulty-generate';
         _generateBtn.className = 'fb-text text-xs px-2 py-1 rounded hover:bg-white/10 flex items-center gap-1';
         _generateBtn.textContent = '⚙️ Generate Difficulties';
-        _generateBtn.title = 'Generate an Easy/Medium/Hard difficulty ladder for this arrangement (sloppak songs only)';
+        _generateBtn.title = 'Generate difficulty ladders for every non-drum arrangement in this song (sloppak songs only)';
         _generateBtn.onclick = onGenerateClick;
         slot.appendChild(_generateBtn);
         updateGenerateButtonVisibility();

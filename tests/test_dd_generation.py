@@ -307,6 +307,25 @@ def test_unsupported_drums_skip_preserves_instrument_classification():
     }
 
 
+def test_generate_song_processes_every_arrangement_and_keeps_going_after_a_bad_one():
+    manifest = {"arrangements": [{}, {}, {}]}
+    results = [
+        {"ok": True, "arrangement_index": 0, "instrument": "fretted"},
+        {"ok": True, "arrangement_index": 1, "skipped": "unsupported-instrument-drums", "instrument": "drums"},
+        routes.HTTPException(400, "arrangement has no backing file"),
+    ]
+    with patch.object(routes.sloppak, "load_manifest", return_value=manifest), patch.object(
+        routes, "_generate_one", side_effect=results
+    ):
+        summary = routes._generate_song(Path("unused"), n_levels=4, force=False, log=None)
+
+    assert summary["generated"] == 1
+    assert summary["skipped"] == 2
+    assert summary["failed"] == 1
+    assert summary["arrangements"][1]["instrument"] == "drums"
+    assert summary["arrangements"][2]["error"] == "arrangement has no backing file"
+
+
 def test_lower_tier_refinement_does_not_bridge_a_repositioning_rest():
     groups = [
         {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 2}]},

@@ -98,6 +98,27 @@ test('currentTargetStatus returns the generate target when a song is loaded', ()
     });
 });
 
+test('publishes the Section Map compatibility capability after the plugin rename', () => {
+    freshPlugin();
+    assert.equal(global.window._ddCapabilities.sectionDifficulty, true);
+});
+
+test('currentTargetStatus uses feedBack.currentSong filename with the real highway song-info shape', () => {
+    const mod = freshPlugin();
+    global.window.feedBack = {
+        currentSong: { filename: 'library/song.feedpak', arrangementIndex: 3 },
+    };
+    global.window.highway = {
+        // Core's song_info deliberately has no filename.
+        getSongInfo: () => ({ title: 'Song', arrangement_index: 3 }),
+    };
+
+    assert.deepEqual(mod.currentTargetStatus(), {
+        ok: true,
+        target: { filename: 'library/song.feedpak', arrangement_index: 3, levels: 4 },
+    });
+});
+
 test('judgmentKey is stable and distinct per (time, string, fret)', () => {
     const mod = freshPlugin();
     assert.equal(mod.judgmentKey(1.5, 2, 3), '1.5_2_3');
