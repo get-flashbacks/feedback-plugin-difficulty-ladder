@@ -70,6 +70,16 @@ def test_simple_phrase_gets_a_shorter_ladder_than_the_cap():
     )
 
 
+def test_canonical_section_times_create_one_phrase_per_section_including_an_empty_arrangement_section():
+    arr = _arrangement(_simple_notes(0, 2, step=0.2, fret=3))
+    phrases = routes.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[0, 2, 6]
+    )
+    assert [(p["start_time"], p["end_time"]) for p in phrases] == [(0.0, 2.0), (2.0, 6.0)]
+    assert phrases[1]["max_difficulty"] == 0
+    assert phrases[1]["levels"][0]["notes"] == []
+
+
 def test_dense_technical_phrase_uses_more_of_the_cap_than_a_simple_one():
     simple = _arrangement(_simple_notes(0, 10, step=0.5, fret=3))
     technical = _arrangement(_technical_notes(0, 10, step=0.1))

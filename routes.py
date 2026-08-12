@@ -576,7 +576,7 @@ def _notes_for_level_keys(groups, level, max_level):
     return out_notes, []  # keys never emits chord-shaped entries at reduced tiers
 
 
-def generate_phrases_for_arrangement(arr, *, n_levels=4):
+def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times=None):
     """Build a phrase-level difficulty ladder for one arrangement's raw wire
     dict (as stored in a sloppak's arrangements/*.json).
 
@@ -611,7 +611,22 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4):
     if duration <= 0.0:
         duration = 30.0
 
-    if sections:
+    if section_times:
+        # The caller supplies the song-global timeline that feedBack streams
+        # through highway.getSections().  Keep an interval for every boundary,
+        # including a section with no notes in this particular arrangement:
+        # Section Map is song-level while note content is arrangement-level.
+        secs = sorted(float(t) for t in section_times)
+        windows = []
+        for i, t0 in enumerate(secs):
+            # An arrangement can end before the song-level timeline because
+            # it has a long rest/outro.  Still retain the final canonical
+            # section for this arrangement; its empty phrase is what keeps the
+            # one-to-one Section Map contract intact.
+            t1 = secs[i + 1] if i + 1 < len(secs) else max(duration, t0 + 0.001)
+            if t1 > t0:
+                windows.append((t0, t1))
+    elif sections:
         secs = sorted(sections, key=lambda s: float(s.get("time", s.get("start_time", 0))))
         windows = []
         for i, s in enumerate(secs):
@@ -641,6 +656,19 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4):
     for t0, t1 in windows:
         phrase_groups = [g for g in groups_all if t0 <= g["time"] < t1]
         if not phrase_groups:
+            # Preserve the canonical Section Map boundary in this arrangement.
+            # An empty level is intentional: there is no chart content to
+            # score/filter here, but dropping the phrase would shift all later
+            # phrases out of one-to-one alignment with the song timeline.
+            phrases_out.append({
+                "start_time": round(t0, 3),
+                "end_time": round(t1, 3),
+                "max_difficulty": 0,
+                "levels": [{
+                    "difficulty": 0, "notes": [], "chords": [],
+                    "anchors": [], "handshapes": [],
+                }],
+            })
             continue
         # `n_levels` is a cap, not a fixed depth: a sparse phrase gets a
         # short ladder and a dense one gets a long one, instead of every
@@ -798,7 +826,8 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
     return rel, arr, None
 
 
-def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log) -> dict:
+def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log,
+                  section_times=None) -> dict:
     # Hold the pack's lock across the whole read-modify-write span. Without
     # this, two requests touching the same pack (a library sweep + a manual
     # click, or two arrangements of one multi-arrangement song) can each read
@@ -829,7 +858,9 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
                 "arrangement_index": arrangement_index, "instrument": instrument,
             }
 
-        phrases = generate_phrases_for_arrangement(arr, n_levels=n_levels)
+        phrases = generate_phrases_for_arrangement(
+            arr, n_levels=n_levels, section_times=section_times
+        )
         if phrases is None:
             return {
                 "ok": True, "skipped": "not-enough-content-or-unsupported-instrument",
@@ -848,6 +879,68 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
     }
 
 
+def _read_pack_json(pack_path: Path, rel: str):
+    """Read a JSON/JSONC member from either a directory or zip feedpak."""
+    raw = sloppak.read_member_bytes(pack_path, rel)
+    if raw is None:
+        return None
+    text = raw.decode("utf-8")
+    return parse_jsonc(text) if rel.lower().endswith(".jsonc") else json.loads(text)
+
+
+def _canonical_section_times(pack_path: Path, manifest: dict) -> list[float]:
+    """Match feedBack's song-level section source for generated phrases.
+
+    feedBack gives a valid ``song_timeline`` precedence over arrangement
+    metadata; otherwise it takes sections from the first arrangement that has
+    them.  This mirrors that selection so generated phrase intervals line up
+    exactly with Section Map's ``highway.getSections()`` boundaries.
+    """
+    timeline_rel = manifest.get("song_timeline")
+    if isinstance(timeline_rel, str) and timeline_rel.strip():
+        try:
+            timeline = _read_pack_json(pack_path, timeline_rel.strip())
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            timeline = None
+        if isinstance(timeline, dict) and isinstance(timeline.get("beats"), list) and isinstance(timeline.get("sections"), list):
+            sections = timeline["sections"]
+            times = []
+            for section in sections:
+                if not isinstance(section, dict):
+                    continue
+                try:
+                    times.append(float(section.get("time", section.get("start_time", 0))))
+                except (TypeError, ValueError):
+                    continue
+            if times:
+                return times
+
+    for entry in manifest.get("arrangements", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        rel = str(entry.get("file") or "").strip()
+        if not rel:
+            continue
+        try:
+            arrangement = _read_pack_json(pack_path, rel)
+        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            continue
+        sections = arrangement.get("sections", []) if isinstance(arrangement, dict) else []
+        if not isinstance(sections, list) or not sections:
+            continue
+        times = []
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            try:
+                times.append(float(section.get("time", section.get("start_time", 0))))
+            except (TypeError, ValueError):
+                continue
+        if times:
+            return times
+    return []
+
+
 def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
     """Generate every eligible arrangement in one song.
 
@@ -858,6 +951,7 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
     """
     manifest = sloppak.load_manifest(pack_path)
     entries = manifest.get("arrangements", []) or []
+    section_times = _canonical_section_times(pack_path, manifest)
     results = []
     generated = skipped = failed = 0
     for index, entry in enumerate(entries):
@@ -866,7 +960,10 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
             skipped += 1
             continue
         try:
-            result = _generate_one(pack_path, index, n_levels=n_levels, force=force, log=log)
+            result = _generate_one(
+                pack_path, index, n_levels=n_levels, force=force, log=log,
+                section_times=section_times or None,
+            )
         except HTTPException as exc:
             # A bad arrangement must not prevent the remaining arrangements
             # in the song from receiving their difficulty ladders.
