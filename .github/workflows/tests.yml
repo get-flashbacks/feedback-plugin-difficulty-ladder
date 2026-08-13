@@ -1,0 +1,79 @@
+name: tests
+
+# The compliance greps live in custom-checks.yml; this workflow runs the
+# actual suites. Both are required — a spec-compliant plugin can still be
+# functionally broken, which is exactly what happened before this existed.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      # tests/test_dd_generation.py bootstraps sys.path with
+      # `_PLUGIN_DIR.parent / "feedBack" / "lib"`, so the host checkout has to
+      # sit next to the plugin in a directory named exactly `feedBack`.
+      - name: Check out difficulty-ladder
+        uses: actions/checkout@v4
+        with:
+          path: work/difficulty-ladder
+          persist-credentials: false
+
+      - name: Check out feedBack host libraries
+        uses: actions/checkout@v4
+        with:
+          repository: get-flashbacks/feedBack
+          path: work/feedBack
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Only what routes.py actually reaches at import time: fastapi directly,
+      # and PyYAML via the host's sloppak module. Deliberately NOT the host's
+      # full requirements.txt — that pulls 19 packages (Pillow, yt-dlp,
+      # curl_cffi, midiutil) for a suite that needs two, and midiutil in
+      # particular fails to build on some interpreters. If this list rots, the
+      # symptom is a clear ModuleNotFoundError naming the missing package; add
+      # it here rather than reaching for the whole host manifest.
+      - name: Install test dependencies
+        run: python -m pip install pytest fastapi PyYAML
+
+      - name: Run pytest
+        working-directory: work/difficulty-ladder
+        run: python -m pytest -q
+
+  js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run JS tests
+        run: |
+          set -eu
+          shopt -s nullglob
+          files=(tests/*.test.js)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No JS test files found"
+            exit 1
+          fi
+          for f in "${files[@]}"; do
+            echo "── $f"
+            node "$f"
+          done
+        shell: bash

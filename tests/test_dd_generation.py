@@ -75,9 +75,25 @@ def test_canonical_section_times_create_one_phrase_per_section_including_an_empt
     phrases = routes.generate_phrases_for_arrangement(
         arr, n_levels=4, section_times=[0, 2, 6]
     )
-    assert [(p["start_time"], p["end_time"]) for p in phrases] == [(0.0, 2.0), (2.0, 6.0)]
-    assert phrases[1]["max_difficulty"] == 0
-    assert phrases[1]["levels"][0]["notes"] == []
+    # section_times carries one entry per section — start times mirroring
+    # highway.getSections() — not n+1 boundaries. Three entries therefore mean
+    # three sections and must yield three phrases, so Section Map can index
+    # phrases by section position. The last section starts after this
+    # arrangement's content ends, so it collapses to the t0 + 0.001 floor
+    # rather than being dropped.
+    assert [(p["start_time"], p["end_time"]) for p in phrases] == [
+        (0.0, 2.0), (2.0, 6.0), (6.0, 6.001)
+    ]
+
+    # Windows are half-open (t0 <= t < t1), so the note landing exactly on the
+    # 2.0 boundary belongs to the second section, not the first.
+    assert phrases[1]["levels"][-1]["notes"] == [{"t": 2.0, "s": 2, "f": 3, "sus": 0}]
+
+    # The trailing section has no chart content in this arrangement at all.
+    # It is retained regardless — that empty phrase is what keeps the
+    # one-phrase-per-section contract intact.
+    assert phrases[2]["max_difficulty"] == 0
+    assert phrases[2]["levels"][0]["notes"] == []
 
 
 def test_dense_technical_phrase_uses_more_of_the_cap_than_a_simple_one():
