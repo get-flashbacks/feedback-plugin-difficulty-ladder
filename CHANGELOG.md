@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Whole-song generation now covers **every** arrangement in a pack rather than the first
+  eligible one. Each arrangement is classified independently by `_generate_one`, so mixed
+  guitar/bass/keys packs generate correctly, and a malformed or unsupported arrangement
+  (drums) is reported as skipped in the per-arrangement result instead of aborting the run —
+  one bad arrangement no longer denies the rest of the song its ladder.
+- `section_times` parameter on `generate_phrases_for_arrangement`, so generated phrase
+  intervals line up exactly with the boundaries Section Map reads from
+  `highway.getSections()`. `_canonical_section_times` mirrors feedBack's own source
+  selection — a valid `song_timeline` wins, otherwise the first arrangement carrying
+  sections. The list holds one start time per section (not n+1 boundaries), and a section
+  with no notes in a given arrangement still produces its phrase, preserving the
+  one-phrase-per-section indexing Section Map depends on.
 - Explicit **Standard ⇄ Adaptive** difficulty mode selector in Settings (#21), replacing the
   bare "Auto-adjust difficulty" toggle. Standard (fixed %, no automatic movement) is the default
   for new installs; existing users on the `difficulty_ladder` key who already had auto-adjust
