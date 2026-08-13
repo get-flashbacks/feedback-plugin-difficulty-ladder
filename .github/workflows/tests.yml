@@ -26,6 +26,14 @@ jobs:
           path: work/difficulty-ladder
           persist-credentials: false
 
+      # Deliberately unpinned. This tracks the host's default branch, so an
+      # upstream lib/ refactor (the sloppak -> song import chain, say) reddens
+      # PRs here that didn't cause it. That drift is accepted rather than
+      # pinned: routes.py imports host internals directly, so "the host moved
+      # and this plugin no longer works against it" is a defect worth learning
+      # about early, not noise to freeze out. feedBack publishes no tags, so
+      # the only alternative is a SHA that would rot silently until someone
+      # remembered to bump it. Same convention as feedpakr's tests.yml.
       - name: Check out feedBack host libraries
         uses: actions/checkout@v4
         with:
@@ -64,16 +72,16 @@ jobs:
           node-version: "20"
 
       - name: Run JS tests
+        shell: bash
         run: |
-          set -eu
-          shopt -s nullglob
-          files=(tests/*.test.js)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "No JS test files found"
+          set -euo pipefail
+          # `node --test` discovers **/*.test.js itself and reports every
+          # failing file, where invoking each file in a loop stops at the first
+          # one. It exits 0 when it finds no tests at all, though, so keep an
+          # explicit guard — otherwise renaming tests/ turns this job green
+          # while running nothing.
+          if ! compgen -G "tests/*.test.js" > /dev/null; then
+            echo "::error::no test files found under tests/"
             exit 1
           fi
-          for f in "${files[@]}"; do
-            echo "── $f"
-            node "$f"
-          done
-        shell: bash
+          node --test
