@@ -299,9 +299,19 @@ jobs:
           has_hotpath = bool(re.search(r'(window\.addEventListener|document\.addEventListener|setInterval)\s*\(', src))
           # Guard naming varies across the org (__xInstalled, __xHooksInstalled,
           # __feedBackDynamicDifficulty, __ddCardBadgeRegistered, ...) — no
-          # single suffix covers them, so just require *some* window.__ flag
-          # reference rather than pattern-matching a specific naming style.
-          has_guard = bool(re.search(r'window\.__\w+', src))
+          # single suffix covers them, so just require *some* window-level __
+          # flag rather than pattern-matching a specific naming style.
+          #
+          # Both access forms count. section_map, the org's reference guard,
+          # hoists the name into a const and uses window[HOOK_KEY]; matching
+          # only the dotted form flags it as unguarded when it is not.
+          dotted = re.search(r'window\.__\w+', src)
+          bracket_literal = re.search(r'window\s*\[\s*[\'"]__\w+[\'"]\s*\]', src)
+          bracket_const = (
+              re.search(r'window\s*\[\s*[A-Za-z_$][\w$]*\s*\]', src)
+              and re.search(r'[\'"]__\w+[\'"]', src)
+          )
+          has_guard = bool(dotted or bracket_literal or bracket_const)
 
           if has_hotpath and not has_guard:
               print(f"::error file={js_path}::found addEventListener/setInterval but no window.__*Installed-style reload guard — screen.js can re-execute on plugin reload")
