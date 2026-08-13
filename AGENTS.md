@@ -27,6 +27,21 @@ not backend logic.
 - **Folder name must equal `plugin.json`'s `id` exactly** (case-sensitive)
   — a mismatch is a silent skip at plugin discovery.
 
+## PR Format
+
+If this plugin is a fork of a canonical upstream repo, structure PRs to clarify scope:
+
+### For PRs targeting this fork:
+- **Fork-specific changes** — adapt for local use, integrate with local infrastructure, or experiment with features not yet upstreamed
+- **Candidate changes** — improvements that could eventually go upstream; mark these clearly so maintainers can cherry-pick or fast-track them
+
+### For changes intended for the canonical repo:
+- **Open the PR upstream first** — ensure alignment with the canonical project's standards and roadmap
+- **Link both PRs** — reference the upstream PR in your fork PR's description so reviewers see the full context
+- **Rebase after merge** — once the upstream PR merges, rebase your fork onto the canonical main to avoid divergence
+
+When in doubt, ask: "Would this benefit the broader community, or is it specific to this deployment?" Upstream changes raise the quality bar for everyone.
+
 ## Versioning
 
 Bump `version` in `plugin.json` whenever a change is user-visible — new
