@@ -12,8 +12,3 @@ jobs:
     steps:
       - name: Auto Assign Action
         uses: kentaro-m/auto-assign-action@v2.0.2
-        with:
-          addReviewers: 'true'
-          addAssignees: 'author'
-          reviewers: 'carochacs'
-          numberOfReviewers: '0'
