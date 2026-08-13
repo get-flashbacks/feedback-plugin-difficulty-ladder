@@ -1,0 +1,20 @@
+name: Auto Assign Action
+
+on:
+  pull_request:
+    types: [opened, reopened]
+
+jobs:
+  assign-reviewers:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Auto Assign Action
+        uses: kentaro-m/auto-assign-action@v2.0.2
+        with:
+          addReviewers: true
+          addAssignees: author
+          reviewers: |
+            carochacs
+          numberOfReviewers: 0
