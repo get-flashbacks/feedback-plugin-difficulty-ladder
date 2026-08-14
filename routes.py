@@ -900,7 +900,7 @@ def _canonical_section_times(pack_path: Path, manifest: dict) -> list[float]:
     if isinstance(timeline_rel, str) and timeline_rel.strip():
         try:
             timeline = _read_pack_json(pack_path, timeline_rel.strip())
-        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        except ValueError:
             timeline = None
         if isinstance(timeline, dict) and isinstance(timeline.get("beats"), list) and isinstance(timeline.get("sections"), list):
             sections = timeline["sections"]
@@ -923,7 +923,7 @@ def _canonical_section_times(pack_path: Path, manifest: dict) -> list[float]:
             continue
         try:
             arrangement = _read_pack_json(pack_path, rel)
-        except (UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        except ValueError:
             continue
         sections = arrangement.get("sections", []) if isinstance(arrangement, dict) else []
         if not isinstance(sections, list) or not sections:
