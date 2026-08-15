@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-15
+
+### Changed
+- Added type hints to `generate_phrases_for_arrangement` and `_generate_one` for better IDE support and code clarity
+- Simplified exception handling in `_canonical_section_times` by removing redundant `UnicodeDecodeError` (subclass of `ValueError`)
+
 ### Added
 - Whole-song generation now covers **every** arrangement in a pack rather than the first
   eligible one. Each arrangement is classified independently by `_generate_one`, so mixed
