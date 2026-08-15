@@ -576,7 +576,7 @@ def _notes_for_level_keys(groups, level, max_level):
     return out_notes, []  # keys never emits chord-shaped entries at reduced tiers
 
 
-def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times=None):
+def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[float] | None = None):
     """Build a phrase-level difficulty ladder for one arrangement's raw wire
     dict (as stored in a sloppak's arrangements/*.json).
 
@@ -827,7 +827,7 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
 
 
 def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log,
-                  section_times=None) -> dict:
+                  section_times: list[float] | None = None) -> dict:
     # Hold the pack's lock across the whole read-modify-write span. Without
     # this, two requests touching the same pack (a library sweep + a manual
     # click, or two arrangements of one multi-arrangement song) can each read
