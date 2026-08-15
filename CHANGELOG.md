@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-15
+
+### Fixed
+- Prevent prototype chain pollution attacks in storage event listener by using `Object.prototype.hasOwnProperty.call()` instead of the `in` operator when checking settings keys (issue #39). While exploitation requires pre-existing XSS, this closes an unnecessary attack surface.
+
+## [Unreleased]
+
 ### Added
 - Whole-song generation now covers **every** arrangement in a pack rather than the first
   eligible one. Each arrangement is classified independently by `_generate_one`, so mixed
