@@ -571,7 +571,7 @@
     }
 
     function ensureHudCanvas() {
-        if (_hudCanvas && _hudCanvas.isConnected) return _hudCanvas;
+        if (_hudCanvas?.isConnected) return _hudCanvas;
         var player = getPlayerEl();
         if (!player) return null;
         _hudCanvas = document.createElement('canvas');
@@ -585,7 +585,7 @@
 
     function isPlayerActive() {
         var player = getPlayerEl();
-        return !!(player && player.classList.contains('active'));
+        return !!player?.classList.contains('active');
     }
 
     function drawHud() {
@@ -681,7 +681,7 @@
         // as feedBack.currentSong.filename.  Requiring si.filename here made
         // every real host song look unloaded, despite the player being active.
         var si = hw.getSongInfo() || {};
-        var currentSong = (window.feedBack && window.feedBack.currentSong) || {};
+        var currentSong = window.feedBack?.currentSong || {};
         var filename = currentSong.filename || si.filename;
         if (!filename) return { ok: false, reason: 'unloaded' };
         // Highway's snake_case index describes the currently streamed
@@ -772,7 +772,7 @@
             var data = null;
             try { data = await resp.json(); } catch (_) { /* noop */ }
             if (!resp.ok || !data || data.error) {
-                console.warn('[difficulty_ladder] generate failed:', (data && data.error) || resp.status);
+                console.warn('[difficulty_ladder] generate failed:', data?.error || resp.status);
                 setGenerateLabel('Generate failed', 2500);
                 return;
             }
@@ -794,10 +794,7 @@
             // Reload the current song so the highway WS re-streams the new
             // phrase data (it was written server-side after this song's
             // websocket already sent its snapshot).
-            var hw = window.highway;
-            if (hw && typeof hw.reconnect === 'function') {
-                hw.reconnect(target.filename, target.arrangement_index);
-            }
+            window.highway?.reconnect?.(target.filename, target.arrangement_index);
         } catch (e) {
             console.warn('[difficulty_ladder] generate request failed:', e);
             setGenerateLabel('Generate failed', 2500);
@@ -890,14 +887,14 @@
         window.feedBack.on('library:changed', registerLibraryCardBadge);
         window.feedBack.on('highway:created', mountControls);
         window.feedBack.on('highway:visibility', function (ev) {
-            var detail = ev && ev.detail;
-            if (detail && detail.visible) {
+            var detail = ev?.detail;
+            if (detail?.visible) {
                 startRafLoops();
             } else {
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
                 if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
                 _clearGenerateLabelTimer();
-                if (_hudCanvas) _hudCanvas.style.display = 'none';
+                _hudCanvas?.style.display = 'none';
                 if (_generateLabelTimer) { clearTimeout(_generateLabelTimer); _generateLabelTimer = null; }
             }
         });
@@ -929,7 +926,7 @@
         }
     });
     window.addEventListener(PLUGIN_ID + ':settings-changed', function (ev) {
-        var patch = ev && ev.detail;
+        var patch = ev?.detail;
         if (!patch) return;
         Object.assign(settings, patch);
         if (Object.prototype.hasOwnProperty.call(patch, 'dropResistance')) {
