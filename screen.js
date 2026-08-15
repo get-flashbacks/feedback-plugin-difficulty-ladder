@@ -916,7 +916,7 @@
     window.addEventListener('storage', function (e) {
         if (!e.key || e.key.indexOf(LS_PREFIX) !== 0) return;
         var short = e.key.slice(LS_PREFIX.length);
-        if (short in settings) {
+        if (Object.prototype.hasOwnProperty.call(settings, short)) {
             try { settings[short] = JSON.parse(e.newValue); } catch (_) {
                 if (short === 'dropResistance') settings[short] = false;
             }
