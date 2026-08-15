@@ -875,8 +875,8 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
     return {
         "ok": True, "arrangement_index": arrangement_index,
         "phrases": len(phrases), "max_difficulty": n_levels - 1,
-       "instrument": instrument,
-   }
+        "instrument": instrument,
+    }
 
 
 def _read_pack_json(pack_path: Path, rel: str):
