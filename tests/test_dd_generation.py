@@ -74,7 +74,7 @@ def test_canonical_section_times_create_one_phrase_per_section_including_an_empt
     arr = _arrangement(_simple_notes(0, 2, step=0.2, fret=3))
     phrases = routes.generate_phrases_for_arrangement(
         arr, n_levels=4, section_times=[0, 2, 6]
-    )
+    ) or []
     # section_times carries one entry per section — start times mirroring
     # highway.getSections() — not n+1 boundaries. Three entries therefore mean
     # three sections and must yield three phrases, so Section Map can index
