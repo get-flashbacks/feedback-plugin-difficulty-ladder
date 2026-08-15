@@ -64,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generating, failed, skipped) now go through the `setGenerateLabel` helper above instead of four
   of them separately assigning `_generateBtn.textContent` and calling a duplicate
   `_scheduleGenerateLabelReset`, so `_generateLabelTimer` has exactly one owner.
+- `generate_phrases_for_arrangement` and `_generate_one`'s `section_times` parameter used a
+  `list[float] | None` annotation, which raises `TypeError` at def-time on the Python versions
+  this plugin still supports (the `X | Y` union-type syntax is 3.10+ only). Dropped the
+  annotation — the parameter behavior is unchanged.
 
 ### Changed
 - Generated fretted lower tiers now favor beat landmarks, preserve arpeggio roots, and add
