@@ -17,10 +17,12 @@ tiers" approach is reused as a heuristic design, reimplemented here against
 feedBack's actual data.
 """
 
+import bisect
 import json
 import os
 import re
 import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from itertools import pairwise
@@ -37,6 +39,7 @@ PLUGIN_ID = "difficulty_ladder"
 
 MIN_EVENTS_FOR_GENERATION = 8  # skip near-empty arrangements — nothing to grade
 FRET_JUMP_WINDOW_SECONDS = 1.0  # longer rests give the player time to reposition
+MAX_PROCESSING_SECONDS = 120  # hard cap per /generate-library call to bound CPU/DoS risk
 
 # Same convention core uses for piano-roll mode (CLAUDE.md: "Any arrangement
 # named Keys, Piano, Keyboard, or Synth renders as a piano-roll chart").
@@ -463,7 +466,7 @@ def _assign_levels(groups, n_levels, curve_exponent=_RETENTION_CURVE_EXPONENT):
         g["level"] = min(lvl, n_levels - 1)
 
 
-def _best_bridge_candidate(groups, left, right, level, beat_times, original_jump, *,
+def _best_bridge_candidate(groups_sorted, group_times, left, right, level, beat_times, original_jump, *,
                             original_string_jump=0, tempo=None):
     tempo = tempo or _TempoParams()
     left_anchor = _group_anchor_note(left)
@@ -472,9 +475,11 @@ def _best_bridge_candidate(groups, left, right, level, beat_times, original_jump
     right_fret = int(right_anchor.get("f", 0))
     left_string = int(left_anchor.get("s", 0))
     right_string = int(right_anchor.get("s", 0))
+    lo = bisect.bisect_right(group_times, left["time"])
+    hi = bisect.bisect_left(group_times, right["time"])
     candidates = []
-    for candidate in groups:
-        if candidate["level"] <= level or not (left["time"] < candidate["time"] < right["time"]):
+    for candidate in groups_sorted[lo:hi]:
+        if candidate["level"] <= level:
             continue
         anchor = _group_anchor_note(candidate)
         if not anchor:
@@ -483,14 +488,6 @@ def _best_bridge_candidate(groups, left, right, level, beat_times, original_jump
         string = int(anchor.get("s", 0))
         worst_jump = max(abs(fret - left_fret), abs(right_fret - fret))
         worst_string_jump = max(abs(string - left_string), abs(right_string - string))
-        # A candidate qualifies if it improves EITHER dimension, mirroring
-        # the OR-shaped trigger in _refine_lower_tier_path that decided
-        # bridging was needed. Fret-only acceptance (the original check)
-        # can never find a candidate for a pure string skip: when
-        # original_jump is already 0 (identical fret, only the string
-        # differs — exactly the case the string trigger exists for),
-        # `worst_jump < 0` is impossible, so bridging would silently
-        # promote nothing even though the trigger correctly fired.
         if worst_jump < original_jump or worst_string_jump < original_string_jump:
             beat_penalty = 0 if _is_beat_aligned(candidate["time"], beat_times, tolerance=tempo.beat_tolerance) else 1
             candidates.append((
@@ -526,14 +523,16 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
     if not groups or max_level <= 0:
         return
     beat_groups = [g for g in groups if _is_beat_aligned(g["time"], beat_times, tolerance=tempo.beat_tolerance)]
+    groups_sorted = sorted(groups, key=lambda g: g["time"])
+    group_times = [g["time"] for g in groups_sorted]
     for level in range(max_level):
-        kept = [g for g in groups if g["level"] <= level]
+        kept = [g for g in groups_sorted if g["level"] <= level]
         if beat_groups and not any(g in beat_groups for g in kept):
             min(beat_groups, key=lambda g: (g["score"], g["time"]))["level"] = level
-            kept = [g for g in groups if g["level"] <= level]
+            kept = [g for g in groups_sorted if g["level"] <= level]
 
         while True:
-            kept = sorted((g for g in groups if g["level"] <= level), key=lambda g: g["time"])
+            kept = [g for g in groups_sorted if g["level"] <= level]
             promoted = False
             for left, right in pairwise(kept):
                 if float(right["time"]) - float(left["time"]) > tempo.fret_jump_window_seconds:
@@ -549,7 +548,7 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
                 if original_jump <= max_jump and string_jump <= max_string_jump:
                     continue
                 candidate = _best_bridge_candidate(
-                    groups, left, right, level, beat_times, original_jump,
+                    groups_sorted, group_times, left, right, level, beat_times, original_jump,
                     original_string_jump=string_jump, tempo=tempo,
                 )
                 if candidate:
@@ -1404,6 +1403,7 @@ def setup(app, context):
         n_levels = max(2, min(int((body or {}).get("levels", 4) or 4), 8))
         force = bool((body or {}).get("force", False))
         max_songs = max(1, min(int((body or {}).get("max_songs", 500) or 500), 2000))
+        max_processing_seconds = max(1, min(int((body or {}).get("max_processing_seconds", MAX_PROCESSING_SECONDS) or MAX_PROCESSING_SECONDS), 600))
 
         dlc_root = get_dlc_dir()
         if dlc_root is None:
@@ -1412,20 +1412,29 @@ def setup(app, context):
 
         generated, skipped, failed = 0, 0, []
         scanned = 0
+        time_limit_reached = False
+        start_time = time.monotonic()
         # Recursive, matching feedBack's own library scanner (lib/scan.py:
         # `dlc.rglob(f"*{ext}")` across both SONG_EXTS) — a shallow
         # root.iterdir() would silently miss any song organized in a
         # subfolder (e.g. DLC/ArtistName/Song.feedpak), which is a layout
         # core's own scan explicitly supports.
-        candidates = sorted(
-            {p for ext in sloppak.SONG_EXTS for p in root.rglob(f"*{ext}")},
-            key=lambda p: p.relative_to(root).as_posix(),
-        )
-        for entry in candidates:
+        seen = set()
+        for entry in (
+            p
+            for ext in sloppak.SONG_EXTS
+            for p in root.rglob(f"*{ext}")
+        ):
             if scanned >= max_songs:
                 break
+            if time.monotonic() - start_time > max_processing_seconds:
+                time_limit_reached = True
+                break
+            if entry in seen:
+                continue
             if not sloppak.is_sloppak(entry):
                 continue
+            seen.add(entry)
             label = entry.relative_to(root).as_posix()
             scanned += 1
             try:
@@ -1450,4 +1459,4 @@ def setup(app, context):
                 else:
                     generated += 1
 
-        return {"ok": True, "scanned": scanned, "generated": generated, "skipped": skipped, "failed": failed}
+        return {"ok": True, "scanned": scanned, "generated": generated, "skipped": skipped, "failed": failed, "time_limit_reached": time_limit_reached}
