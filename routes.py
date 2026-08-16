@@ -509,6 +509,31 @@ def _best_bridge_candidate(groups_sorted, group_times, left, right, level, beat_
 _MAX_STRING_JUMP_FOR_CONTINUITY = 3
 
 
+def _promote_bridge_candidate(kept, groups_sorted, group_times, beat_times, level, max_jump, *,
+                              tempo=None, max_string_jump=_MAX_STRING_JUMP_FOR_CONTINUITY):
+    for left, right in pairwise(kept):
+        if float(right["time"]) - float(left["time"]) > tempo.fret_jump_window_seconds:
+            continue
+        left_anchor = _group_anchor_note(left)
+        right_anchor = _group_anchor_note(right)
+        if not left_anchor or not right_anchor:
+            continue
+        left_fret = int(left_anchor.get("f", 0))
+        right_fret = int(right_anchor.get("f", 0))
+        original_jump = abs(right_fret - left_fret)
+        string_jump = abs(int(right_anchor.get("s", 0)) - int(left_anchor.get("s", 0)))
+        if original_jump <= max_jump and string_jump <= max_string_jump:
+            continue
+        candidate = _best_bridge_candidate(
+            groups_sorted, group_times, left, right, level, beat_times, original_jump,
+            original_string_jump=string_jump, tempo=tempo,
+        )
+        if candidate:
+            candidate["level"] = level
+            return True
+    return False
+
+
 def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
                              tempo=None,
                              max_string_jump=_MAX_STRING_JUMP_FOR_CONTINUITY):
@@ -531,31 +556,8 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
             min(beat_groups, key=lambda g: (g["score"], g["time"]))["level"] = level
             kept = [g for g in groups_sorted if g["level"] <= level]
 
-        while True:
-            promoted = False
-            for left, right in pairwise(kept):
-                if float(right["time"]) - float(left["time"]) > tempo.fret_jump_window_seconds:
-                    continue
-                left_anchor = _group_anchor_note(left)
-                right_anchor = _group_anchor_note(right)
-                if not left_anchor or not right_anchor:
-                    continue
-                left_fret = int(left_anchor.get("f", 0))
-                right_fret = int(right_anchor.get("f", 0))
-                original_jump = abs(right_fret - left_fret)
-                string_jump = abs(int(right_anchor.get("s", 0)) - int(left_anchor.get("s", 0)))
-                if original_jump <= max_jump and string_jump <= max_string_jump:
-                    continue
-                candidate = _best_bridge_candidate(
-                    groups_sorted, group_times, left, right, level, beat_times, original_jump,
-                    original_string_jump=string_jump, tempo=tempo,
-                )
-                if candidate:
-                    candidate["level"] = level
-                    promoted = True
-                    break
-            if not promoted:
-                break
+        while _promote_bridge_candidate(kept, groups_sorted, group_times, beat_times, level, max_jump,
+                                        tempo=tempo, max_string_jump=max_string_jump):
             kept = [g for g in groups_sorted if g["level"] <= level]
 
 
@@ -1320,7 +1322,7 @@ def _canonical_section_times(pack_path: Path, manifest: dict) -> list[float]:
     return []
 
 
-def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
+def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log, section_times: list[float] | None = None) -> dict:
     """Generate every eligible arrangement in one song.
 
     Arrangement indices are manifest/storage indices, not the player UI's
@@ -1330,7 +1332,8 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
     """
     manifest = sloppak.load_manifest(pack_path)
     entries = manifest.get("arrangements", []) or []
-    section_times = _canonical_section_times(pack_path, manifest)
+    if section_times is None:
+        section_times = _canonical_section_times(pack_path, manifest)
     results = []
     generated = skipped = failed = 0
     for index, entry in enumerate(entries):
@@ -1360,6 +1363,18 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
     }
 
 
+def _parse_generate_params(body: dict):
+    body = body or {}
+    filename = str(body.get("filename") or "").strip()
+    if not filename:
+        raise HTTPException(400, "filename required")
+    raw_levels = body.get("levels", 4) or 4
+    n_levels = max(2, min(int(raw_levels), 8))
+    force = bool(body.get("force", False))
+    section_times = body.get("section_times")
+    return filename, n_levels, force, section_times
+
+
 def setup(app, context):
     log = context["log"]
     get_dlc_dir = context["get_dlc_dir"]
@@ -1376,19 +1391,14 @@ def setup(app, context):
 
     @app.post(f"/api/plugins/{PLUGIN_ID}/generate")
     def generate(body: dict = Body(...)):
-        filename = str((body or {}).get("filename") or "").strip()
-        if not filename:
-            raise HTTPException(400, "filename required")
-        n_levels = max(2, min(int((body or {}).get("levels", 4) or 4), 8))
-        force = bool((body or {}).get("force", False))
-
+        filename, n_levels, force, section_times = _parse_generate_params(body)
         dlc_root = get_dlc_dir()
         if dlc_root is None:
             raise HTTPException(400, "no DLC library configured")
         pack_path = _resolve_pack(Path(dlc_root), filename)
 
         try:
-            return _generate_song(pack_path, n_levels=n_levels, force=force, log=log)
+            return _generate_song(pack_path, n_levels=n_levels, force=force, log=log, section_times=section_times or None)
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001 — surface as a clean 500, never crash the server
