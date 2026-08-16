@@ -794,7 +794,10 @@
             // Reload the current song so the highway WS re-streams the new
             // phrase data (it was written server-side after this song's
             // websocket already sent its snapshot).
-            window.highway?.reconnect?.(target.filename, target.arrangement_index);
+            var hw = window.highway;
+            if (hw && typeof hw.reconnect === 'function') {
+                hw.reconnect(target.filename, target.arrangement_index);
+            }
         } catch (e) {
             console.warn('[difficulty_ladder] generate request failed:', e);
             setGenerateLabel('Generate failed', 2500);
@@ -894,7 +897,7 @@
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
                 if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
                 _clearGenerateLabelTimer();
-                _hudCanvas?.style.display = 'none';
+                if (_hudCanvas) _hudCanvas.style.display = 'none';
                 if (_generateLabelTimer) { clearTimeout(_generateLabelTimer); _generateLabelTimer = null; }
             }
         });
