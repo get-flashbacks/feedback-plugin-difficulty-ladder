@@ -25,13 +25,14 @@
     window._ddCapabilities.sectionDifficulty = true;
 
     function lsGet(key, def) {
+        let v;
         try {
-            var v = localStorage.getItem(LS_PREFIX + key);
+            v = localStorage.getItem(`${LS_PREFIX}${key}`);
             return v === null ? def : JSON.parse(v);
         } catch (_) { return def; }
     }
     function lsSet(key, val) {
-        try { localStorage.setItem(LS_PREFIX + key, JSON.stringify(val)); } catch (_) { /* noop */ }
+        try { localStorage.setItem(`${LS_PREFIX}${key}`, JSON.stringify(val)); } catch (_) { /* noop */ }
     }
 
     // ---- Per-song difficulty memory ----
@@ -41,19 +42,20 @@
     // (Slopsmith's song_mastery plugin did the same, per-filename) so
     // revisiting a song you'd auto-adjusted or manually set restores where
     // you left off, instead of inheriting an unrelated song's difficulty.
-    var SONG_MASTERY_LS_KEY = LS_PREFIX + 'songMastery';
-    var PHRASE_ATTEMPTS_LS_KEY = LS_PREFIX + 'phraseAttempts.v1';
-    var MAX_PHRASE_ATTEMPTS = 5000;
-    var _sessionId = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 10);
+    const SONG_MASTERY_LS_KEY = `${LS_PREFIX}songMastery`;
+    const PHRASE_ATTEMPTS_LS_KEY = `${LS_PREFIX}phraseAttempts.v1`;
+    const MAX_PHRASE_ATTEMPTS = 5000;
+    const _sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     // Lazily loaded, kept in sync by saveSongMasteryMap() — avoids a fresh
     // JSON.parse of the whole map on every window.setMastery() call, which
     // slider drags can fire many times a second via oninput.
-    var _songMasteryMapCache = null;
+    let _songMasteryMapCache = null;
 
     function loadSongMasteryMap() {
+        let parsed;
         if (_songMasteryMapCache) return _songMasteryMapCache;
         try {
-            var parsed = JSON.parse(localStorage.getItem(SONG_MASTERY_LS_KEY) || '{}');
+            parsed = JSON.parse(localStorage.getItem(SONG_MASTERY_LS_KEY) || '{}');
             // typeof [] === 'object' too — an array here would make
             // map[_songKey] = pct set a non-index property that
             // JSON.stringify silently drops from array output, so per-song
@@ -69,7 +71,8 @@
         try { localStorage.setItem(SONG_MASTERY_LS_KEY, JSON.stringify(map)); } catch (_) { /* noop */ }
     }
     function _masteryPct(record) {
-        var value = record && typeof record === 'object' ? record.mastery : record;
+        let value;
+        value = record && typeof record === 'object' ? record.mastery : record;
         return (typeof value === 'number' && isFinite(value)) ? value : null;
     }
     function _rememberSongInstrument(key, instrument) {
@@ -235,46 +238,46 @@
     // treatment as thresholds()/emaAlpha() above, so a future settings-slider
     // addition can follow the exact pattern already established for
     // sensitivity/reactionSpeed.
-    var WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
-    var RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
-    var DOWN_CONFIRM_PHRASES = 2;
-
-    function rampStep(th, progress) {
-        var index = Math.max(0, Math.min(RAMP_PHRASES - 1, Number(progress) || 0));
-        var before = Math.round(th.step * index / RAMP_PHRASES);
-        var after = Math.round(th.step * (index + 1) / RAMP_PHRASES);
-        return Math.max(1, after - before);
-    }
+    const WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
+    const RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
+    const DOWN_CONFIRM_PHRASES = 2;
 
     // ---- Per-song scoring state ----
-    var _songKey = null;
-    var _songInstrument = null;    // authoritative routes.py classification when available
-    var _emaHitRate = null;        // null = no phrase scored yet this song
+    let _songKey = null;
+    let _songInstrument = null;    // authoritative routes.py classification when available
+    let _emaHitRate = null;        // null = no phrase scored yet this song
     // EMA weight is now the reactionSpeed setting (emaAlpha(), above) rather
     // than a hardcoded constant — see issue #5. Read live (not cached) since
     // the settings-changed listener below can update settings.reactionSpeed
     // mid-song.
-    var _judgedKeys = null;        // Set, reset every phrase to bound memory
-    var _phraseHits = 0;
-    var _phraseTotal = 0;
-    var _phraseJudgments = [];
-    var _phrasesScored = 0;        // counts real phrases committed this song, gates WARMUP_PHRASES
-    var _curPhraseIdx = -1;
-    var _lastObservedMasteryPct = null; // detects manual slider changes before or after auto-apply
-    var _lastAutoAction = null;     // { direction, pct, reason } - for diagnostics
-    var _rampDirection = null;
-    var _rampProgress = 0;
-    var _downStreak = 0;
+    let _judgedKeys = null;        // Set, reset every phrase to bound memory
+    let _phraseHits = 0;
+    let _phraseTotal = 0;
+    let _phraseJudgments = [];
+    let _phrasesScored = 0;        // counts real phrases committed this song, gates WARMUP_PHRASES
+    let _curPhraseIdx = -1;
+    let _lastObservedMasteryPct = null; // detects manual slider changes before or after auto-apply
+    let _lastAutoAction = null;     // { direction, pct, reason } - for diagnostics
+    let _rampDirection = null;
+    let _rampProgress = 0;
+    let _downStreak = 0;
     // Forward-advancing cursors into the time-sorted notes/chords arrays —
     // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
     // performance doctrine). Reset only on a backward seek (loop/rewind).
-    var _noteCursor = 0;
-    var _chordCursor = 0;
-    var _lastScoredT = -1;
+    let _noteCursor = 0;
+    let _chordCursor = 0;
+    let _lastScoredT = -1;
+
+    function rampStep(th, progress) {
+        const index = Math.max(0, Math.min(RAMP_PHRASES - 1, Number(progress) || 0));
+        const before = Math.round(th.step * index / RAMP_PHRASES);
+        const after = Math.round(th.step * (index + 1) / RAMP_PHRASES);
+        return Math.max(1, after - before);
+    }
 
     function songKeyOf(si) {
         if (!si) return null;
-        var arrKey = (si.arrangement_index != null) ? si.arrangement_index : (si.arrangement || '');
+        const arrKey = (si.arrangement_index != null) ? si.arrangement_index : (si.arrangement || '');
         return (si.filename || '') + '::' + arrKey;
     }
 
@@ -310,17 +313,21 @@
     }
 
     function _presentedDifficultyLevel(hw, phrase) {
-        if (!hw || !phrase || typeof hw.getMastery !== 'function') return null;
-        var max = Number(phrase.max_difficulty);
-        if (!isFinite(max) || max <= 0) return 0;
-        var mastery = Number(hw.getMastery());
-        if (!isFinite(mastery)) return null;
-        return Math.min(max, Math.floor(Math.max(0, Math.min(1, mastery)) * (max + 1)));
+        const max = Number(phrase?.max_difficulty);
+        const checks = [
+            { check: () => !hw || !phrase || typeof hw.getMastery !== 'function', result: () => null },
+            { check: () => !isFinite(max) || max <= 0, result: () => 0 },
+            { check: () => { const m = Number(hw.getMastery()); return !isFinite(m); }, result: () => null },
+            { check: () => true, result: () => Math.min(max, Math.floor(Math.max(0, Math.min(1, Number(hw.getMastery()))) * (max + 1))) }
+        ];
+        const { result } = checks.find(c => c.check());
+        return result();
     }
 
     function loadPhraseAttempts() {
+        let parsed;
         try {
-            var parsed = JSON.parse(localStorage.getItem(PHRASE_ATTEMPTS_LS_KEY) || '[]');
+            parsed = JSON.parse(localStorage.getItem(PHRASE_ATTEMPTS_LS_KEY) || '[]');
             return Array.isArray(parsed) ? parsed : [];
         } catch (_) {
             return [];
@@ -333,12 +340,10 @@
 
     function recordPhraseAttempt(ratio) {
         if (!_songKey || _curPhraseIdx < 0 || _phraseTotal <= 0) return;
-        var hw = window.highway;
-        var phrases = hw && typeof hw.getPhrases === 'function' ? hw.getPhrases() : null;
-        var phrase = phrases && phrases[_curPhraseIdx];
-        var phraseId = _phraseIdOf(_songKey, _curPhraseIdx, phrase);
+        const phrase = window.highway?.getPhrases()?.[_curPhraseIdx];
+        const phraseId = _phraseIdOf(_songKey, _curPhraseIdx, phrase);
         if (!phraseId) return;
-        var attempts = loadPhraseAttempts();
+        let attempts = loadPhraseAttempts();
         attempts.push({
             schema: 'difficulty_ladder.phrase_attempt.v1',
             session_id: _sessionId,
@@ -348,7 +353,7 @@
             phrase_index: _curPhraseIdx,
             phrase_start_time: phrase.start_time,
             phrase_end_time: phrase.end_time,
-            presented_difficulty: _presentedDifficultyLevel(hw, phrase),
+            presented_difficulty: _presentedDifficultyLevel(window.highway, phrase),
             hit: ratio >= 1,
             hit_count: _phraseHits,
             miss_count: _phraseTotal - _phraseHits,
@@ -357,13 +362,14 @@
             note_results: _phraseJudgments.slice(),
             timestamp: new Date().toISOString(),
         });
-        if (attempts.length > MAX_PHRASE_ATTEMPTS) attempts = attempts.slice(attempts.length - MAX_PHRASE_ATTEMPTS);
+        attempts = attempts.slice(-MAX_PHRASE_ATTEMPTS);
         savePhraseAttempts(attempts);
     }
 
     function commitPhraseResult(ratio) {
+        var alpha, hw;
         recordPhraseAttempt(ratio);
-        var alpha = emaAlpha();
+        alpha = emaAlpha();
         _emaHitRate = (_emaHitRate == null) ? ratio : (alpha * ratio + (1 - alpha) * _emaHitRate);
         // Counts every phrase actually played this song, regardless of
         // autoAdjust — a warm-up satisfied while paused should still count
@@ -376,7 +382,7 @@
             contributeDiagnostics();
             return;
         }
-        var hw = window.highway;
+        hw = window.highway;
         if (!hw || typeof hw.getMastery !== 'function') {
             _rampDirection = null;
             _rampProgress = 0;
@@ -389,6 +395,7 @@
         if (_phrasesScored < WARMUP_PHRASES) {
             contributeDiagnostics();
             return;
+        }
         }
 
         var curPct = Math.round(hw.getMastery() * 100);
@@ -1026,19 +1033,19 @@
     // behavior is unchanged.
     if (typeof module !== 'undefined' && module.exports) {
         module.exports = {
-            thresholds: thresholds, emaAlpha: emaAlpha, songKeyOf: songKeyOf,
-            judgmentKey: judgmentKey, settings: settings,
-            _dominantSongMastery: _dominantSongMastery,
-            _masteryPct: _masteryPct, _rememberSongInstrument: _rememberSongInstrument,
-            loadSongMasteryMap: loadSongMasteryMap, saveSongMasteryMap: saveSongMasteryMap,
-            loadPhraseAttempts: loadPhraseAttempts, savePhraseAttempts: savePhraseAttempts,
-            recordPhraseAttempt: recordPhraseAttempt, _phraseIdOf: _phraseIdOf,
-            _presentedDifficultyLevel: _presentedDifficultyLevel,
-            calculateAndEmitSectionDifficulties: calculateAndEmitSectionDifficulties,
-            commitPhraseResult: commitPhraseResult, resetPerSongState: resetPerSongState,
-            rampStep: rampStep, WARMUP_PHRASES: WARMUP_PHRASES, RAMP_PHRASES: RAMP_PHRASES,
-            currentTarget: currentTarget, currentTargetStatus: currentTargetStatus,
-            mountControls: mountControls, onGenerateClick: onGenerateClick,
+            thresholds, emaAlpha, songKeyOf,
+            judgmentKey, settings,
+            _dominantSongMastery,
+            _masteryPct, _rememberSongInstrument,
+            loadSongMasteryMap, saveSongMasteryMap,
+            loadPhraseAttempts, savePhraseAttempts,
+            recordPhraseAttempt, _phraseIdOf,
+            _presentedDifficultyLevel,
+            calculateAndEmitSectionDifficulties,
+            commitPhraseResult, resetPerSongState,
+            rampStep, WARMUP_PHRASES, RAMP_PHRASES,
+            currentTarget, currentTargetStatus,
+            mountControls, onGenerateClick,
         };
         return;
     }
