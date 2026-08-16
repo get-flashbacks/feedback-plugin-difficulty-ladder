@@ -532,7 +532,6 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
             kept = [g for g in groups_sorted if g["level"] <= level]
 
         while True:
-            kept = [g for g in groups_sorted if g["level"] <= level]
             promoted = False
             for left, right in pairwise(kept):
                 if float(right["time"]) - float(left["time"]) > tempo.fret_jump_window_seconds:
@@ -557,6 +556,7 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
                     break
             if not promoted:
                 break
+            kept = [g for g in groups_sorted if g["level"] <= level]
 
 
 # Fraction of the way up a phrase's own ladder (0..1) at which a technique
