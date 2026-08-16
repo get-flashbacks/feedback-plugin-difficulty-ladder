@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-08-16
+
+### Added
+- Persist per-phrase attempt logs for adaptive-difficulty analysis under
+  `difficulty_ladder.phraseAttempts.v1`. Each record includes a stable phrase
+  identifier, presented difficulty level, phrase-level hit/miss result, per-note
+  hit/miss details, note count, hit rate, session id, timestamp, and song
+  arrangement key. The log is bounded to the latest 5000 attempts and advertised
+  through diagnostics so Phase 3 player sessions have a queryable local source.
+
 ## [0.8.2] - 2026-08-15
 
 ### Fixed

@@ -125,6 +125,33 @@ test('judgmentKey is stable and distinct per (time, string, fret)', () => {
     assert.notEqual(mod.judgmentKey(1.5, 2, 3), mod.judgmentKey(1.5, 3, 2));
 });
 
+// ── Per-phrase attempt logging (issue #53) ─────────────────────────────────
+
+test('_phraseIdOf includes the song arrangement, phrase index, and stable time window', () => {
+    const mod = freshPlugin();
+    assert.equal(
+        mod._phraseIdOf('song.feedpak::0', 2, { start_time: 12.34567, end_time: 15 }),
+        'song.feedpak::0::2::12.346::15.000'
+    );
+});
+
+test('_presentedDifficultyLevel maps current mastery onto the phrase ladder level', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.0 }, { max_difficulty: 3 }), 0);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.74 }, { max_difficulty: 3 }), 2);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 1.0 }, { max_difficulty: 3 }), 3);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.5 }, { max_difficulty: 0 }), 0);
+});
+
+test('phrase attempt log helpers ignore malformed storage and retain an array shape', () => {
+    const key = 'difficulty_ladder.phraseAttempts.v1';
+    const mod = freshPlugin({ stored: { [key]: '{"not":"an array"}' } });
+
+    assert.deepEqual(mod.loadPhraseAttempts(), []);
+    mod.savePhraseAttempts([{ phrase_id: 'p1' }]);
+    assert.deepEqual(mod.loadPhraseAttempts(), [{ phrase_id: 'p1' }]);
+});
+
 // ── reactionSpeed / EMA_ALPHA (issue #5) ────────────────────────────────────
 
 test('emaAlpha() at the default reactionSpeed (2) matches the plugin\'s original hardcoded EMA_ALPHA (0.35)', () => {

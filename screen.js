@@ -42,6 +42,9 @@
     // revisiting a song you'd auto-adjusted or manually set restores where
     // you left off, instead of inheriting an unrelated song's difficulty.
     var SONG_MASTERY_LS_KEY = LS_PREFIX + 'songMastery';
+    var PHRASE_ATTEMPTS_LS_KEY = LS_PREFIX + 'phraseAttempts.v1';
+    var MAX_PHRASE_ATTEMPTS = 5000;
+    var _sessionId = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 10);
     // Lazily loaded, kept in sync by saveSongMasteryMap() — avoids a fresh
     // JSON.parse of the whole map on every window.setMastery() call, which
     // slider drags can fire many times a second via oninput.
@@ -254,6 +257,7 @@
     var _judgedKeys = null;        // Set, reset every phrase to bound memory
     var _phraseHits = 0;
     var _phraseTotal = 0;
+    var _phraseJudgments = [];
     var _phrasesScored = 0;        // counts real phrases committed this song, gates WARMUP_PHRASES
     var _curPhraseIdx = -1;
     var _lastObservedMasteryPct = null; // detects manual slider changes before or after auto-apply
@@ -279,6 +283,7 @@
         _judgedKeys = new Set();
         _phraseHits = 0;
         _phraseTotal = 0;
+        _phraseJudgments = [];
         _phrasesScored = 0;
         _curPhraseIdx = -1;
         _lastObservedMasteryPct = null;
@@ -294,7 +299,70 @@
 
     function judgmentKey(time, s, f) { return time + '_' + s + '_' + f; }
 
+    function _phraseIdOf(songKey, idx, phrase) {
+        if (!songKey || idx == null || idx < 0 || !phrase) return null;
+        return [
+            songKey,
+            idx,
+            Number(phrase.start_time || 0).toFixed(3),
+            Number(phrase.end_time || 0).toFixed(3),
+        ].join('::');
+    }
+
+    function _presentedDifficultyLevel(hw, phrase) {
+        if (!hw || !phrase || typeof hw.getMastery !== 'function') return null;
+        var max = Number(phrase.max_difficulty);
+        if (!isFinite(max) || max <= 0) return 0;
+        var mastery = Number(hw.getMastery());
+        if (!isFinite(mastery)) return null;
+        return Math.min(max, Math.floor(Math.max(0, Math.min(1, mastery)) * (max + 1)));
+    }
+
+    function loadPhraseAttempts() {
+        try {
+            var parsed = JSON.parse(localStorage.getItem(PHRASE_ATTEMPTS_LS_KEY) || '[]');
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (_) {
+            return [];
+        }
+    }
+
+    function savePhraseAttempts(attempts) {
+        try { localStorage.setItem(PHRASE_ATTEMPTS_LS_KEY, JSON.stringify(attempts)); } catch (_) { /* noop */ }
+    }
+
+    function recordPhraseAttempt(ratio) {
+        if (!_songKey || _curPhraseIdx < 0 || _phraseTotal <= 0) return;
+        var hw = window.highway;
+        var phrases = hw && typeof hw.getPhrases === 'function' ? hw.getPhrases() : null;
+        var phrase = phrases && phrases[_curPhraseIdx];
+        var phraseId = _phraseIdOf(_songKey, _curPhraseIdx, phrase);
+        if (!phraseId) return;
+        var attempts = loadPhraseAttempts();
+        attempts.push({
+            schema: 'difficulty_ladder.phrase_attempt.v1',
+            session_id: _sessionId,
+            song_key: _songKey,
+            instrument: _songInstrument,
+            phrase_id: phraseId,
+            phrase_index: _curPhraseIdx,
+            phrase_start_time: phrase.start_time,
+            phrase_end_time: phrase.end_time,
+            presented_difficulty: _presentedDifficultyLevel(hw, phrase),
+            hit: ratio >= 1,
+            hit_count: _phraseHits,
+            miss_count: _phraseTotal - _phraseHits,
+            note_count: _phraseTotal,
+            hit_rate: ratio,
+            note_results: _phraseJudgments.slice(),
+            timestamp: new Date().toISOString(),
+        });
+        if (attempts.length > MAX_PHRASE_ATTEMPTS) attempts = attempts.slice(attempts.length - MAX_PHRASE_ATTEMPTS);
+        savePhraseAttempts(attempts);
+    }
+
     function commitPhraseResult(ratio) {
+        recordPhraseAttempt(ratio);
         var alpha = emaAlpha();
         _emaHitRate = (_emaHitRate == null) ? ratio : (alpha * ratio + (1 - alpha) * _emaHitRate);
         // Counts every phrase actually played this song, regardless of
@@ -389,6 +457,12 @@
             provider_registered: !!provider,
             auto_adjust_enabled: settings.autoAdjust,
             show_glasses: settings.showGlasses,
+            phrase_attempt_log: {
+                storage_key: PHRASE_ATTEMPTS_LS_KEY,
+                schema: 'difficulty_ladder.phrase_attempt.v1',
+                retained_attempts: loadPhraseAttempts().length,
+                max_retained_attempts: MAX_PHRASE_ATTEMPTS,
+            },
         });
     }
 
@@ -499,6 +573,7 @@
             _curPhraseIdx = idx;
             _phraseHits = 0;
             _phraseTotal = 0;
+            _phraseJudgments = [];
             _judgedKeys = new Set();
         }
         if (idx < 0) return;
@@ -532,6 +607,7 @@
                 _judgedKeys.add(nk);
                 _phraseTotal++;
                 if (nname === 'hit') _phraseHits++;
+                _phraseJudgments.push({ key: nk, time: n.t, string: n.s, fret: n.f, hit: nname === 'hit' });
             }
         }
 
@@ -554,6 +630,7 @@
                     _judgedKeys.add(ck);
                     _phraseTotal++;
                     if (cname === 'hit') _phraseHits++;
+                    _phraseJudgments.push({ key: ck, time: c.t, string: cn.s, fret: cn.f, hit: cname === 'hit' });
                 }
             }
         }
@@ -954,6 +1031,9 @@
             _dominantSongMastery: _dominantSongMastery,
             _masteryPct: _masteryPct, _rememberSongInstrument: _rememberSongInstrument,
             loadSongMasteryMap: loadSongMasteryMap, saveSongMasteryMap: saveSongMasteryMap,
+            loadPhraseAttempts: loadPhraseAttempts, savePhraseAttempts: savePhraseAttempts,
+            recordPhraseAttempt: recordPhraseAttempt, _phraseIdOf: _phraseIdOf,
+            _presentedDifficultyLevel: _presentedDifficultyLevel,
             calculateAndEmitSectionDifficulties: calculateAndEmitSectionDifficulties,
             commitPhraseResult: commitPhraseResult, resetPerSongState: resetPerSongState,
             rampStep: rampStep, WARMUP_PHRASES: WARMUP_PHRASES, RAMP_PHRASES: RAMP_PHRASES,
