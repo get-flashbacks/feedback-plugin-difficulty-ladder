@@ -181,8 +181,16 @@
         if (!isFinite(pct)) return;
         pct = Math.max(0, Math.min(100, pct));
         var map = loadSongMasteryMap();
-        // Emit updated section difficulties when mastery changes
-        calculateAndEmitSectionDifficulties();
+        // Emit updated section difficulties when mastery changes. Debounced
+        // (see scheduleSectionDifficultiesEmit) rather than called directly:
+        // slider drags fire oninput per pixel — window.setMastery() (and thus
+        // this hook) can run many times a second, and
+        // calculateAndEmitSectionDifficulties() is an O(sections*phrases)
+        // recompute plus an fb.emit() that runs every listener (e.g. Section
+        // Map's own re-render) synchronously in the same call stack. Running
+        // that on every pixel of a drag is exactly the kind of high-frequency
+        // handler CLAUDE.md's performance section calls out for debouncing.
+        scheduleSectionDifficultiesEmit();
         // Slider drags fire oninput per pixel — window.setMastery() (and thus
         // this hook) can run many times a second. Skip the parse/stringify/
         // write when the stored value hasn't actually changed.
@@ -302,6 +310,7 @@
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
+        _hudPhraseIdx = -1;
     }
     resetPerSongState();
 
@@ -470,6 +479,25 @@
             mastery: mastery,
             maxDifficulty: maxDiff,
         });
+    }
+
+    // Coalesces rapid-fire calculateAndEmitSectionDifficulties() calls (e.g.
+    // the mastery slider's oninput firing per pixel dragged) into one
+    // trailing-edge run — same debounce shape as lsSetDebounced above, for
+    // the same reason: a per-note/per-frame-adjacent handler must not do
+    // unbounded work on every single high-frequency event.
+    var _sectionDiffEmitTimer = null;
+    function scheduleSectionDifficultiesEmit() {
+        if (_sectionDiffEmitTimer) return; // already scheduled — trailing call will cover this one too
+        _sectionDiffEmitTimer = setTimeout(function () {
+            _sectionDiffEmitTimer = null;
+            calculateAndEmitSectionDifficulties();
+        }, 150);
+    }
+    function cancelSectionDifficultiesEmit() {
+        if (!_sectionDiffEmitTimer) return;
+        clearTimeout(_sectionDiffEmitTimer);
+        _sectionDiffEmitTimer = null;
     }
 
     // Reads live per-note judgments through the note-state provider slot
@@ -748,6 +776,15 @@
     var _hudRafHandle = null;
     var _playerEl = null;   // cached — re-resolved only if disconnected, never per-frame-queried
     var GLASS_W = 26, GLASS_GAP = 8, GLASS_MAX_H = 44, GLASS_MIN_H = 16, LOOKAHEAD = 5;
+    // Cached "which phrase is current" index for drawHud's own rAF loop,
+    // mirroring tickScoring's _curPhraseIdx/_noteCursor cursor pattern
+    // (CLAUDE.md: never redo O(N) work on a per-frame path). drawHud runs
+    // independently of tickScoring (it must keep drawing even when no
+    // scorer/provider is active), so it needs its own cached index rather
+    // than reusing _curPhraseIdx, which tickScoring only maintains while a
+    // provider is present. Reset on song change alongside the rest of
+    // resetPerSongState()'s per-song cursors.
+    var _hudPhraseIdx = -1;
 
     function getPlayerEl() {
         if (!_playerEl || !_playerEl.isConnected) _playerEl = document.getElementById('player');
@@ -802,7 +839,15 @@
         canvas.style.display = '';
 
         var t = hw.getTime();
-        var curIdx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
+        // Reuse the cached index across frames instead of an O(phrases.length)
+        // findIndex scan every rAF tick — only rescans when the cached phrase
+        // no longer covers `t` (same cursor-caching idea tickScoring already
+        // applies to _curPhraseIdx above).
+        var curIdx = _hudPhraseIdx;
+        if (curIdx < 0 || curIdx >= phrases.length || t < phrases[curIdx].start_time || t >= phrases[curIdx].end_time) {
+            curIdx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
+        }
+        _hudPhraseIdx = curIdx;
         if (curIdx < 0) curIdx = 0;
 
         var start = Math.max(0, curIdx - 1);
@@ -1064,7 +1109,11 @@
         updateGenerateButtonVisibility();
         startRafLoops();
         contributeDiagnostics();
-        // Emit section difficulty data for sectionmap plugin
+        // Emit section difficulty data for sectionmap plugin. Drop any
+        // still-pending debounced emit from the previous song first, so a
+        // stray trailing-edge fire can't immediately re-emit stale data for
+        // the song we just navigated away from.
+        cancelSectionDifficultiesEmit();
         calculateAndEmitSectionDifficulties();
     }
 
@@ -1097,6 +1146,7 @@
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
                 if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
                 _clearGenerateLabelTimer();
+                cancelSectionDifficultiesEmit();
                 if (_hudCanvas) _hudCanvas.style.display = 'none';
                 if (_generateLabelTimer) { clearTimeout(_generateLabelTimer); _generateLabelTimer = null; }
             }
