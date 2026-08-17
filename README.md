@@ -30,7 +30,7 @@ difficulty indicators.
 
 | Instrument | Supported? | Notes |
 |---|---|---|
-| Guitar / bass (fretted) | ✅ | Fret complexity, span, technique (bend/slide/hammer-on/tremolo/harmonic), density, sustain-ease. |
+| Guitar / bass (fretted) | ✅ | Fret complexity, span, string-skip/hand-shape distance, technique (bend/slide/hammer-on/tremolo/harmonic), tempo/syncopation-aware density, sustain-ease. Timing thresholds (grouping window, beat tolerance, fret-jump window) scale with the song's own tempo instead of fixed wall-clock constants. |
 | Keys / piano | ✅ | Separate pitch-based heuristic (polyphony, hand-span, density, sustain-ease) — keys notes encode `midi = string*24 + fret`, so the fretted heuristic doesn't apply and never runs against them. No fret anchors/hand-shapes generated (the piano renderer doesn't consume them). |
 | Drums | ❌ | Drum parts are a `drum_tab.json` pointer, not a `notes`/`chords` file — outside this generator's data model entirely. Detected and skipped cleanly (`unsupported-instrument-drums`), never mis-scored. |
 
@@ -110,7 +110,7 @@ All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 | Field | Value |
 |-------|-------|
 | id | `difficulty_ladder` |
-| version | 0.7.1 |
+| version | 0.9.0 |
 | category | practice |
 
 ## Possible Upgrades
@@ -118,12 +118,6 @@ All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 Design notes only — not yet implemented. Each item should ship as an
 independent, opt-in setting so existing behavior doesn't change unless a
 user turns it on.
-
-**Recommended (low effort, self-contained):**
-
-| Upgrade | What it would do |
-|---|---|
-| Hand-position continuity check in generated ladders | The note-thinning heuristic scores each note group in isolation, with no check on fret distance between consecutive kept notes, and no explicit preference for keeping each group's root note or landing on-beat. A generated lower tier could introduce an awkward hand jump or drop the harmonic/rhythmic anchor the full arrangement doesn't have. Medium effort — touches generation output, needs fixture tests. |
 
 **Also considered:**
 

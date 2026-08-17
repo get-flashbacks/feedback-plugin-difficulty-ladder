@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Fretted-instrument ladder generation given a second pass, this time grounded in tempo,
+  rhythm, and hand-shape signals the previous heuristic pass didn't model at all:
+  - **Tempo-relative thresholds**: the note-clustering window, beat-alignment tolerance,
+    fret-jump window, and sustain-ease normalizer were all fixed wall-clock constants
+    (150ms, 0.06s, 1.0s, 2.0s) regardless of song tempo — the same 150ms window is
+    roughly a 16th note at 100bpm but nearly a full beat at 200bpm. `_median_beat_interval`
+    now derives the song's own tactus (median inter-beat gap, robust to a stray
+    double-tap) from `arr["beats"]` and re-expresses all four constants as beat-relative
+    fractions, falling back to the original absolute values whenever there's under 8
+    usable beats or the derived tempo falls outside a ~24-400bpm sanity band.
+  - **Measure-aligned fallback phrase windows**: when a song has neither `section_times`
+    nor its own `sections`, generation previously chopped into blind, musically-arbitrary
+    30-second windows. `_measure_aligned_windows` now groups the arrangement's own
+    downbeats (`beats[].measure`, feedpak-spec §6.8) into 8-measure windows instead —
+    roughly two 4-bar phrases, a common phrase length in popular/rock music — falling
+    back to the legacy 30s chunker only when there isn't enough real downbeat data to
+    trust.
+  - **Syncopation-aware density**: the density sub-score was a raw neighbor-note count,
+    so a straight run of eighth notes and an equally dense syncopated off-beat pattern
+    scored identically, even though off-the-grid rhythm is independently harder to read.
+    `_syncopation_score` now blends in how far a group's onset sits from the nearest beat.
+  - **String-skip / hand-shape difficulty**: the fretting score's hand-shape term only
+    counted how many strings a group touched, not how far apart they were — playing
+    strings 1 and 6 together scored the same as adjacent strings 1 and 2. Added a
+    string-spread component to the fretting score, a parallel string-jump score bonus
+    alongside the existing fret-jump bonus, and a string-distance trigger on the
+    lower-tier continuity bridging pass (`_refine_lower_tier_path`) so a hand-shape-
+    changing string skip gets bridged even when the fret distance alone is small.
+  - **Gradual fretted chord voicing**: below the top tier, chords used to jump straight
+    from a root-only voicing to a flat 2-note cut with nothing in between, and partial
+    voicings were picked by string-index rank alone. Fretted chord thinning now widens
+    through a real middle rung (root -> 2 notes -> 3 notes -> full) for 4+-note chords,
+    matching the shape the keys/piano path already had, and `_pick_partial_voicing`
+    chooses which notes survive a partial voicing by fret proximity (preferring open
+    strings and small stretches) instead of raw string-index order — so a "simplified"
+    chord isn't still a hard stretch.
+  - Regenerating a previously-generated ladder (`force=true`) on a song with usable beat
+    data will now produce different exact scores than before, even though the qualitative
+    behavior (harder passages still rank harder) is unchanged — worth knowing before a
+    library-wide `force` sweep.
+  - Keys/piano generation is unchanged by this pass — none of the above targets its
+    scoring path.
+
 ## [0.8.2] - 2026-08-15
 
 ### Fixed
