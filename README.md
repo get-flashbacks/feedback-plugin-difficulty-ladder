@@ -30,7 +30,7 @@ difficulty indicators.
 
 | Instrument | Supported? | Notes |
 |---|---|---|
-| Guitar / bass (fretted) | ✅ | Fret complexity, span, string-skip/hand-shape distance, technique (bend/slide/hammer-on/tremolo/harmonic), tempo/syncopation-aware density, sustain-ease. Timing thresholds (grouping window, beat tolerance, fret-jump window) scale with the song's own tempo instead of fixed wall-clock constants. |
+| Guitar / bass (fretted) | ✅ | Fret complexity, span, string-skip/hand-shape distance, tempo/syncopation-aware density, sustain-ease. Technique scoring covers bend (base + pre-bend/round-trip/shaped-curve difficulty, `bt`/`bnv`), slide, hammer-on/pull-off, tremolo, natural vs. pinch harmonic (scored independently), palm/string mute, vibrato, fret-hand mute, and bass slap/pop (scored independently, slap weighted harder). Timing thresholds (grouping window, beat tolerance, fret-jump window) scale with the song's own tempo instead of fixed wall-clock constants. |
 | Keys / piano | ✅ | Separate pitch-based heuristic (polyphony, hand-span, density, sustain-ease) — keys notes encode `midi = string*24 + fret`, so the fretted heuristic doesn't apply and never runs against them. No fret anchors/hand-shapes generated (the piano renderer doesn't consume them). |
 | Drums | ❌ | Drum parts are a `drum_tab.json` pointer, not a `notes`/`chords` file — outside this generator's data model entirely. Detected and skipped cleanly (`unsupported-instrument-drums`), never mis-scored. |
 
@@ -126,12 +126,18 @@ user turns it on.
   song-wide master-difficulty slider. A genuinely new capability, not
   something the plugin does today; would need to interact cleanly with
   auto-adjust and with any step-practice plugin active for the same
-  section, rather than duplicating it.
+  section, rather than duplicating it. (Measure-aligned fallback phrase
+  windows, added for songs with no authored sections, make this more
+  practical than it used to be — those songs previously only had blind
+  30s chunks to hang a per-section override on.)
 - Adaptive baseline per instrument, shown on the Profile screen — a card
   computed from this plugin's own per-song mastery memory, grouped by
   instrument, using the v3 Profile screen's plugin extension point
   (`v3:profile-rendered`). Informational only to start — no change to how
-  a brand-new song's starting difficulty is chosen.
+  a brand-new song's starting difficulty is chosen. (A generated ladder's
+  difficulty % is now calibrated against a much fuller technique
+  vocabulary — see Instrument coverage above — so it's a more consistent
+  cross-song signal for this to aggregate than it used to be.)
 - Direction-asymmetric step size (larger downward steps than upward).
 - A passive "mastery streak" indicator on the glass HUD when accuracy
   stays high at max difficulty for several consecutive phrases — visual
@@ -149,10 +155,18 @@ user turns it on.
   consuming plugin can add unilaterally.
 - Generating dozens of levels per phrase — the cap is trivial to raise,
   but the thinning heuristic needs enough distinct note groups per phrase
-  to populate that many meaningfully different tiers.
+  to populate that many meaningfully different tiers. (Richer per-
+  technique scoring gives whatever depth *is* chosen a more honest score
+  spread to work from, but doesn't touch this group-count constraint, so
+  the verdict here is unchanged.)
 - A full cross-song, per-technique skill profile — a materially larger
   feature than the scoped per-instrument baseline above, and lower value
-  for a tool where users pick what to practice.
+  for a tool where users pick what to practice. (`_tech_score`/
+  `_TECH_GATE_FRAC` now cover the note wire format's full technique
+  vocabulary — bend shape, both harmonic types, all four mute/pop/slap
+  variants — instead of roughly half of it, so the data-layer cost of
+  ever revisiting this decision is lower than it used to be. Still not
+  something this plugin builds today.)
 
 ## Design notes
 
