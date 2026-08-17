@@ -625,3 +625,59 @@ def test_bass_slap_and_pop_are_gated_and_pruned():
     assert routes._prune_techniques(note_slp, diff_percent=0.95).get("slp") is True
     assert "plk" not in routes._prune_techniques(note_plk, diff_percent=0.5)
     assert routes._prune_techniques(note_plk, diff_percent=0.85).get("plk") is True
+
+
+# ── Follow-up 2: palm mute / string mute / vibrato / fret-hand mute ────────
+
+def test_palm_mute_string_mute_and_vibrato_now_contribute_to_the_score():
+    # Regression guard for the gap this follow-up closes: pm/mt/vb were
+    # already gated (stripped correctly once a tier was assigned) but
+    # contributed nothing to the score that decides which tier a note
+    # lands in to begin with.
+    plain = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
+    palm_muted = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "pm": True}]}]
+    string_muted = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "mt": True}]}]
+    vibrato = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "vb": True}]}]
+    for group in (plain, palm_muted, string_muted, vibrato):
+        routes._score_groups(group, n_strings=6)
+    assert palm_muted[0]["score"] > plain[0]["score"]
+    assert string_muted[0]["score"] > plain[0]["score"]
+    assert vibrato[0]["score"] > plain[0]["score"]
+
+
+def test_fret_hand_mute_now_scored_and_gated():
+    # fhm was previously in neither _tech_score nor _TECH_GATE_FRAC: unscored
+    # AND ungated, so it survived at every difficulty tier regardless of how
+    # hard the passage was.
+    plain = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
+    fret_hand_muted = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "fhm": True}]}]
+    routes._score_groups(plain, n_strings=6)
+    routes._score_groups(fret_hand_muted, n_strings=6)
+    assert fret_hand_muted[0]["score"] > plain[0]["score"]
+
+    note = {"t": 0.0, "s": 2, "f": 3, "sus": 0, "fhm": True}
+    assert "fhm" not in routes._prune_techniques(note, diff_percent=0.5)
+    assert routes._prune_techniques(note, diff_percent=0.80).get("fhm") is True
+
+
+def test_pm_mt_vb_fhm_gated_out_of_low_tiers_end_to_end():
+    def arr_with_technique(key):
+        notes = []
+        t = 0.0
+        for i in range(60):
+            n = {"t": round(t, 3), "s": i % 6, "f": (i * 3) % 20 + 1, "sus": 0}
+            if i % 3 == 0:
+                n[key] = True if key != "bn" else 1.0
+            notes.append(n)
+            t += 0.15
+        return _arrangement(notes)
+
+    for key in ("pm", "mt", "vb", "fhm"):
+        arr = arr_with_technique(key)
+        phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+        assert phrases
+        bottom_notes = phrases[0]["levels"][0]["notes"]
+        assert not any(n.get(key) for n in bottom_notes), (
+            f"{key} should not survive into the bottom tier of a technical phrase "
+            f"now that it's gated and scored"
+        )

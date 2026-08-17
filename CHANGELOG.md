@@ -54,6 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     timing after the pick strike — they're now scored independently, with `hp` weighted
     higher than `hm` (their existing gate fractions, 0.95 vs 0.75, already reflected the
     later-introduction intent; only the scoring side was unified).
+  - **Two more technique gaps found while auditing the rest of the note wire format
+    (feedpak-spec §6.2) against `_tech_score`/`_TECH_GATE_FRAC`**: palm mute (`pm`),
+    string mute (`mt`), and vibrato (`vb`) were present in `_TECH_GATE_FRAC` (gated/
+    stripped correctly once a tier was assigned) but absent from `_tech_score` — the
+    same class of bug as slap/pop above, just not caught in that pass — so they
+    contributed nothing to the score that decides which tier a note lands in to begin
+    with. Fret-hand mute (`fhm`, often paired with slap/pop for percussive muted
+    "ghost notes") was in neither: unscored *and* ungated, so it survived at every
+    difficulty tier regardless of how hard the passage was. All four are now scored
+    and `fhm` is now gated (alongside natural harmonics, 0.75).
   - Regenerating a previously-generated ladder (`force=true`) on a song with usable beat
     data will now produce different exact scores than before, even though the qualitative
     behavior (harder passages still rank harder) is unchanged — worth knowing before a

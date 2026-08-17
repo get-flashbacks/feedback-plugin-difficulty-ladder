@@ -138,6 +138,17 @@ def _tech_score(n):
     # picked note. Slap (a percussive thumb strike, a distinct right-hand
     # technique paradigm) is weighted above pop, mirroring how it's
     # generally regarded as the harder half of the "slap and pop" pairing.
+    # pm/mt/vb were previously present in _TECH_GATE_FRAC (gated/stripped
+    # correctly once a tier was assigned) but absent here — they contributed
+    # nothing to the score that decides which tier a note lands in to begin
+    # with. fhm (fret-hand mute — often paired with slap/pop for percussive
+    # muted "ghost notes") was in neither: unscored AND ungated, so it
+    # survived at every difficulty tier regardless of how hard the passage
+    # was. Weights below are modest for pm/mt (consistent picking-hand/
+    # fretting-hand pressure, but not independently demanding) and higher
+    # for vb (a controlled, sustained oscillation — closer in kind to
+    # tremolo) and fhm (deliberate hand-relaxation control while still
+    # tracking rhythm precisely).
     score = 0.0
     if n.get("bn"):
         score += 0.4
@@ -157,6 +168,14 @@ def _tech_score(n):
         score += 0.30
     if n.get("slp"):
         score += 0.45
+    if n.get("pm"):
+        score += 0.15
+    if n.get("mt"):
+        score += 0.15
+    if n.get("vb"):
+        score += 0.25
+    if n.get("fhm"):
+        score += 0.20
     return min(1.0, score)
 
 
@@ -468,17 +487,21 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
 # sample of authored ladders, hand-tuned and tool-generated, across genres)
 # showed these actually get introduced: sustain/legato-adjacent techniques
 # (bends, vibrato) show up earliest, palm mutes/slides/pop in the middle,
-# natural harmonics and hammer-on/pull-off chains later, tremolo/slap/tap/
-# pinch-harmonic reserved for the hardest tier or two. Pinch harmonics gate
-# later than natural harmonics (0.95 vs 0.75) since the thumb-touch timing
-# they require is markedly less forgiving; on the bass side, slap gates
-# later than pop (0.90 vs 0.80) for the same reason — slap's percussive
-# thumb strike is the harder half of the "slap and pop" pairing.
+# natural harmonics/fret-hand-mutes/hammer-on/pull-off chains later,
+# tremolo/slap/tap/pinch-harmonic reserved for the hardest tier or two.
+# Pinch harmonics gate later than natural harmonics (0.95 vs 0.75) since
+# the thumb-touch timing they require is markedly less forgiving; on the
+# bass side, slap gates later than pop (0.90 vs 0.80) for the same reason
+# — slap's percussive thumb strike is the harder half of the "slap and
+# pop" pairing. fhm (fret-hand mute) gates alongside natural harmonics —
+# often paired with slap/pop for percussive muted "ghost notes," so it
+# belongs in the same "moderately advanced, single coordinated hand-
+# position" tier rather than the earlier pm/mt picking-hand mutes.
 _TECH_GATE_FRAC = {
     "bn": 0.50,
     "pm": 0.55, "mt": 0.55,
     "vb": 0.70,
-    "hm": 0.75,
+    "hm": 0.75, "fhm": 0.75,
     "ho": 0.80, "po": 0.80,
     "plk": 0.80,
     "sl": 0.85, "slu": 0.85,
