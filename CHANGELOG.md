@@ -11,13 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Replaced several logical-AND guards with optional chaining in `screen.js` for
-  readability/null-safety (HUD canvas visibility handling, player active-state
-  check, `window.feedBack.currentSong` access, `data.error` logging,
-  `window.highway.reconnect` calls, and `event.detail` reads on the
-  `highway:visibility`/settings-changed handlers). One site (`_hudCanvas?.style
-  .display = 'none'`) was reverted back to the original `if (_hudCanvas)` guard
-  during review — optional chaining is never valid on the left-hand side of an
-  assignment and broke the file's syntax outright.
+  readability/null-safety (HUD canvas connectivity check, player active-state
+  check, `window.feedBack.currentSong` access, `data.error` logging, and
+  `event.detail` reads on the `highway:visibility`/settings-changed handlers).
+  Two sites were reverted during review: `_hudCanvas?.style.display = 'none'`
+  (optional chaining is never valid on the left-hand side of an assignment and
+  broke the file's syntax outright) and `hw?.reconnect?.(...)` (the highway
+  plugin's method calls deliberately guard with `typeof ... === 'function'` for
+  version-skew safety).
 
 ## [0.8.2] - 2026-08-15
 
