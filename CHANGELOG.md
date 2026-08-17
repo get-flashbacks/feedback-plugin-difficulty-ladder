@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `_measure_aligned_windows` dropped a song's first downbeat whenever its measure
+  numbering started at 0 instead of 1 — the filter required `measure > 0`, but feedBack's
+  own runtime convention (`static/highway.js`'s `isMeasure = beat.measure >= 0`,
+  `static/js/count-in.js`, `plugins/highway_3d/screen.js`) treats any non-negative
+  measure as a real downbeat; only `-1` means "not a downbeat." A 0-based song had every
+  later phrase boundary shifted by one measure, or fell below `min_downbeats` and
+  reverted to the blind 30-second chunker this whole fallback exists to avoid. Now
+  `>= 0`, matching core's actual convention — behaviorally identical to `> 0` on
+  spec-conformant data (feedpak-spec's `song_timeline.json` prose says this field is
+  1-based and should never contain 0), so the fix only matters for defensiveness and
+  ecosystem consistency. (Found in code review.)
+- `_best_bridge_candidate`'s acceptance check was fret-only (`worst_jump < original_jump`),
+  so the string-jump bridging trigger added above could fire and then find nothing to
+  promote: when the fret jump was already 0 (identical fret, only the string differs —
+  exactly the case that trigger exists for), no candidate could ever satisfy
+  `worst_jump < 0`. Acceptance now also succeeds when a candidate improves the *string*
+  distance, mirroring the OR-shaped trigger condition that decided bridging was needed in
+  the first place. (Found in code review; the existing string-skip regression test used a
+  small-but-nonzero fret jump specifically to route around this exact gap rather than
+  exercise it — added a true zero-fret-jump case.)
+- A stripped bend (`bn` zeroed below its own gate) could still leave a stale `bt=1`
+  (release) behind on the note — `bt`'s own gate deliberately spares release since it
+  isn't meaningfully harder than a plain bend, but that carve-out shouldn't apply once
+  the bend itself is gone entirely. `bn`'s gate now clears `bt` unconditionally instead
+  of only when the harder intents (2/3/4) are present. (Found in code review; the
+  existing stale-bend regression test only exercised `bt=3`, so it didn't catch the
+  `bt=1` case — extended.)
+
+### Changed
+- Bundled the tempo-relative thresholds (`time_window_ms`, `beat_tolerance`,
+  `fret_jump_window_seconds`, `sustain_ease_norm_seconds`, `beat_interval`) into a single
+  `_TempoParams` dataclass, resolved once per arrangement via `_TempoParams.from_beats()`
+  and threaded through `_score_groups`/`_best_bridge_candidate`/`_refine_lower_tier_path`
+  as one `tempo=` argument instead of four-to-five separate keyword arguments. No behavior
+  change — a bare `_TempoParams()` reproduces the prior no-tempo-signal fallback exactly.
+- Extracted the fret-span arithmetic (open strings excluded, `max - min` across fretted
+  notes, 0 below two fretted notes) that `_span_score` and `_pick_partial_voicing`'s
+  greedy candidate search had each implemented separately into one shared `_fret_span()`
+  helper, so the two can't quietly diverge on what "span" means if either is tuned later.
+- Fretted-instrument ladder generation given a second pass, this time grounded in tempo,
+  rhythm, and hand-shape signals the previous heuristic pass didn't model at all:
+  - **Tempo-relative thresholds**: the note-clustering window, beat-alignment tolerance,
+    fret-jump window, and sustain-ease normalizer were all fixed wall-clock constants
+    (150ms, 0.06s, 1.0s, 2.0s) regardless of song tempo — the same 150ms window is
+    roughly a 16th note at 100bpm but nearly a full beat at 200bpm. `_median_beat_interval`
+    now derives the song's own tactus (median inter-beat gap, robust to a stray
+    double-tap) from `arr["beats"]` and re-expresses all four constants as beat-relative
+    fractions, falling back to the original absolute values whenever there's under 8
+    usable beats or the derived tempo falls outside a ~24-400bpm sanity band.
+  - **Measure-aligned fallback phrase windows**: when a song has neither `section_times`
+    nor its own `sections`, generation previously chopped into blind, musically-arbitrary
+    30-second windows. `_measure_aligned_windows` now groups the arrangement's own
+    downbeats (`beats[].measure`, feedpak-spec §6.8) into 8-measure windows instead —
+    roughly two 4-bar phrases, a common phrase length in popular/rock music — falling
+    back to the legacy 30s chunker only when there isn't enough real downbeat data to
+    trust.
+  - **Syncopation-aware density**: the density sub-score was a raw neighbor-note count,
+    so a straight run of eighth notes and an equally dense syncopated off-beat pattern
+    scored identically, even though off-the-grid rhythm is independently harder to read.
+    `_syncopation_score` now blends in how far a group's onset sits from the nearest beat.
+  - **String-skip / hand-shape difficulty**: the fretting score's hand-shape term only
+    counted how many strings a group touched, not how far apart they were — playing
+    strings 1 and 6 together scored the same as adjacent strings 1 and 2. Added a
+    string-spread component to the fretting score, a parallel string-jump score bonus
+    alongside the existing fret-jump bonus, and a string-distance trigger on the
+    lower-tier continuity bridging pass (`_refine_lower_tier_path`) so a hand-shape-
+    changing string skip gets bridged even when the fret distance alone is small.
+  - **Gradual fretted chord voicing**: below the top tier, chords used to jump straight
+    from a root-only voicing to a flat 2-note cut with nothing in between, and partial
+    voicings were picked by string-index rank alone. Fretted chord thinning now widens
+    through a real middle rung (root -> 2 notes -> 3 notes -> full) for 4+-note chords,
+    matching the shape the keys/piano path already had, and `_pick_partial_voicing`
+    chooses which notes survive a partial voicing by fret proximity (preferring open
+    strings and small stretches) instead of raw string-index order — so a "simplified"
+    chord isn't still a hard stretch.
+  - **Technique weighting gaps closed**: bass slap (`slp`) and pop/pluck (`plk`) notes
+    previously contributed nothing to `_tech_score`/`_TECH_GATE_FRAC` at all — a slap-bass
+    note scored (and was gated) identically to a plain picked note, even though slap/pop is
+    a genuinely harder right-hand technique. Both are now scored and gated, with slap
+    (the percussive thumb-strike half of "slap and pop") weighted and gated later than pop.
+    Separately, pinch harmonics (`hp`) and natural harmonics (`hm`) were scored as one
+    shared term despite pinch harmonics needing markedly less forgiving thumb-touch
+    timing after the pick strike — they're now scored independently, with `hp` weighted
+    higher than `hm` (their existing gate fractions, 0.95 vs 0.75, already reflected the
+    later-introduction intent; only the scoring side was unified).
+  - **Two more technique gaps found while auditing the rest of the note wire format
+    (feedpak-spec §6.2) against `_tech_score`/`_TECH_GATE_FRAC`**: palm mute (`pm`),
+    string mute (`mt`), and vibrato (`vb`) were present in `_TECH_GATE_FRAC` (gated/
+    stripped correctly once a tier was assigned) but absent from `_tech_score` — the
+    same class of bug as slap/pop above, just not caught in that pass — so they
+    contributed nothing to the score that decides which tier a note lands in to begin
+    with. Fret-hand mute (`fhm`, often paired with slap/pop for percussive muted
+    "ghost notes") was in neither: unscored *and* ungated, so it survived at every
+    difficulty tier regardless of how hard the passage was. All four are now scored
+    and `fhm` is now gated (alongside natural harmonics, 0.75).
+  - **Bend shape (`bt`, `bnv`) is no longer invisible to scoring.** Every bend previously
+    scored identically regardless of shape, even though a pre-bend (`bt` 2/3 — bending to
+    the target pitch *before* picking, with no real-time auditory feedback to correct
+    against) is materially harder than hearing the pitch rise as you bend, and a round-trip
+    (`bt` 4) demands bidirectional control within one note's sustain. Release (`bt` 1) isn't
+    penalized — a controlled descent from an already-established pitch isn't meaningfully
+    harder than a plain bend-up. A `bnv` curve with more than the trivial two points a plain
+    `bn` ramp already implies now also nudges the score up (deliberate mid-bend shaping).
+    Gating mirrors this: `bt` and `bnv` gate *above* `bn`'s own gate (0.65 and 0.80 vs 0.50)
+    since they only mean anything in the context of an active bend — this also fixes a
+    latent bug where a fully-stripped bend (`bn` zeroed below its gate) could leave a stale
+    `bt`/`bnv` behind describing a bend that no longer existed; both are now cleared
+    whenever `bn` is.
+  - Regenerating a previously-generated ladder (`force=true`) on a song with usable beat
+    data will now produce different exact scores than before, even though the qualitative
+    behavior (harder passages still rank harder) is unchanged — worth knowing before a
+    library-wide `force` sweep.
+  - Keys/piano generation is unchanged by this pass — none of the above targets its
+    scoring path.
+
 ## [0.8.2] - 2026-08-15
 
 ### Fixed
