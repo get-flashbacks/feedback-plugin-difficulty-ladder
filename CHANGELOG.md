@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `_measure_aligned_windows` dropped a song's first downbeat whenever its measure
+  numbering started at 0 instead of 1 — the filter required `measure > 0`, but feedBack's
+  own runtime convention (`static/highway.js`'s `isMeasure = beat.measure >= 0`,
+  `static/js/count-in.js`, `plugins/highway_3d/screen.js`) treats any non-negative
+  measure as a real downbeat; only `-1` means "not a downbeat." A 0-based song had every
+  later phrase boundary shifted by one measure, or fell below `min_downbeats` and
+  reverted to the blind 30-second chunker this whole fallback exists to avoid. Now
+  `>= 0`, matching core's actual convention — behaviorally identical to `> 0` on
+  spec-conformant data (feedpak-spec's `song_timeline.json` prose says this field is
+  1-based and should never contain 0), so the fix only matters for defensiveness and
+  ecosystem consistency. (Found in code review.)
+- `_best_bridge_candidate`'s acceptance check was fret-only (`worst_jump < original_jump`),
+  so the string-jump bridging trigger added above could fire and then find nothing to
+  promote: when the fret jump was already 0 (identical fret, only the string differs —
+  exactly the case that trigger exists for), no candidate could ever satisfy
+  `worst_jump < 0`. Acceptance now also succeeds when a candidate improves the *string*
+  distance, mirroring the OR-shaped trigger condition that decided bridging was needed in
+  the first place. (Found in code review; the existing string-skip regression test used a
+  small-but-nonzero fret jump specifically to route around this exact gap rather than
+  exercise it — added a true zero-fret-jump case.)
 - A stripped bend (`bn` zeroed below its own gate) could still leave a stale `bt=1`
   (release) behind on the note — `bt`'s own gate deliberately spares release since it
   isn't meaningfully harder than a plain bend, but that carve-out shouldn't apply once

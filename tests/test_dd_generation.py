@@ -436,6 +436,18 @@ def test_measure_aligned_windows_groups_every_n_downbeats():
     assert windows == [(0.0, 8.0), (8.0, 16.0), (16.0, 25.0)]
 
 
+def test_measure_aligned_windows_treats_measure_zero_as_a_valid_downbeat():
+    # feedBack's own runtime convention (static/highway.js's `isMeasure =
+    # beat.measure >= 0`, static/js/count-in.js, plugins/highway_3d) is
+    # that ANY non-negative measure value is a downbeat, not just measure
+    # > 0 -- only -1 means "not a downbeat." A song numbered 0-based must
+    # produce the exact same windows as the 1-based fixture above, not
+    # silently lose its first downbeat.
+    beats = [{"time": float(i * 2), "measure": i} for i in range(10)]  # measures 0..9, 2s apart
+    windows = routes._measure_aligned_windows(beats, duration=25.0, measures_per_phrase=4)
+    assert windows == [(0.0, 8.0), (8.0, 16.0), (16.0, 25.0)]
+
+
 def test_measure_aligned_fallback_groups_every_8_measures_when_no_sections():
     beats = _measure_beats(n_measures=16, beats_per_measure=4, step=0.5)
     arr = {
@@ -538,6 +550,26 @@ def test_lower_tier_refinement_bridges_a_string_skip_even_when_the_fret_jump_is_
     assert groups[1]["level"] == 0, (
         "a hand-shape-changing string skip should get bridged even when the "
         "fret distance alone is small"
+    )
+
+
+def test_lower_tier_refinement_bridges_a_pure_string_skip_with_zero_fret_movement():
+    # Regression for a real gap: _best_bridge_candidate's original acceptance
+    # check only accepted a candidate that improved the FRET jump (worst_jump
+    # < original_jump). When the fret jump is already 0 (identical fret on
+    # both sides, only the string differs), no candidate could ever satisfy
+    # worst_jump < 0 -- the string-jump trigger fired but bridging was
+    # silently a no-op. Acceptance now also accepts a candidate that improves
+    # the STRING jump instead.
+    groups = [
+        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 5}]},
+        {"time": 0.2, "score": 0.5, "level": 2, "notes": [{"s": 2, "f": 5}]},
+        {"time": 0.5, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 5}]},
+    ]
+    routes._refine_lower_tier_path(groups, [], max_level=2)
+    assert groups[1]["level"] == 0, (
+        "a pure string skip (0->5, identical fret throughout) should still "
+        "get bridged by an intermediate string position"
     )
 
 

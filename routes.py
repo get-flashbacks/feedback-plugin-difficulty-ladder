@@ -464,10 +464,14 @@ def _assign_levels(groups, n_levels, curve_exponent=_RETENTION_CURVE_EXPONENT):
 
 
 def _best_bridge_candidate(groups, left, right, level, beat_times, original_jump, *,
-                            tempo=None):
+                            original_string_jump=0, tempo=None):
     tempo = tempo or _TempoParams()
-    left_fret = int(_group_anchor_note(left).get("f", 0))
-    right_fret = int(_group_anchor_note(right).get("f", 0))
+    left_anchor = _group_anchor_note(left)
+    right_anchor = _group_anchor_note(right)
+    left_fret = int(left_anchor.get("f", 0))
+    right_fret = int(right_anchor.get("f", 0))
+    left_string = int(left_anchor.get("s", 0))
+    right_string = int(right_anchor.get("s", 0))
     candidates = []
     for candidate in groups:
         if candidate["level"] <= level or not (left["time"] < candidate["time"] < right["time"]):
@@ -476,11 +480,24 @@ def _best_bridge_candidate(groups, left, right, level, beat_times, original_jump
         if not anchor:
             continue
         fret = int(anchor.get("f", 0))
+        string = int(anchor.get("s", 0))
         worst_jump = max(abs(fret - left_fret), abs(right_fret - fret))
-        if worst_jump < original_jump:
+        worst_string_jump = max(abs(string - left_string), abs(right_string - string))
+        # A candidate qualifies if it improves EITHER dimension, mirroring
+        # the OR-shaped trigger in _refine_lower_tier_path that decided
+        # bridging was needed. Fret-only acceptance (the original check)
+        # can never find a candidate for a pure string skip: when
+        # original_jump is already 0 (identical fret, only the string
+        # differs — exactly the case the string trigger exists for),
+        # `worst_jump < 0` is impossible, so bridging would silently
+        # promote nothing even though the trigger correctly fired.
+        if worst_jump < original_jump or worst_string_jump < original_string_jump:
             beat_penalty = 0 if _is_beat_aligned(candidate["time"], beat_times, tolerance=tempo.beat_tolerance) else 1
-            candidates.append((worst_jump, beat_penalty, candidate["score"], candidate["time"], candidate))
-    return min(candidates, key=lambda item: item[:4])[4] if candidates else None
+            candidates.append((
+                worst_jump, worst_string_jump, beat_penalty,
+                candidate["score"], candidate["time"], candidate,
+            ))
+    return min(candidates, key=lambda item: item[:5])[5] if candidates else None
 
 
 # A 4+-string skip between consecutive lower-tier anchors is a hand-shape
@@ -533,7 +550,7 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
                     continue
                 candidate = _best_bridge_candidate(
                     groups, left, right, level, beat_times, original_jump,
-                    tempo=tempo,
+                    original_string_jump=string_jump, tempo=tempo,
                 )
                 if candidate:
                     candidate["level"] = level
@@ -902,11 +919,22 @@ def _measure_aligned_windows(beats, duration, *,
 
     Returns None (caller falls back to the legacy 30s chunker) when there
     aren't enough usable downbeats: `beats` is empty, sparse, or every
-    entry is `measure: -1` (sub-beat only, per feedpak-spec §6.8).
+    entry is `measure: -1` (not a downbeat, per feedpak-spec §6.8) — every
+    other value, including 0, is a real downbeat (see the filter below).
     """
     downbeat_times = sorted(
         float(b.get("time", 0)) for b in beats
-        if isinstance(b, dict) and int(b.get("measure", -1)) > 0
+        # feedpak-spec's song_timeline.json prose describes 1-based downbeat
+        # numbering ("`-1` = sub-beat"), but feedBack's own runtime treats
+        # ANY non-negative measure as a downbeat — static/highway.js's
+        # `isMeasure = beat.measure >= 0`, static/js/count-in.js, and
+        # plugins/highway_3d/screen.js all key off `measure >= 0`, and a
+        # song whose numbering happens to start at 0 must not have its
+        # first downbeat silently dropped here. `>= 0` and `> 0` behave
+        # identically on spec-conformant data (0 should never legitimately
+        # appear in this field), so matching core's actual, ecosystem-wide
+        # convention costs nothing and is the defensive choice.
+        if isinstance(b, dict) and int(b.get("measure", -1)) >= 0
     )
     if len(downbeat_times) < min_downbeats:
         return None

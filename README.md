@@ -110,7 +110,7 @@ All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 | Field | Value |
 |-------|-------|
 | id | `difficulty_ladder` |
-| version | 0.9.0 |
+| version | 0.9.1 |
 | category | practice |
 
 ## Possible Upgrades
