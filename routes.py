@@ -1456,6 +1456,9 @@ def setup(app, context):
             for idx, arr_entry in enumerate(arr_entries):
                 if not isinstance(arr_entry, dict) or not str(arr_entry.get("file", "")).strip():
                     continue
+                if time.monotonic() - start_time > max_processing_seconds:
+                    time_limit_reached = True
+                    break
                 try:
                     result = _generate_one(entry, idx, n_levels=n_levels, force=force, log=log)
                 except HTTPException as e:
@@ -1468,5 +1471,7 @@ def setup(app, context):
                     skipped += 1
                 else:
                     generated += 1
+            if time_limit_reached:
+                break
 
         return {"ok": True, "scanned": scanned, "generated": generated, "skipped": skipped, "failed": failed, "time_limit_reached": time_limit_reached}
