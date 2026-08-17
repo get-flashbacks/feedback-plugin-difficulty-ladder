@@ -128,6 +128,16 @@ def _string_span_score(notes, n_strings):
 
 
 def _tech_score(n):
+    # Weights track how much extra motor precision/independent coordination
+    # a technique demands over plain picking/fretting. hm/hp were previously
+    # scored identically (one shared +0.15) despite pinch harmonics needing
+    # a precisely timed picking-hand thumb-touch immediately after the
+    # strike — markedly less forgiving than a natural harmonic's fixed-node
+    # touch — so they're split. plk/slp (bass pop/slap) were previously
+    # unscored entirely: a slap-bass note read as no harder than a plain
+    # picked note. Slap (a percussive thumb strike, a distinct right-hand
+    # technique paradigm) is weighted above pop, mirroring how it's
+    # generally regarded as the harder half of the "slap and pop" pairing.
     score = 0.0
     if n.get("bn"):
         score += 0.4
@@ -139,8 +149,14 @@ def _tech_score(n):
         score += 0.2
     if n.get("tr"):
         score += 0.3
-    if n.get("hm") or n.get("hp"):
+    if n.get("hm"):
         score += 0.15
+    if n.get("hp"):
+        score += 0.35
+    if n.get("plk"):
+        score += 0.30
+    if n.get("slp"):
+        score += 0.45
     return min(1.0, score)
 
 
@@ -451,15 +467,22 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
 # is allowed to survive. Ordered coarsely from how corpus analysis (a wide
 # sample of authored ladders, hand-tuned and tool-generated, across genres)
 # showed these actually get introduced: sustain/legato-adjacent techniques
-# (bends, vibrato) show up earliest, palm mutes and slides in the middle,
-# harmonics/HOPO chains later, tremolo/tap reserved for the hardest tier.
+# (bends, vibrato) show up earliest, palm mutes/slides/pop in the middle,
+# natural harmonics and hammer-on/pull-off chains later, tremolo/slap/tap/
+# pinch-harmonic reserved for the hardest tier or two. Pinch harmonics gate
+# later than natural harmonics (0.95 vs 0.75) since the thumb-touch timing
+# they require is markedly less forgiving; on the bass side, slap gates
+# later than pop (0.90 vs 0.80) for the same reason — slap's percussive
+# thumb strike is the harder half of the "slap and pop" pairing.
 _TECH_GATE_FRAC = {
     "bn": 0.50,
     "pm": 0.55, "mt": 0.55,
     "vb": 0.70,
     "hm": 0.75,
     "ho": 0.80, "po": 0.80,
+    "plk": 0.80,
     "sl": 0.85, "slu": 0.85,
+    "slp": 0.90,
     "tr": 0.90,
     "hp": 0.95,
     "tp": 0.95,

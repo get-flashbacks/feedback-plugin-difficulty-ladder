@@ -570,3 +570,58 @@ def test_pick_partial_voicing_prefers_an_open_string_when_spans_tie():
         "an open string should be preferred over a same-span fretted "
         "alternative when the added span is tied"
     )
+
+
+# ── Follow-up: pinch harmonics vs natural harmonics, bass slap/pop ─────────
+
+def test_pinch_harmonic_scores_higher_than_natural_harmonic():
+    natural = [{"time": 0.0, "notes": [{"s": 2, "f": 5, "sus": 0, "hm": True}]}]
+    pinch = [{"time": 0.0, "notes": [{"s": 2, "f": 5, "sus": 0, "hp": True}]}]
+    routes._score_groups(natural, n_strings=6)
+    routes._score_groups(pinch, n_strings=6)
+    assert pinch[0]["score"] > natural[0]["score"], (
+        "a pinch harmonic requires more precise thumb-touch timing than a "
+        "natural harmonic and should score harder, not the same"
+    )
+
+
+def test_slap_scores_higher_than_pop():
+    pop = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "plk": True}]}]
+    slap = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "slp": True}]}]
+    routes._score_groups(pop, n_strings=6)
+    routes._score_groups(slap, n_strings=6)
+    assert slap[0]["score"] > pop[0]["score"], (
+        "slap's percussive thumb strike is the harder half of the "
+        "slap-and-pop pairing and should score harder than pop alone"
+    )
+
+
+def test_bass_slap_and_pop_previously_scored_as_a_plain_note():
+    # Regression guard for the gap this follow-up closes: before plk/slp
+    # were recognized, a slap-bass note scored identically to a plain
+    # picked note (technique contributed nothing at all).
+    plain = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
+    slap = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "slp": True}]}]
+    routes._score_groups(plain, n_strings=6)
+    routes._score_groups(slap, n_strings=6)
+    assert slap[0]["score"] > plain[0]["score"]
+
+
+def test_pinch_harmonic_gated_out_later_than_natural_harmonic():
+    note_hm = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "hm": True}
+    note_hp = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "hp": True}
+    assert "hm" not in routes._prune_techniques(note_hm, diff_percent=0.70)
+    assert "hp" not in routes._prune_techniques(note_hp, diff_percent=0.90), (
+        "pinch harmonic should still be stripped at a diff_percent that "
+        "already keeps a natural harmonic"
+    )
+    assert routes._prune_techniques(note_hp, diff_percent=0.96).get("hp") is True
+
+
+def test_bass_slap_and_pop_are_gated_and_pruned():
+    note_slp = {"t": 0.0, "s": 3, "f": 0, "sus": 0, "slp": True}
+    note_plk = {"t": 0.0, "s": 3, "f": 0, "sus": 0, "plk": True}
+    assert "slp" not in routes._prune_techniques(note_slp, diff_percent=0.5)
+    assert routes._prune_techniques(note_slp, diff_percent=0.95).get("slp") is True
+    assert "plk" not in routes._prune_techniques(note_plk, diff_percent=0.5)
+    assert routes._prune_techniques(note_plk, diff_percent=0.85).get("plk") is True

@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     chooses which notes survive a partial voicing by fret proximity (preferring open
     strings and small stretches) instead of raw string-index order — so a "simplified"
     chord isn't still a hard stretch.
+  - **Technique weighting gaps closed**: bass slap (`slp`) and pop/pluck (`plk`) notes
+    previously contributed nothing to `_tech_score`/`_TECH_GATE_FRAC` at all — a slap-bass
+    note scored (and was gated) identically to a plain picked note, even though slap/pop is
+    a genuinely harder right-hand technique. Both are now scored and gated, with slap
+    (the percussive thumb-strike half of "slap and pop") weighted and gated later than pop.
+    Separately, pinch harmonics (`hp`) and natural harmonics (`hm`) were scored as one
+    shared term despite pinch harmonics needing markedly less forgiving thumb-touch
+    timing after the pick strike — they're now scored independently, with `hp` weighted
+    higher than `hm` (their existing gate fractions, 0.95 vs 0.75, already reflected the
+    later-introduction intent; only the scoring side was unified).
   - Regenerating a previously-generated ladder (`force=true`) on a song with usable beat
     data will now produce different exact scores than before, even though the qualitative
     behavior (harder passages still rank harder) is unchanged — worth knowing before a
