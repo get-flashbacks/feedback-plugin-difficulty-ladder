@@ -396,7 +396,6 @@
             contributeDiagnostics();
             return;
         }
-        }
 
         var curPct = Math.round(hw.getMastery() * 100);
         // Manual-override doctrine: a human action always wins over automation.
