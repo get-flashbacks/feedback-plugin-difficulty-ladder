@@ -33,6 +33,19 @@
     function lsSet(key, val) {
         try { localStorage.setItem(LS_PREFIX + key, JSON.stringify(val)); } catch (_) { /* noop */ }
     }
+    var _pendingSettingWrites = {};
+    function lsSetDebounced(key, val) {
+        if (_pendingSettingWrites[key]) clearTimeout(_pendingSettingWrites[key]);
+        _pendingSettingWrites[key] = setTimeout(function () {
+            delete _pendingSettingWrites[key];
+            lsSet(key, val);
+        }, 150);
+    }
+    function cancelDebouncedSettingWrite(key) {
+        if (!_pendingSettingWrites[key]) return;
+        clearTimeout(_pendingSettingWrites[key]);
+        delete _pendingSettingWrites[key];
+    }
 
     // ---- Per-song difficulty memory ----
     // Core only persists master_difficulty as a single global (server.py's
@@ -471,6 +484,12 @@
         }
         _scoreRafHandle = requestAnimationFrame(tickScoring);
 
+        // Split Screen owns separate highway instances and intentionally
+        // suppresses the main-player detector.  Score those instances here,
+        // with state isolated per panel, before following the normal main
+        // highway path below.
+        tickSplitScoring();
+
         var hw = window.highway;
         if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return;
         var provider = typeof hw.getNoteStateProvider === 'function' ? hw.getNoteStateProvider() : null;
@@ -559,6 +578,171 @@
         }
     }
 
+    // ---- Split Screen adaptation -----------------------------------------
+    // Split Screen creates each panel detector through the public
+    // createNoteDetector({ highway, ownSource }) factory.  Observing that
+    // construction is the only Ladder-side integration needed: it avoids
+    // reaching into Split Screen's private panel array, while giving us the
+    // exact highway that owns the note-state provider.
+    var _splitScoreStates = new Map();
+    var _splitPanelsUnsubscribe = null;
+
+    function newSplitScoreState() {
+        return {
+            judgedKeys: new Set(), phraseHits: 0, phraseTotal: 0,
+            phrasesScored: 0, curPhraseIdx: -1, lastScoredT: -1,
+            noteCursor: 0, chordCursor: 0, emaHitRate: null,
+            lastObservedMasteryPct: null, rampDirection: null,
+            rampProgress: 0, downStreak: 0,
+        };
+    }
+
+    function registerSplitHighway(hw) {
+        if (!hw || _splitScoreStates.has(hw)) return;
+        _splitScoreStates.set(hw, newSplitScoreState());
+        startRafLoops();
+    }
+
+    function installSplitScreenDetectorHook() {
+        var factory = window.createNoteDetector;
+        if (typeof factory !== 'function' || factory.__ddSplitWrapped) return;
+        function wrapped(options) {
+            var detector = factory.apply(this, arguments);
+            var ss = window.feedBackSplitscreen || window.slopsmithSplitscreen;
+            if (options && options.ownSource === true && options.highway
+                && ss && typeof ss.isActive === 'function' && ss.isActive()) {
+                registerSplitHighway(options.highway);
+                // Split Screen destroys and recreates detectors when a panel
+                // changes arrangement.  Release its isolated score state at
+                // the same lifecycle edge so obsolete highways cannot keep
+                // a rAF-side reference alive.
+                if (detector && typeof detector.destroy === 'function' && !detector.destroy.__ddSplitWrapped) {
+                    var destroy = detector.destroy;
+                    function wrappedDestroy() {
+                        _splitScoreStates.delete(options.highway);
+                        return destroy.apply(this, arguments);
+                    }
+                    wrappedDestroy.__ddSplitWrapped = true;
+                    detector.destroy = wrappedDestroy;
+                }
+            }
+            return detector;
+        }
+        wrapped.__ddSplitWrapped = true;
+        window.createNoteDetector = wrapped;
+    }
+
+    function startSplitScreenHookSubscription() {
+        var fb = window.feedBack;
+        if (_splitPanelsUnsubscribe || !fb || typeof fb.on !== 'function') return;
+        var handler = installSplitScreenDetectorHook;
+        var unsubscribe = fb.on('splitscreen:panels-changed', handler);
+        _splitPanelsUnsubscribe = typeof unsubscribe === 'function'
+            ? unsubscribe
+            : (typeof fb.off === 'function' ? function () { fb.off('splitscreen:panels-changed', handler); } : function () {});
+    }
+
+    function stopSplitScreenHookSubscription() {
+        if (!_splitPanelsUnsubscribe) return;
+        _splitPanelsUnsubscribe();
+        _splitPanelsUnsubscribe = null;
+    }
+
+    function commitSplitPhraseResult(state, hw, ratio) {
+        var alpha = emaAlpha();
+        state.emaHitRate = state.emaHitRate == null ? ratio : alpha * ratio + (1 - alpha) * state.emaHitRate;
+        state.phrasesScored++;
+        if (!settings.autoAdjust || !hw || typeof hw.getMastery !== 'function') {
+            state.downStreak = 0;
+            state.rampProgress = 0;
+            return;
+        }
+        if (state.phrasesScored < WARMUP_PHRASES) return;
+
+        var curPct = Math.round(hw.getMastery() * 100);
+        if (state.lastObservedMasteryPct != null && curPct !== state.lastObservedMasteryPct) {
+            // A panel's slider was moved by a person; retain the established
+            // global manual-override behavior rather than fighting that input.
+            state.rampDirection = null;
+            state.rampProgress = 0;
+            state.downStreak = 0;
+            settings.autoAdjust = false;
+            lsSetDebounced('autoAdjust', false);
+            syncControlsUI();
+            return;
+        }
+        var th = thresholds();
+        var direction = state.emaHitRate >= th.up ? 'up' : state.emaHitRate <= th.down ? 'down' : null;
+        state.downStreak = direction === 'down' && settings.dropResistance ? state.downStreak + 1 : 0;
+        if (!direction || (direction === 'down' && settings.dropResistance && state.downStreak < DOWN_CONFIRM_PHRASES)) {
+            state.rampDirection = null;
+            state.rampProgress = 0;
+            return;
+        }
+        state.lastObservedMasteryPct = curPct;
+        if (state.rampDirection !== direction) {
+            state.rampDirection = direction;
+            state.rampProgress = 0;
+        }
+        var step = rampStep(th, state.rampProgress);
+        var next = Math.max(settings.minMastery, Math.min(settings.maxMastery,
+            direction === 'up' ? curPct + step : curPct - step));
+        if (next !== curPct && typeof hw.setMastery === 'function') {
+            hw.setMastery(next / 100);
+            state.lastObservedMasteryPct = next;
+            state.rampProgress = (state.rampProgress + 1) % RAMP_PHRASES;
+        }
+    }
+
+    function tickOneSplitHighway(hw, state) {
+        if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return;
+        var provider = typeof hw.getNoteStateProvider === 'function' ? hw.getNoteStateProvider() : null;
+        if (!provider) return;
+        var phrases = hw.getPhrases();
+        if (!phrases || !phrases.length) return;
+        var t = hw.getTime();
+        if (t < state.lastScoredT - 0.05) { state.noteCursor = 0; state.chordCursor = 0; }
+        state.lastScoredT = t;
+        var idx = state.curPhraseIdx;
+        if (idx < 0 || t < phrases[idx].start_time || t >= phrases[idx].end_time)
+            idx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
+        if (idx !== state.curPhraseIdx) {
+            if (state.curPhraseIdx >= 0 && state.phraseTotal > 0)
+                commitSplitPhraseResult(state, hw, state.phraseHits / state.phraseTotal);
+            state.curPhraseIdx = idx; state.phraseHits = 0; state.phraseTotal = 0; state.judgedKeys = new Set();
+        }
+        if (idx < 0) return;
+        var phrase = phrases[idx], cutoff = t - 0.6, windowStart = Math.max(phrase.start_time, t - 2);
+        function score(items, cursorKey, notesOf) {
+            var cursor = state[cursorKey];
+            while (cursor < items.length && items[cursor].t < windowStart) cursor++;
+            // Only discard entries that have fallen out of the lookback
+            // window. Items still in range may be pending ('active'/null) and
+            // need another chance to resolve on a later frame.
+            state[cursorKey] = cursor;
+            for (var scan = cursor; scan < items.length; scan++) {
+                var item = items[scan];
+                if (item.t > cutoff || item.t >= phrase.end_time) break;
+                var notes = notesOf(item);
+                for (var ni = 0; ni < notes.length; ni++) {
+                    var note = notes[ni], key = judgmentKey(item.t, note.s, note.f);
+                    if (state.judgedKeys.has(key)) continue;
+                    var result = provider(note, item.t), name = typeof result === 'string' ? result : result && result.state;
+                    if (name === 'hit' || name === 'miss') {
+                        state.judgedKeys.add(key); state.phraseTotal++;
+                        if (name === 'hit') state.phraseHits++;
+                    }
+                }
+            }
+        }
+        score(typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [], 'noteCursor', function (n) { return [n]; });
+        score(typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [], 'chordCursor', function (c) { return c.notes || []; });
+    }
+
+    function tickSplitScoring() {
+        _splitScoreStates.forEach(function (state, hw) { tickOneSplitHighway(hw, state); });
+    }
+
     // ---- Glass-filling HUD (overlay contract: own canvas, own rAF) ----
     var _hudCanvas = null;
     var _hudRafHandle = null;
@@ -596,7 +780,12 @@
         }
         _hudRafHandle = requestAnimationFrame(drawHud);
 
-        if (!settings.showGlasses) {
+        // Section Map renders the same difficulty glasses in its section bar.
+        // Its idempotency marker is a stable capability signal, so this check
+        // does not query or mutate DOM on the animation path.
+        var sectionMapOwnsGlasses = !!window.__slopsmithSectionMapHooksInstalled;
+        var ss = window.feedBackSplitscreen || window.slopsmithSplitscreen;
+        if (!settings.showGlasses || sectionMapOwnsGlasses || (ss && typeof ss.isActive === 'function' && ss.isActive())) {
             if (_hudCanvas) _hudCanvas.style.display = 'none';
             return;
         }
@@ -835,6 +1024,8 @@
         _controlsBtn.textContent = '🥃 Auto-Difficulty';
         _controlsBtn.onclick = function () {
             settings.autoAdjust = !settings.autoAdjust;
+            // A manual choice wins over a pending Split Screen scorer write.
+            cancelDebouncedSettingWrite('autoAdjust');
             lsSet('autoAdjust', settings.autoAdjust);
             _lastObservedMasteryPct = null;
             syncControlsUI();
@@ -887,13 +1078,22 @@
 
     if (window.feedBack && typeof window.feedBack.on === 'function') {
         window.feedBack.on('song:ready', onSongEvent);
+        // Split Screen emits this after its panel highways are created and
+        // again after a canvas/highway replacement.  By then Note Detect is
+        // normally loaded; wrapping its public factory lets Ladder observe
+        // future per-panel Detect clicks without depending on Split Screen
+        // internals.
+        startSplitScreenHookSubscription();
         window.feedBack.on('library:changed', registerLibraryCardBadge);
         window.feedBack.on('highway:created', mountControls);
         window.feedBack.on('highway:visibility', function (ev) {
             var detail = ev && ev.detail;
             if (detail && detail.visible) {
+                startSplitScreenHookSubscription();
+                installSplitScreenDetectorHook();
                 startRafLoops();
             } else {
+                stopSplitScreenHookSubscription();
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
                 if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
                 _clearGenerateLabelTimer();
@@ -956,6 +1156,8 @@
             loadSongMasteryMap: loadSongMasteryMap, saveSongMasteryMap: saveSongMasteryMap,
             calculateAndEmitSectionDifficulties: calculateAndEmitSectionDifficulties,
             commitPhraseResult: commitPhraseResult, resetPerSongState: resetPerSongState,
+            newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
+            tickOneSplitHighway: tickOneSplitHighway,
             rampStep: rampStep, WARMUP_PHRASES: WARMUP_PHRASES, RAMP_PHRASES: RAMP_PHRASES,
             currentTarget: currentTarget, currentTargetStatus: currentTargetStatus,
             mountControls: mountControls, onGenerateClick: onGenerateClick,
@@ -964,5 +1166,6 @@
     }
 
     ensureMasterySaveHook();
+    installSplitScreenDetectorHook();
     startRafLoops();
 })();

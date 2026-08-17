@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Difficulty Ladder now follows Split Screen's per-panel note detectors and
+  applies adaptive difficulty independently to the panel being scored. Its
+  standalone glasses HUD also yields to Section Map's section-bar glasses,
+  preventing the duplicate display.
 - `_measure_aligned_windows` dropped a song's first downbeat whenever its measure
   numbering started at 0 instead of 1 — the filter required `measure > 0`, but feedBack's
   own runtime convention (`static/highway.js`'s `isMeasure = beat.measure >= 0`,
