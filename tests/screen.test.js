@@ -276,6 +276,26 @@ test('warm-up phrases scored while autoAdjust is off still count toward WARMUP_P
     assert.equal(calls.length, 1, 'warm-up was already satisfied while paused');
 });
 
+test('Split Screen scoring state is isolated and changes only its own panel highway', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    const stateA = mod.newSplitScoreState();
+    const stateB = mod.newSplitScoreState();
+    let masteryA = 0.50;
+    let masteryB = 0.50;
+    const highwayA = { getMastery: () => masteryA, setMastery: (v) => { masteryA = v; } };
+    const highwayB = { getMastery: () => masteryB, setMastery: (v) => { masteryB = v; } };
+
+    // Each panel needs its own warm-up; A's second result must not warm B up.
+    mod.commitSplitPhraseResult(stateA, highwayA, 1);
+    mod.commitSplitPhraseResult(stateB, highwayB, 1);
+    mod.commitSplitPhraseResult(stateA, highwayA, 1);
+
+    assert.equal(masteryA, 0.55); // first third of the default 15-point ramp
+    assert.equal(masteryB, 0.50);
+});
+
 test('qualifying streaks total the configured step for every sensitivity and direction', () => {
     for (const sensitivity of [1, 2, 3]) {
         for (const [ratio, sign] of [[1.0, 1], [0.0, -1]]) {
