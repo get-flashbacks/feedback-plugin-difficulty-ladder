@@ -1024,6 +1024,8 @@
         _controlsBtn.textContent = '🥃 Auto-Difficulty';
         _controlsBtn.onclick = function () {
             settings.autoAdjust = !settings.autoAdjust;
+            // A manual choice wins over a pending Split Screen scorer write.
+            cancelDebouncedSettingWrite('autoAdjust');
             lsSet('autoAdjust', settings.autoAdjust);
             _lastObservedMasteryPct = null;
             syncControlsUI();
