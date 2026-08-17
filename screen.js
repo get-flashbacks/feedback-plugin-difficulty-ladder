@@ -482,10 +482,13 @@
     }
 
     // Coalesces rapid-fire calculateAndEmitSectionDifficulties() calls (e.g.
-    // the mastery slider's oninput firing per pixel dragged) into one
-    // trailing-edge run — same debounce shape as lsSetDebounced above, for
-    // the same reason: a per-note/per-frame-adjacent handler must not do
-    // unbounded work on every single high-frequency event.
+    // the mastery slider's oninput firing per pixel dragged) into at-most-
+    // once-per-150ms. Unlike lsSetDebounced above (a restart-on-call
+    // debounce that only fires once, after the last call), this is a
+    // fire-once-then-wait trailing throttle: it keeps firing roughly every
+    // 150ms throughout a continuous drag rather than waiting for it to end.
+    // Deliberate — Section Map's difficulty display should update live
+    // during a drag, not only once the user lets go.
     var _sectionDiffEmitTimer = null;
     function scheduleSectionDifficultiesEmit() {
         if (_sectionDiffEmitTimer) return; // already scheduled — trailing call will cover this one too

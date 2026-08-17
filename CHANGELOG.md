@@ -10,8 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - The mastery slider's `oninput` (fires per pixel dragged) no longer runs the
   O(sections*phrases) section-difficulty recompute and event-bus emit on every
-  tick; it's now coalesced into a 150ms trailing-edge debounce, mirroring the
-  existing debounce already used for the adjacent `localStorage` write.
+  tick; it's now coalesced into an at-most-once-per-150ms trailing throttle,
+  so Section Map's display still updates live during a drag instead of only
+  once the user lets go.
 - The HUD's per-frame draw loop no longer rescans the full phrase list with
   `findIndex()` every frame to find the current phrase; it now caches the
   index the same way the scoring loop already does.
