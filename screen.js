@@ -33,6 +33,19 @@
     function lsSet(key, val) {
         try { localStorage.setItem(LS_PREFIX + key, JSON.stringify(val)); } catch (_) { /* noop */ }
     }
+    var _pendingSettingWrites = {};
+    function lsSetDebounced(key, val) {
+        if (_pendingSettingWrites[key]) clearTimeout(_pendingSettingWrites[key]);
+        _pendingSettingWrites[key] = setTimeout(function () {
+            delete _pendingSettingWrites[key];
+            lsSet(key, val);
+        }, 150);
+    }
+    function cancelDebouncedSettingWrite(key) {
+        if (!_pendingSettingWrites[key]) return;
+        clearTimeout(_pendingSettingWrites[key]);
+        delete _pendingSettingWrites[key];
+    }
 
     // ---- Per-song difficulty memory ----
     // Core only persists master_difficulty as a single global (server.py's
@@ -572,6 +585,7 @@
     // reaching into Split Screen's private panel array, while giving us the
     // exact highway that owns the note-state provider.
     var _splitScoreStates = new Map();
+    var _splitPanelsUnsubscribe = null;
 
     function newSplitScoreState() {
         return {
@@ -618,11 +632,31 @@
         window.createNoteDetector = wrapped;
     }
 
+    function startSplitScreenHookSubscription() {
+        var fb = window.feedBack;
+        if (_splitPanelsUnsubscribe || !fb || typeof fb.on !== 'function') return;
+        var handler = installSplitScreenDetectorHook;
+        var unsubscribe = fb.on('splitscreen:panels-changed', handler);
+        _splitPanelsUnsubscribe = typeof unsubscribe === 'function'
+            ? unsubscribe
+            : (typeof fb.off === 'function' ? function () { fb.off('splitscreen:panels-changed', handler); } : function () {});
+    }
+
+    function stopSplitScreenHookSubscription() {
+        if (!_splitPanelsUnsubscribe) return;
+        _splitPanelsUnsubscribe();
+        _splitPanelsUnsubscribe = null;
+    }
+
     function commitSplitPhraseResult(state, hw, ratio) {
         var alpha = emaAlpha();
         state.emaHitRate = state.emaHitRate == null ? ratio : alpha * ratio + (1 - alpha) * state.emaHitRate;
         state.phrasesScored++;
-        if (!settings.autoAdjust || !hw || typeof hw.getMastery !== 'function') return;
+        if (!settings.autoAdjust || !hw || typeof hw.getMastery !== 'function') {
+            state.downStreak = 0;
+            state.rampProgress = 0;
+            return;
+        }
         if (state.phrasesScored < WARMUP_PHRASES) return;
 
         var curPct = Math.round(hw.getMastery() * 100);
@@ -633,7 +667,7 @@
             state.rampProgress = 0;
             state.downStreak = 0;
             settings.autoAdjust = false;
-            lsSet('autoAdjust', false);
+            lsSetDebounced('autoAdjust', false);
             syncControlsUI();
             return;
         }
@@ -682,8 +716,12 @@
         function score(items, cursorKey, notesOf) {
             var cursor = state[cursorKey];
             while (cursor < items.length && items[cursor].t < windowStart) cursor++;
-            for (; cursor < items.length; cursor++) {
-                var item = items[cursor];
+            // Only discard entries that have fallen out of the lookback
+            // window. Items still in range may be pending ('active'/null) and
+            // need another chance to resolve on a later frame.
+            state[cursorKey] = cursor;
+            for (var scan = cursor; scan < items.length; scan++) {
+                var item = items[scan];
                 if (item.t > cutoff || item.t >= phrase.end_time) break;
                 var notes = notesOf(item);
                 for (var ni = 0; ni < notes.length; ni++) {
@@ -696,7 +734,6 @@
                     }
                 }
             }
-            state[cursorKey] = cursor;
         }
         score(typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [], 'noteCursor', function (n) { return [n]; });
         score(typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [], 'chordCursor', function (c) { return c.notes || []; });
@@ -1044,14 +1081,17 @@
         // normally loaded; wrapping its public factory lets Ladder observe
         // future per-panel Detect clicks without depending on Split Screen
         // internals.
-        window.feedBack.on('splitscreen:panels-changed', installSplitScreenDetectorHook);
+        startSplitScreenHookSubscription();
         window.feedBack.on('library:changed', registerLibraryCardBadge);
         window.feedBack.on('highway:created', mountControls);
         window.feedBack.on('highway:visibility', function (ev) {
             var detail = ev && ev.detail;
             if (detail && detail.visible) {
+                startSplitScreenHookSubscription();
+                installSplitScreenDetectorHook();
                 startRafLoops();
             } else {
+                stopSplitScreenHookSubscription();
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
                 if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
                 _clearGenerateLabelTimer();
