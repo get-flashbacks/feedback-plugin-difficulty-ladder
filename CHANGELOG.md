@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A stripped bend (`bn` zeroed below its own gate) could still leave a stale `bt=1`
+  (release) behind on the note — `bt`'s own gate deliberately spares release since it
+  isn't meaningfully harder than a plain bend, but that carve-out shouldn't apply once
+  the bend itself is gone entirely. `bn`'s gate now clears `bt` unconditionally instead
+  of only when the harder intents (2/3/4) are present. (Found in code review; the
+  existing stale-bend regression test only exercised `bt=3`, so it didn't catch the
+  `bt=1` case — extended.)
+
 ### Changed
+- Bundled the tempo-relative thresholds (`time_window_ms`, `beat_tolerance`,
+  `fret_jump_window_seconds`, `sustain_ease_norm_seconds`, `beat_interval`) into a single
+  `_TempoParams` dataclass, resolved once per arrangement via `_TempoParams.from_beats()`
+  and threaded through `_score_groups`/`_best_bridge_candidate`/`_refine_lower_tier_path`
+  as one `tempo=` argument instead of four-to-five separate keyword arguments. No behavior
+  change — a bare `_TempoParams()` reproduces the prior no-tempo-signal fallback exactly.
+- Extracted the fret-span arithmetic (open strings excluded, `max - min` across fretted
+  notes, 0 below two fretted notes) that `_span_score` and `_pick_partial_voicing`'s
+  greedy candidate search had each implemented separately into one shared `_fret_span()`
+  helper, so the two can't quietly diverge on what "span" means if either is tuned later.
 - Fretted-instrument ladder generation given a second pass, this time grounded in tempo,
   rhythm, and hand-shape signals the previous heuristic pass didn't model at all:
   - **Tempo-relative thresholds**: the note-clustering window, beat-alignment tolerance,

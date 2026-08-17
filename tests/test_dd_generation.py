@@ -383,6 +383,21 @@ def test_median_beat_interval_resists_a_single_outlier():
     assert median is not None and abs(median - 0.5) < 1e-9
 
 
+def test_tempo_params_from_beats_derives_all_fields_from_a_clean_click_track():
+    tempo = routes._TempoParams.from_beats([i * 0.5 for i in range(20)])
+    assert abs(tempo.beat_interval - 0.5) < 1e-9
+    assert abs(tempo.time_window_ms - 125.0) < 1e-9
+    assert abs(tempo.beat_tolerance - 0.06) < 1e-9
+    assert abs(tempo.fret_jump_window_seconds - 1.0) < 1e-9
+    assert abs(tempo.sustain_ease_norm_seconds - 2.0) < 1e-9
+
+
+def test_tempo_params_from_beats_falls_back_to_absolute_defaults_without_enough_data():
+    tempo = routes._TempoParams.from_beats([0.0, 0.5, 1.0])  # well under the 8-beat floor
+    assert tempo.beat_interval is None
+    assert tempo == routes._TempoParams()
+
+
 def test_group_notes_time_window_is_tempo_configurable():
     # Same 100ms gap between two different-string notes: should NOT cluster
     # under a tight (fast-tempo-derived) window, but SHOULD cluster under a
@@ -470,8 +485,9 @@ def test_syncopation_term_scores_a_more_off_beat_group_higher():
     beat_times = [0.0, 0.5, 1.0, 1.5]
     near_beat = [{"time": 0.6, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
     far_from_beat = [{"time": 0.75, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
-    routes._score_groups(near_beat, n_strings=6, beat_times=beat_times, beat_interval=0.5)
-    routes._score_groups(far_from_beat, n_strings=6, beat_times=beat_times, beat_interval=0.5)
+    tempo = routes._TempoParams(beat_interval=0.5)
+    routes._score_groups(near_beat, n_strings=6, beat_times=beat_times, tempo=tempo)
+    routes._score_groups(far_from_beat, n_strings=6, beat_times=beat_times, tempo=tempo)
     assert far_from_beat[0]["score"] > near_beat[0]["score"], (
         "landing further from the beat grid (more syncopated) should score "
         "harder even with identical note/fret/technique content"
@@ -777,3 +793,19 @@ def test_stripped_bend_does_not_leave_a_stale_bt_or_bnv_behind():
     assert pruned["bn"] == 0
     assert pruned["bt"] == 0, "a pre-bend flag on a bn=0 note is nonsensical and must not survive"
     assert "bnv" not in pruned, "a stale bend curve must not survive when the bend itself is gone"
+
+
+def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spared():
+    # Regression guard: bt's OWN gate deliberately spares release (bt=1)
+    # since it isn't meaningfully harder than a plain bend (see
+    # test_bend_intent_downgraded_below_its_gate_but_release_is_spared).
+    # But once bn's gate strips the bend entirely, "release" is no longer
+    # a meaningful description of anything -- there's no bend left to
+    # release -- so it must be cleared too, not just the harder intents.
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.5, "bt": 1}
+    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    assert pruned["bn"] == 0
+    assert pruned["bt"] == 0, (
+        "a release flag on a bn=0 note is nonsensical and must not survive, "
+        "even though release alone (bn intact) is never downgraded"
+    )
