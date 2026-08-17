@@ -149,9 +149,29 @@ def _tech_score(n):
     # for vb (a controlled, sustained oscillation — closer in kind to
     # tremolo) and fhm (deliberate hand-relaxation control while still
     # tracking rhythm precisely).
+    #
+    # bt (bend intent) and bnv (bend curve) were previously invisible to
+    # scoring entirely — every bend read as the same difficulty regardless
+    # of shape, even though a pre-bend (bt=2/3) means bending to the target
+    # pitch BEFORE picking, with no real-time auditory feedback to correct
+    # against (materially harder than hearing the pitch rise as you bend),
+    # and a round-trip (bt=4) demands bidirectional control within one
+    # note's sustain. Release (bt=1) is not penalized: it's a controlled
+    # descent from an already-established pitch, not meaningfully harder
+    # than a plain bend-up. A bnv curve with more than the trivial two
+    # points a plain bn ramp already implies signals deliberate mid-bend
+    # shaping (e.g. a wobble), which needs more precise control to execute.
     score = 0.0
     if n.get("bn"):
         score += 0.4
+        bt = n.get("bt", 0)
+        if bt in (2, 3):
+            score += 0.15
+        if bt in (3, 4):
+            score += 0.10
+        bnv = n.get("bnv")
+        if bnv and len(bnv) > 2:
+            score += 0.10
     if n.get("ho") or n.get("po"):
         score += 0.25
     if n.get("tp"):
@@ -497,13 +517,24 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
 # often paired with slap/pop for percussive muted "ghost notes," so it
 # belongs in the same "moderately advanced, single coordinated hand-
 # position" tier rather than the earlier pm/mt picking-hand mutes.
+#
+# bt/bnv gate the BEND'S SHAPE, layered above bn's own gate (0.50) rather
+# than as independent techniques — they only mean anything in the context
+# of an active bend, so both gates sit above 0.50 to guarantee a stripped
+# bend (bn=0) never leaves a stale bt/bnv behind describing a bend that no
+# longer exists. bt gates first (0.65: downgrades a hard bend variant —
+# pre-bend, pre-bend-release, round-trip — to a plain bend-up before the
+# bend itself is old enough to survive at full shape), bnv later (0.80:
+# an explicitly authored curve is the most precise bend representation, so
+# it's the last bend refinement to appear).
 _TECH_GATE_FRAC = {
     "bn": 0.50,
     "pm": 0.55, "mt": 0.55,
+    "bt": 0.65,
     "vb": 0.70,
     "hm": 0.75, "fhm": 0.75,
     "ho": 0.80, "po": 0.80,
-    "plk": 0.80,
+    "plk": 0.80, "bnv": 0.80,
     "sl": 0.85, "slu": 0.85,
     "slp": 0.90,
     "tr": 0.90,
@@ -524,6 +555,13 @@ def _prune_techniques(note, diff_percent):
                 out[key] = -1
             elif key == "bn":
                 out[key] = 0
+            elif key == "bt":
+                # Only the genuinely harder intents (pre-bend, pre-bend-
+                # release, round-trip) get downgraded to a plain bend-up;
+                # release (1) isn't meaningfully harder than a plain bend
+                # and is left as authored.
+                if out.get("bt", 0) in (2, 3, 4):
+                    out["bt"] = 0
             else:
                 out.pop(key, None)
     return out

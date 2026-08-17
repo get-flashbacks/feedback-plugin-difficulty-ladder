@@ -64,6 +64,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     "ghost notes") was in neither: unscored *and* ungated, so it survived at every
     difficulty tier regardless of how hard the passage was. All four are now scored
     and `fhm` is now gated (alongside natural harmonics, 0.75).
+  - **Bend shape (`bt`, `bnv`) is no longer invisible to scoring.** Every bend previously
+    scored identically regardless of shape, even though a pre-bend (`bt` 2/3 — bending to
+    the target pitch *before* picking, with no real-time auditory feedback to correct
+    against) is materially harder than hearing the pitch rise as you bend, and a round-trip
+    (`bt` 4) demands bidirectional control within one note's sustain. Release (`bt` 1) isn't
+    penalized — a controlled descent from an already-established pitch isn't meaningfully
+    harder than a plain bend-up. A `bnv` curve with more than the trivial two points a plain
+    `bn` ramp already implies now also nudges the score up (deliberate mid-bend shaping).
+    Gating mirrors this: `bt` and `bnv` gate *above* `bn`'s own gate (0.65 and 0.80 vs 0.50)
+    since they only mean anything in the context of an active bend — this also fixes a
+    latent bug where a fully-stripped bend (`bn` zeroed below its gate) could leave a stale
+    `bt`/`bnv` behind describing a bend that no longer existed; both are now cleared
+    whenever `bn` is.
   - Regenerating a previously-generated ladder (`force=true`) on a song with usable beat
     data will now produce different exact scores than before, even though the qualitative
     behavior (harder passages still rank harder) is unchanged — worth knowing before a

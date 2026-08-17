@@ -681,3 +681,99 @@ def test_pm_mt_vb_fhm_gated_out_of_low_tiers_end_to_end():
             f"{key} should not survive into the bottom tier of a technical phrase "
             f"now that it's gated and scored"
         )
+
+
+# ── Follow-up 3: bend intent (bt) and bend curve (bnv) ──────────────────────
+
+def test_bend_intent_scoring_reflects_relative_difficulty():
+    def group(bt=None):
+        note = {"s": 2, "f": 5, "sus": 0, "bn": 1.0}
+        if bt is not None:
+            note["bt"] = bt
+        return [{"time": 0.0, "notes": [note]}]
+
+    plain = group()  # bt omitted -> defaults to 0 (bend up)
+    release = group(1)
+    pre_bend = group(2)
+    pre_bend_release = group(3)
+    round_trip = group(4)
+    for g in (plain, release, pre_bend, pre_bend_release, round_trip):
+        routes._score_groups(g, n_strings=6)
+
+    assert release[0]["score"] == plain[0]["score"], (
+        "a release isn't meaningfully harder than a plain bend-up and should "
+        "score identically"
+    )
+    assert pre_bend[0]["score"] > plain[0]["score"], (
+        "a pre-bend (blind bend to pitch, no real-time auditory feedback) "
+        "should score harder than a plain bend"
+    )
+    assert round_trip[0]["score"] > plain[0]["score"], (
+        "a round-trip bend (bidirectional control within one note) should "
+        "score harder than a plain bend"
+    )
+    assert pre_bend_release[0]["score"] > pre_bend[0]["score"], (
+        "pre-bend-and-release combines the blind-bend and controlled-release "
+        "demands and should score hardest"
+    )
+
+
+def test_bend_curve_with_shaping_scores_higher_than_a_trivial_two_point_curve():
+    def group(bnv):
+        note = {"s": 2, "f": 5, "sus": 0, "bn": 1.0, "bnv": bnv}
+        return [{"time": 0.0, "notes": [note]}]
+
+    trivial = group([{"t": 0, "v": 0}, {"t": 0.25, "v": 1.0}])
+    shaped = group([
+        {"t": 0, "v": 0}, {"t": 0.1, "v": 0.5}, {"t": 0.2, "v": 1.0}, {"t": 0.3, "v": 0.7},
+    ])
+    routes._score_groups(trivial, n_strings=6)
+    routes._score_groups(shaped, n_strings=6)
+    assert shaped[0]["score"] > trivial[0]["score"], (
+        "a bend curve beyond a trivial two-point ramp signals deliberate "
+        "mid-bend shaping and should score harder"
+    )
+
+
+def test_bend_intent_downgraded_below_its_gate_but_release_is_spared():
+    note_pre_bend = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 2}
+    note_release = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 1}
+
+    below_bt_gate = routes._prune_techniques(note_pre_bend, diff_percent=0.60)
+    assert below_bt_gate["bt"] == 0, "pre-bend should downgrade to a plain bend-up below its gate"
+    assert below_bt_gate["bn"] == 1.0, "bn itself survives above its own (earlier) gate"
+
+    above_bt_gate = routes._prune_techniques(note_pre_bend, diff_percent=0.70)
+    assert above_bt_gate["bt"] == 2
+
+    release_below_bt_gate = routes._prune_techniques(note_release, diff_percent=0.60)
+    assert release_below_bt_gate["bt"] == 1, (
+        "release is not meaningfully harder than a plain bend and should not "
+        "be downgraded by the bt gate"
+    )
+
+
+def test_bend_curve_stripped_below_its_gate_bn_and_bt_survive():
+    note = {
+        "t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 0,
+        "bnv": [{"t": 0, "v": 0}, {"t": 0.25, "v": 1.0}],
+    }
+    below_bnv_gate = routes._prune_techniques(note, diff_percent=0.75)
+    assert "bnv" not in below_bnv_gate
+    assert below_bnv_gate["bn"] == 1.0
+    assert below_bnv_gate["bt"] == 0
+
+    above_bnv_gate = routes._prune_techniques(note, diff_percent=0.85)
+    assert above_bnv_gate["bnv"] == note["bnv"]
+
+
+def test_stripped_bend_does_not_leave_a_stale_bt_or_bnv_behind():
+    note = {
+        "t": 0.0, "s": 2, "f": 5, "sus": 0,
+        "bn": 1.5, "bt": 3,
+        "bnv": [{"t": 0, "v": 0}, {"t": 0.1, "v": 0.5}, {"t": 0.2, "v": 1.5}],
+    }
+    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    assert pruned["bn"] == 0
+    assert pruned["bt"] == 0, "a pre-bend flag on a bn=0 note is nonsensical and must not survive"
+    assert "bnv" not in pruned, "a stale bend curve must not survive when the bend itself is gone"
