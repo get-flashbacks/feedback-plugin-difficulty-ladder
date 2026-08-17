@@ -138,6 +138,33 @@ user turns it on.
   difficulty % is now calibrated against a much fuller technique
   vocabulary — see Instrument coverage above — so it's a more consistent
   cross-song signal for this to aggregate than it used to be.)
+- Per-technique player profile driving adaptive difficulty — go beyond a
+  passive per-instrument baseline (above) to a persisted, per-technique
+  proficiency profile (bends, pinch harmonics, slap/pop, vibrato, etc. —
+  the same vocabulary `_tech_score`/`_TECH_GATE_FRAC` now model at
+  generation time) built from live hit/miss judgments, then have
+  auto-adjust weight a phrase's accuracy signal by how much that phrase
+  leans on techniques the player is specifically weak or strong at,
+  instead of today's flat hit-rate. A rough pre-bend streak wouldn't need
+  to drag down a phrase's difficulty as much as an equally rough streak
+  on a technique the player has never struggled with, and vice versa.
+  Belongs entirely on the **live** side (auto-adjust's phrase-scoring
+  weight in `screen.js`), not as a per-player fork of `/generate`'s
+  output — generated ladders are written once into the shared sloppak
+  file, not regenerated per player, so the generation heuristic itself
+  should stay player-agnostic. The technique data needed to attribute a
+  miss already exists on every note the highway streams (`getFilteredNotes()`/
+  `getChords()` carry the same `bn`/`ho`/`hp`/`slp`/etc. flags `_tech_score`
+  reads), so no new capability contract would be required. Open questions:
+  cold-start (a new song or a technique never seen before has no signal
+  yet, so needs a neutral default weighting rather than an assumed
+  weakness), and how per-technique weighting composes with the existing
+  Sensitivity/Reaction speed settings and Resist isolated difficulty
+  drops — replacing them, scaling them, or applying only as a tiebreaker.
+  Meaningfully larger than the passive baseline above (its own persisted
+  store beyond the existing `songMastery` map, plus new live-scoring
+  logic) — closer in scope to the per-technique skill profile ruled out
+  below, but aimed at adapting difficulty rather than only displaying it.
 - Direction-asymmetric step size (larger downward steps than upward).
 - A passive "mastery streak" indicator on the glass HUD when accuracy
   stays high at max difficulty for several consecutive phrases — visual
