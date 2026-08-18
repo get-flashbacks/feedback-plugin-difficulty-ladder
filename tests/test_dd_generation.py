@@ -362,3 +362,482 @@ def test_lower_tier_refinement_does_not_bridge_a_repositioning_rest():
     routes._refine_lower_tier_path(groups, [], max_level=2)
 
     assert groups[1]["level"] == 2
+
+
+# ── Item 1: tempo-relative thresholds ────────────────────────────────────────
+
+def test_median_beat_interval_returns_none_for_too_few_beats():
+    assert routes._median_beat_interval([i * 0.5 for i in range(7)]) is None
+
+
+def test_median_beat_interval_returns_none_for_out_of_band_spacing():
+    # Sub-24ms spacing is far outside the ~24-400bpm sanity band — treat it
+    # as corrupt/duplicate beat data, not a real (absurdly fast) tempo.
+    assert routes._median_beat_interval([i * 0.001 for i in range(20)]) is None
+
+
+def test_median_beat_interval_resists_a_single_outlier():
+    times = [round(i * 0.5, 6) for i in range(20)]
+    times[-1] = times[-2] + 3.0  # one dropped-click-sized outlier
+    median = routes._median_beat_interval(times)
+    assert median is not None and abs(median - 0.5) < 1e-9
+
+
+def test_tempo_params_from_beats_derives_all_fields_from_a_clean_click_track():
+    tempo = routes._TempoParams.from_beats([i * 0.5 for i in range(20)])
+    assert abs(tempo.beat_interval - 0.5) < 1e-9
+    assert abs(tempo.time_window_ms - 125.0) < 1e-9
+    assert abs(tempo.beat_tolerance - 0.06) < 1e-9
+    assert abs(tempo.fret_jump_window_seconds - 1.0) < 1e-9
+    assert abs(tempo.sustain_ease_norm_seconds - 2.0) < 1e-9
+
+
+def test_tempo_params_from_beats_falls_back_to_absolute_defaults_without_enough_data():
+    tempo = routes._TempoParams.from_beats([0.0, 0.5, 1.0])  # well under the 8-beat floor
+    assert tempo.beat_interval is None
+    assert tempo == routes._TempoParams()
+
+
+def test_group_notes_time_window_is_tempo_configurable():
+    # Same 100ms gap between two different-string notes: should NOT cluster
+    # under a tight (fast-tempo-derived) window, but SHOULD cluster under a
+    # loose (slow-tempo-derived) window — this is the exact mechanism
+    # generate_phrases_for_arrangement now drives from the song's own beats.
+    notes = [
+        {"t": 0.0, "s": 0, "f": 3},
+        {"t": 0.1, "s": 1, "f": 3},
+    ]
+    tight = routes._group_notes(notes, [], time_window_ms=62.5)
+    loose = routes._group_notes(notes, [], time_window_ms=250.0)
+    assert [g["type"] for g in tight] == ["note", "note"]
+    assert [g["type"] for g in loose] == ["arpeggio"]
+
+
+# ── Item 2: measure-aligned fallback phrase windows ──────────────────────────
+
+def _measure_beats(n_measures, beats_per_measure=4, step=0.5):
+    beats = []
+    t = 0.0
+    for m in range(1, n_measures + 1):
+        for b in range(beats_per_measure):
+            beats.append({"time": round(t, 3), "measure": m if b == 0 else -1})
+            t += step
+    return beats
+
+
+def test_measure_aligned_windows_returns_none_below_min_downbeats():
+    beats = [{"time": 0.0, "measure": 1}, {"time": 2.0, "measure": 2}]  # only 2 downbeats
+    assert routes._measure_aligned_windows(beats, duration=10.0) is None
+
+
+def test_measure_aligned_windows_groups_every_n_downbeats():
+    beats = [{"time": float(i * 2), "measure": i + 1} for i in range(10)]  # 10 downbeats, 2s apart
+    windows = routes._measure_aligned_windows(beats, duration=25.0, measures_per_phrase=4)
+    assert windows == [(0.0, 8.0), (8.0, 16.0), (16.0, 25.0)]
+
+
+def test_measure_aligned_windows_treats_measure_zero_as_a_valid_downbeat():
+    # feedBack's own runtime convention (static/highway.js's `isMeasure =
+    # beat.measure >= 0`, static/js/count-in.js, plugins/highway_3d) is
+    # that ANY non-negative measure value is a downbeat, not just measure
+    # > 0 -- only -1 means "not a downbeat." A song numbered 0-based must
+    # produce the exact same windows as the 1-based fixture above, not
+    # silently lose its first downbeat.
+    beats = [{"time": float(i * 2), "measure": i} for i in range(10)]  # measures 0..9, 2s apart
+    windows = routes._measure_aligned_windows(beats, duration=25.0, measures_per_phrase=4)
+    assert windows == [(0.0, 8.0), (8.0, 16.0), (16.0, 25.0)]
+
+
+def test_measure_aligned_fallback_groups_every_8_measures_when_no_sections():
+    beats = _measure_beats(n_measures=16, beats_per_measure=4, step=0.5)
+    arr = {
+        "type": "lead", "name": "lead",
+        "notes": _simple_notes(0, 30, step=0.5, fret=3),
+        "chords": [], "beats": beats, "sections": [], "tuning": [0] * 6,
+    }
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases
+    # 16 measures at 8-per-phrase should split at the 9th measure's downbeat
+    # (t=16.0), not the blind 30s chunker's single (0, ~29.5) window this
+    # song's duration would otherwise produce.
+    assert len(phrases) == 2
+    assert phrases[0]["start_time"] == 0.0
+    assert phrases[0]["end_time"] == 16.0
+    assert phrases[1]["start_time"] == 16.0
+
+
+def test_measure_aligned_fallback_is_skipped_when_beats_carry_no_downbeats():
+    beats = [{"time": round(i * 0.5, 3), "measure": -1} for i in range(40)]
+    arr = {
+        "type": "lead", "name": "lead",
+        "notes": _simple_notes(0, 40, step=0.5, fret=3),
+        "chords": [], "beats": beats, "sections": [], "tuning": [0] * 6,
+    }
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases
+    # No usable downbeats (sub-beat-only data) -> falls through to the
+    # legacy 30s chunker unchanged.
+    assert [(p["start_time"], p["end_time"]) for p in phrases] == [(0.0, 30.0), (30.0, 39.5)]
+
+
+# ── Item 3: syncopation-aware density scoring ────────────────────────────────
+
+def test_syncopation_score_zero_on_beat_max_between_beats():
+    beat_times = [0.0, 0.5, 1.0]
+    assert routes._syncopation_score(0.5, beat_times, beat_interval=0.5) == 0.0
+    assert routes._syncopation_score(0.75, beat_times, beat_interval=0.5) == 1.0
+    assert routes._syncopation_score(0.5, [], beat_interval=0.5) == 0.0
+    assert routes._syncopation_score(0.5, beat_times, beat_interval=None) == 0.0
+
+
+def test_syncopation_term_scores_a_more_off_beat_group_higher():
+    # Neither onset lands within _is_beat_aligned's tolerance, so the
+    # existing beat-alignment discount doesn't fire for either — isolating
+    # the syncopation contribution to the density sub-score specifically.
+    beat_times = [0.0, 0.5, 1.0, 1.5]
+    near_beat = [{"time": 0.6, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
+    far_from_beat = [{"time": 0.75, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
+    tempo = routes._TempoParams(beat_interval=0.5)
+    routes._score_groups(near_beat, n_strings=6, beat_times=beat_times, tempo=tempo)
+    routes._score_groups(far_from_beat, n_strings=6, beat_times=beat_times, tempo=tempo)
+    assert far_from_beat[0]["score"] > near_beat[0]["score"], (
+        "landing further from the beat grid (more syncopated) should score "
+        "harder even with identical note/fret/technique content"
+    )
+
+
+# ── Item 4: string-skip / hand-shape difficulty ──────────────────────────────
+
+def test_string_spread_increases_fretting_score():
+    narrow = [{"time": 0.0, "notes": [{"s": 0, "f": 5, "sus": 0}, {"s": 1, "f": 5, "sus": 0}]}]
+    wide = [{"time": 0.0, "notes": [{"s": 0, "f": 5, "sus": 0}, {"s": 5, "f": 5, "sus": 0}]}]
+    routes._score_groups(narrow, n_strings=6)
+    routes._score_groups(wide, n_strings=6)
+    assert wide[0]["score"] > narrow[0]["score"], (
+        "a wider string spread (1<->6) should score harder than an adjacent-"
+        "string group, even though both groups touch 2 strings"
+    )
+
+
+def test_string_jump_bonus_isolated_from_fret_jump():
+    def groups(prev_string):
+        return [
+            {"time": 0.0, "notes": [{"s": prev_string, "f": 5, "sus": 0}]},
+            {"time": 0.4, "notes": [{"s": 5, "f": 5, "sus": 0}]},
+        ]
+
+    small_skip = groups(4)  # string jump 4->5 = 1, below the threshold (3)
+    big_skip = groups(0)    # string jump 0->5 = 5, above the threshold
+
+    routes._score_groups(small_skip, n_strings=6)
+    routes._score_groups(big_skip, n_strings=6)
+
+    assert big_skip[1]["score"] > small_skip[1]["score"]
+    assert abs(big_skip[1]["score"] - small_skip[1]["score"] - 0.06) < 1e-9  # min(0.08, (5-3)*0.03)
+
+
+def test_lower_tier_refinement_bridges_a_string_skip_even_when_the_fret_jump_is_small():
+    groups = [
+        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 3}]},
+        # Small fret movement (3->4->5, jump of 2 -- well under the fret-only
+        # max_jump=7) but a full string skip (0->2->5) -- the old fret-only
+        # trigger would never have looked here; the new string-jump trigger
+        # (skip of 5, over max_string_jump=3) does.
+        {"time": 0.2, "score": 0.5, "level": 2, "notes": [{"s": 2, "f": 4}]},
+        {"time": 0.5, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 5}]},
+    ]
+    routes._refine_lower_tier_path(groups, [], max_level=2)
+    assert groups[1]["level"] == 0, (
+        "a hand-shape-changing string skip should get bridged even when the "
+        "fret distance alone is small"
+    )
+
+
+def test_lower_tier_refinement_bridges_a_pure_string_skip_with_zero_fret_movement():
+    # Regression for a real gap: _best_bridge_candidate's original acceptance
+    # check only accepted a candidate that improved the FRET jump (worst_jump
+    # < original_jump). When the fret jump is already 0 (identical fret on
+    # both sides, only the string differs), no candidate could ever satisfy
+    # worst_jump < 0 -- the string-jump trigger fired but bridging was
+    # silently a no-op. Acceptance now also accepts a candidate that improves
+    # the STRING jump instead.
+    groups = [
+        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 5}]},
+        {"time": 0.2, "score": 0.5, "level": 2, "notes": [{"s": 2, "f": 5}]},
+        {"time": 0.5, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 5}]},
+    ]
+    routes._refine_lower_tier_path(groups, [], max_level=2)
+    assert groups[1]["level"] == 0, (
+        "a pure string skip (0->5, identical fret throughout) should still "
+        "get bridged by an intermediate string position"
+    )
+
+
+# ── Item 5: fretted chord mid-tier voicing parity with keys ──────────────────
+
+def test_fretted_chord_widens_through_three_tiers_before_the_top():
+    chord = {"t": 1.0, "notes": [
+        {"s": 4, "f": 0}, {"s": 3, "f": 2}, {"s": 2, "f": 2},
+        {"s": 1, "f": 1}, {"s": 0, "f": 0},
+    ]}
+    groups = [{"type": "chord", "level": 0, "time": 1.0, "chord": chord, "notes": chord["notes"]}]
+    max_level = 5
+    counts = []
+    for level in range(max_level + 1):
+        notes, chords = routes._notes_for_level(groups, level, max_level)
+        counts.append(len(notes) + sum(len(c.get("notes", [])) for c in chords))
+    assert counts == sorted(counts), "chord note count must never decrease as the tier increases"
+    assert len(set(counts[:-1])) >= 3, (
+        "a 5-note chord should pass through at least 3 distinct partial-voicing "
+        "sizes before the max-level full-chord state, not jump straight from a "
+        "2-note voicing to the full chord"
+    )
+    assert counts[-1] == 5, "top tier keeps the full chord intact"
+
+
+def test_pick_partial_voicing_prefers_fret_proximity_over_positional_order():
+    root = {"s": 3, "f": 10}
+    close = {"s": 2, "f": 11}  # 1 fret from root
+    far = {"s": 1, "f": 2}     # 8 frets from root
+    ranked = [root, far, close]  # naive positional order would pick root+far
+    picked = routes._pick_partial_voicing(ranked, 2)
+    assert picked == [root, close], (
+        "partial voicing should keep the fret-close note, not the first "
+        "positional one, so the reduced voicing isn't still a hard stretch"
+    )
+
+
+def test_pick_partial_voicing_prefers_an_open_string_when_spans_tie():
+    root = {"s": 3, "f": 10}
+    open_string = {"s": 2, "f": 0}    # free -- contributes no span
+    fretted_tie = {"s": 1, "f": 10}   # same fret as root -> also zero added span
+    ranked = [root, open_string, fretted_tie]
+    picked = routes._pick_partial_voicing(ranked, 2)
+    assert picked[0] == root
+    assert picked[1] == open_string, (
+        "an open string should be preferred over a same-span fretted "
+        "alternative when the added span is tied"
+    )
+
+
+# ── Follow-up: pinch harmonics vs natural harmonics, bass slap/pop ─────────
+
+def test_pinch_harmonic_scores_higher_than_natural_harmonic():
+    natural = [{"time": 0.0, "notes": [{"s": 2, "f": 5, "sus": 0, "hm": True}]}]
+    pinch = [{"time": 0.0, "notes": [{"s": 2, "f": 5, "sus": 0, "hp": True}]}]
+    routes._score_groups(natural, n_strings=6)
+    routes._score_groups(pinch, n_strings=6)
+    assert pinch[0]["score"] > natural[0]["score"], (
+        "a pinch harmonic requires more precise thumb-touch timing than a "
+        "natural harmonic and should score harder, not the same"
+    )
+
+
+def test_slap_scores_higher_than_pop():
+    pop = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "plk": True}]}]
+    slap = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "slp": True}]}]
+    routes._score_groups(pop, n_strings=6)
+    routes._score_groups(slap, n_strings=6)
+    assert slap[0]["score"] > pop[0]["score"], (
+        "slap's percussive thumb strike is the harder half of the "
+        "slap-and-pop pairing and should score harder than pop alone"
+    )
+
+
+def test_bass_slap_and_pop_previously_scored_as_a_plain_note():
+    # Regression guard for the gap this follow-up closes: before plk/slp
+    # were recognized, a slap-bass note scored identically to a plain
+    # picked note (technique contributed nothing at all).
+    plain = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
+    slap = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "slp": True}]}]
+    routes._score_groups(plain, n_strings=6)
+    routes._score_groups(slap, n_strings=6)
+    assert slap[0]["score"] > plain[0]["score"]
+
+
+def test_pinch_harmonic_gated_out_later_than_natural_harmonic():
+    note_hm = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "hm": True}
+    note_hp = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "hp": True}
+    assert "hm" not in routes._prune_techniques(note_hm, diff_percent=0.70)
+    assert "hp" not in routes._prune_techniques(note_hp, diff_percent=0.90), (
+        "pinch harmonic should still be stripped at a diff_percent that "
+        "already keeps a natural harmonic"
+    )
+    assert routes._prune_techniques(note_hp, diff_percent=0.96).get("hp") is True
+
+
+def test_bass_slap_and_pop_are_gated_and_pruned():
+    note_slp = {"t": 0.0, "s": 3, "f": 0, "sus": 0, "slp": True}
+    note_plk = {"t": 0.0, "s": 3, "f": 0, "sus": 0, "plk": True}
+    assert "slp" not in routes._prune_techniques(note_slp, diff_percent=0.5)
+    assert routes._prune_techniques(note_slp, diff_percent=0.95).get("slp") is True
+    assert "plk" not in routes._prune_techniques(note_plk, diff_percent=0.5)
+    assert routes._prune_techniques(note_plk, diff_percent=0.85).get("plk") is True
+
+
+# ── Follow-up 2: palm mute / string mute / vibrato / fret-hand mute ────────
+
+def test_palm_mute_string_mute_and_vibrato_now_contribute_to_the_score():
+    # Regression guard for the gap this follow-up closes: pm/mt/vb were
+    # already gated (stripped correctly once a tier was assigned) but
+    # contributed nothing to the score that decides which tier a note
+    # lands in to begin with.
+    plain = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
+    palm_muted = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "pm": True}]}]
+    string_muted = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "mt": True}]}]
+    vibrato = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "vb": True}]}]
+    for group in (plain, palm_muted, string_muted, vibrato):
+        routes._score_groups(group, n_strings=6)
+    assert palm_muted[0]["score"] > plain[0]["score"]
+    assert string_muted[0]["score"] > plain[0]["score"]
+    assert vibrato[0]["score"] > plain[0]["score"]
+
+
+def test_fret_hand_mute_now_scored_and_gated():
+    # fhm was previously in neither _tech_score nor _TECH_GATE_FRAC: unscored
+    # AND ungated, so it survived at every difficulty tier regardless of how
+    # hard the passage was.
+    plain = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
+    fret_hand_muted = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "fhm": True}]}]
+    routes._score_groups(plain, n_strings=6)
+    routes._score_groups(fret_hand_muted, n_strings=6)
+    assert fret_hand_muted[0]["score"] > plain[0]["score"]
+
+    note = {"t": 0.0, "s": 2, "f": 3, "sus": 0, "fhm": True}
+    assert "fhm" not in routes._prune_techniques(note, diff_percent=0.5)
+    assert routes._prune_techniques(note, diff_percent=0.80).get("fhm") is True
+
+
+def test_pm_mt_vb_fhm_gated_out_of_low_tiers_end_to_end():
+    def arr_with_technique(key):
+        notes = []
+        t = 0.0
+        for i in range(60):
+            n = {"t": round(t, 3), "s": i % 6, "f": (i * 3) % 20 + 1, "sus": 0}
+            if i % 3 == 0:
+                n[key] = True if key != "bn" else 1.0
+            notes.append(n)
+            t += 0.15
+        return _arrangement(notes)
+
+    for key in ("pm", "mt", "vb", "fhm"):
+        arr = arr_with_technique(key)
+        phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+        assert phrases
+        bottom_notes = phrases[0]["levels"][0]["notes"]
+        assert not any(n.get(key) for n in bottom_notes), (
+            f"{key} should not survive into the bottom tier of a technical phrase "
+            f"now that it's gated and scored"
+        )
+
+
+# ── Follow-up 3: bend intent (bt) and bend curve (bnv) ──────────────────────
+
+def test_bend_intent_scoring_reflects_relative_difficulty():
+    def group(bt=None):
+        note = {"s": 2, "f": 5, "sus": 0, "bn": 1.0}
+        if bt is not None:
+            note["bt"] = bt
+        return [{"time": 0.0, "notes": [note]}]
+
+    plain = group()  # bt omitted -> defaults to 0 (bend up)
+    release = group(1)
+    pre_bend = group(2)
+    pre_bend_release = group(3)
+    round_trip = group(4)
+    for g in (plain, release, pre_bend, pre_bend_release, round_trip):
+        routes._score_groups(g, n_strings=6)
+
+    assert release[0]["score"] == plain[0]["score"], (
+        "a release isn't meaningfully harder than a plain bend-up and should "
+        "score identically"
+    )
+    assert pre_bend[0]["score"] > plain[0]["score"], (
+        "a pre-bend (blind bend to pitch, no real-time auditory feedback) "
+        "should score harder than a plain bend"
+    )
+    assert round_trip[0]["score"] > plain[0]["score"], (
+        "a round-trip bend (bidirectional control within one note) should "
+        "score harder than a plain bend"
+    )
+    assert pre_bend_release[0]["score"] > pre_bend[0]["score"], (
+        "pre-bend-and-release combines the blind-bend and controlled-release "
+        "demands and should score hardest"
+    )
+
+
+def test_bend_curve_with_shaping_scores_higher_than_a_trivial_two_point_curve():
+    def group(bnv):
+        note = {"s": 2, "f": 5, "sus": 0, "bn": 1.0, "bnv": bnv}
+        return [{"time": 0.0, "notes": [note]}]
+
+    trivial = group([{"t": 0, "v": 0}, {"t": 0.25, "v": 1.0}])
+    shaped = group([
+        {"t": 0, "v": 0}, {"t": 0.1, "v": 0.5}, {"t": 0.2, "v": 1.0}, {"t": 0.3, "v": 0.7},
+    ])
+    routes._score_groups(trivial, n_strings=6)
+    routes._score_groups(shaped, n_strings=6)
+    assert shaped[0]["score"] > trivial[0]["score"], (
+        "a bend curve beyond a trivial two-point ramp signals deliberate "
+        "mid-bend shaping and should score harder"
+    )
+
+
+def test_bend_intent_downgraded_below_its_gate_but_release_is_spared():
+    note_pre_bend = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 2}
+    note_release = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 1}
+
+    below_bt_gate = routes._prune_techniques(note_pre_bend, diff_percent=0.60)
+    assert below_bt_gate["bt"] == 0, "pre-bend should downgrade to a plain bend-up below its gate"
+    assert below_bt_gate["bn"] == 1.0, "bn itself survives above its own (earlier) gate"
+
+    above_bt_gate = routes._prune_techniques(note_pre_bend, diff_percent=0.70)
+    assert above_bt_gate["bt"] == 2
+
+    release_below_bt_gate = routes._prune_techniques(note_release, diff_percent=0.60)
+    assert release_below_bt_gate["bt"] == 1, (
+        "release is not meaningfully harder than a plain bend and should not "
+        "be downgraded by the bt gate"
+    )
+
+
+def test_bend_curve_stripped_below_its_gate_bn_and_bt_survive():
+    note = {
+        "t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 0,
+        "bnv": [{"t": 0, "v": 0}, {"t": 0.25, "v": 1.0}],
+    }
+    below_bnv_gate = routes._prune_techniques(note, diff_percent=0.75)
+    assert "bnv" not in below_bnv_gate
+    assert below_bnv_gate["bn"] == 1.0
+    assert below_bnv_gate["bt"] == 0
+
+    above_bnv_gate = routes._prune_techniques(note, diff_percent=0.85)
+    assert above_bnv_gate["bnv"] == note["bnv"]
+
+
+def test_stripped_bend_does_not_leave_a_stale_bt_or_bnv_behind():
+    note = {
+        "t": 0.0, "s": 2, "f": 5, "sus": 0,
+        "bn": 1.5, "bt": 3,
+        "bnv": [{"t": 0, "v": 0}, {"t": 0.1, "v": 0.5}, {"t": 0.2, "v": 1.5}],
+    }
+    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    assert pruned["bn"] == 0
+    assert pruned["bt"] == 0, "a pre-bend flag on a bn=0 note is nonsensical and must not survive"
+    assert "bnv" not in pruned, "a stale bend curve must not survive when the bend itself is gone"
+
+
+def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spared():
+    # Regression guard: bt's OWN gate deliberately spares release (bt=1)
+    # since it isn't meaningfully harder than a plain bend (see
+    # test_bend_intent_downgraded_below_its_gate_but_release_is_spared).
+    # But once bn's gate strips the bend entirely, "release" is no longer
+    # a meaningful description of anything -- there's no bend left to
+    # release -- so it must be cleared too, not just the harder intents.
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.5, "bt": 1}
+    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    assert pruned["bn"] == 0
+    assert pruned["bt"] == 0, (
+        "a release flag on a bn=0 note is nonsensical and must not survive, "
+        "even though release alone (bn intact) is never downgraded"
+    )

@@ -22,6 +22,7 @@ import os
 import re
 import threading
 import zipfile
+from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 
@@ -60,6 +61,77 @@ def _instrument_kind(arr_type: str, arr_name: str) -> str:
     return "fretted"
 
 
+# ── Tempo-relative constants ─────────────────────────────────────────────────
+#
+# A wall-clock constant (150ms, 0.06s, 1.0s, 2.0s) behaves completely
+# differently depending on song tempo, which doesn't match how a human
+# chart editor thinks (they group by beat subdivision, not milliseconds).
+# These constants re-express the same tuned intent as a fraction of the
+# song's own beat interval, falling back to today's absolute values when
+# `beats` doesn't carry enough usable data to trust a tempo estimate.
+
+_MIN_BEATS_FOR_TEMPO = 8  # same no-signal floor as MIN_EVENTS_FOR_GENERATION
+_TEMPO_MIN_BEAT_INTERVAL_S = 0.15  # ~400bpm ceiling — guards against corrupt/duplicate beat data
+_TEMPO_MAX_BEAT_INTERVAL_S = 2.5  # ~24bpm floor — same guard, other direction
+
+_GROUP_WINDOW_BEAT_FRACTION = 0.25  # a sixteenth note: a run tighter than this reads as one cluster
+_BEAT_ALIGN_TOLERANCE_FRACTION = 0.12  # reproduces the original 0.06s tolerance at ~120bpm
+_FRET_JUMP_WINDOW_BEATS = 2.0  # reproduces the original 1.0s window at ~120bpm
+_SUSTAIN_EASE_BEATS = 4.0  # a whole note's sustain reads as fully easy regardless of tempo
+
+
+def _median_beat_interval(beat_times, *, min_beats=_MIN_BEATS_FOR_TEMPO):
+    """Median seconds-per-beat from arr['beats'] — the song's own tactus
+    grid, robust to a stray double-tap or missed click the way a mean
+    wouldn't be. Returns None when there isn't enough (or sane-looking)
+    beat data to trust a tempo estimate, so callers fall back to the
+    pre-tempo-relative absolute constants and existing behavior on
+    beat-less arrangements doesn't regress.
+    """
+    times = sorted({round(float(t), 6) for t in beat_times})
+    if len(times) < min_beats:
+        return None
+    diffs = sorted(b - a for a, b in pairwise(times) if b > a)
+    if len(diffs) < min_beats - 1:
+        return None
+    mid = len(diffs) // 2
+    median = diffs[mid] if len(diffs) % 2 else (diffs[mid - 1] + diffs[mid]) / 2.0
+    if not (_TEMPO_MIN_BEAT_INTERVAL_S <= median <= _TEMPO_MAX_BEAT_INTERVAL_S):
+        return None
+    return median
+
+
+@dataclass(frozen=True)
+class _TempoParams:
+    """The tempo-relative thresholds above, resolved once per arrangement
+    and threaded through the fretted scoring/refinement pipeline as a
+    single object instead of four separate keyword arguments — the fields
+    default to the pre-tempo-relative absolute constants, so a bare
+    `_TempoParams()` reproduces the no-tempo-signal fallback exactly.
+    """
+    time_window_ms: float = 150.0
+    beat_tolerance: float = 0.06
+    fret_jump_window_seconds: float = FRET_JUMP_WINDOW_SECONDS
+    sustain_ease_norm_seconds: float = 2.0
+    beat_interval: float | None = None
+
+    @classmethod
+    def from_beats(cls, beat_times):
+        """Derive tempo-relative thresholds from a song's own beat grid,
+        or fall back to the absolute defaults above when there's no
+        trustworthy tempo signal (see _median_beat_interval)."""
+        beat_interval = _median_beat_interval(beat_times)
+        if not beat_interval:
+            return cls()
+        return cls(
+            time_window_ms=beat_interval * 1000 * _GROUP_WINDOW_BEAT_FRACTION,
+            beat_tolerance=beat_interval * _BEAT_ALIGN_TOLERANCE_FRACTION,
+            fret_jump_window_seconds=beat_interval * _FRET_JUMP_WINDOW_BEATS,
+            sustain_ease_norm_seconds=beat_interval * _SUSTAIN_EASE_BEATS,
+            beat_interval=beat_interval,
+        )
+
+
 # ── Scoring heuristic ────────────────────────────────────────────────────────
 
 def _fret_score(fret):
@@ -68,17 +140,81 @@ def _fret_score(fret):
     return min(1.0, fret / 22.0)
 
 
-def _span_score(notes):
+def _fret_span(notes):
+    """Raw fret span across `notes`: max - min fret among fretted notes.
+    Open strings (f<=0) don't count — an unfretted string contributes no
+    hand-position/reach demand. 0 when fewer than two fretted notes are
+    present. Shared by _span_score (a fixed group's difficulty
+    contribution) and _pick_partial_voicing (a hypothetical span if a
+    candidate note were added to a growing voicing) so both agree on
+    exactly what "span" means as either evolves."""
     frets = [n.get("f", 0) for n in notes if n.get("f", 0) > 0]
     if len(frets) < 2:
+        return 0
+    return max(frets) - min(frets)
+
+
+def _span_score(notes):
+    return min(1.0, _fret_span(notes) / 6.0)
+
+
+def _string_span_score(notes, n_strings):
+    """String-index spread within a group, normalized 0..1 — playing
+    strings 1 and 6 together (a wide stretch/skip) is harder than playing
+    adjacent strings 1 and 2, even though both "touch 2 strings." Mirrors
+    _span_score's fret-spread normalization, just on the string axis
+    instead of the fret axis (an orthogonal kind of "how far apart")."""
+    strings = [n.get("s", 0) for n in notes]
+    if len(strings) < 2:
         return 0.0
-    return min(1.0, (max(frets) - min(frets)) / 6.0)
+    return min(1.0, (max(strings) - min(strings)) / max(n_strings - 1, 1))
 
 
 def _tech_score(n):
+    # Weights track how much extra motor precision/independent coordination
+    # a technique demands over plain picking/fretting. hm/hp were previously
+    # scored identically (one shared +0.15) despite pinch harmonics needing
+    # a precisely timed picking-hand thumb-touch immediately after the
+    # strike — markedly less forgiving than a natural harmonic's fixed-node
+    # touch — so they're split. plk/slp (bass pop/slap) were previously
+    # unscored entirely: a slap-bass note read as no harder than a plain
+    # picked note. Slap (a percussive thumb strike, a distinct right-hand
+    # technique paradigm) is weighted above pop, mirroring how it's
+    # generally regarded as the harder half of the "slap and pop" pairing.
+    # pm/mt/vb were previously present in _TECH_GATE_FRAC (gated/stripped
+    # correctly once a tier was assigned) but absent here — they contributed
+    # nothing to the score that decides which tier a note lands in to begin
+    # with. fhm (fret-hand mute — often paired with slap/pop for percussive
+    # muted "ghost notes") was in neither: unscored AND ungated, so it
+    # survived at every difficulty tier regardless of how hard the passage
+    # was. Weights below are modest for pm/mt (consistent picking-hand/
+    # fretting-hand pressure, but not independently demanding) and higher
+    # for vb (a controlled, sustained oscillation — closer in kind to
+    # tremolo) and fhm (deliberate hand-relaxation control while still
+    # tracking rhythm precisely).
+    #
+    # bt (bend intent) and bnv (bend curve) were previously invisible to
+    # scoring entirely — every bend read as the same difficulty regardless
+    # of shape, even though a pre-bend (bt=2/3) means bending to the target
+    # pitch BEFORE picking, with no real-time auditory feedback to correct
+    # against (materially harder than hearing the pitch rise as you bend),
+    # and a round-trip (bt=4) demands bidirectional control within one
+    # note's sustain. Release (bt=1) is not penalized: it's a controlled
+    # descent from an already-established pitch, not meaningfully harder
+    # than a plain bend-up. A bnv curve with more than the trivial two
+    # points a plain bn ramp already implies signals deliberate mid-bend
+    # shaping (e.g. a wobble), which needs more precise control to execute.
     score = 0.0
     if n.get("bn"):
         score += 0.4
+        bt = n.get("bt", 0)
+        if bt in (2, 3):
+            score += 0.15
+        if bt in (3, 4):
+            score += 0.10
+        bnv = n.get("bnv")
+        if bnv and len(bnv) > 2:
+            score += 0.10
     if n.get("ho") or n.get("po"):
         score += 0.25
     if n.get("tp"):
@@ -87,8 +223,22 @@ def _tech_score(n):
         score += 0.2
     if n.get("tr"):
         score += 0.3
-    if n.get("hm") or n.get("hp"):
+    if n.get("hm"):
         score += 0.15
+    if n.get("hp"):
+        score += 0.35
+    if n.get("plk"):
+        score += 0.30
+    if n.get("slp"):
+        score += 0.45
+    if n.get("pm"):
+        score += 0.15
+    if n.get("mt"):
+        score += 0.15
+    if n.get("vb"):
+        score += 0.25
+    if n.get("fhm"):
+        score += 0.20
     return min(1.0, score)
 
 
@@ -171,7 +321,48 @@ def _is_beat_aligned(time, beat_times, tolerance=0.06):
     return any(abs(float(time) - beat) <= tolerance for beat in beat_times)
 
 
-def _score_groups(groups, n_strings, beat_times=()):
+def _syncopation_score(time, beat_times, beat_interval):
+    """How far a group's onset lands from the nearest beat, as a fraction
+    of a half-beat (landing exactly between two beats — the "and" of an
+    off-beat eighth, the hardest possible offset to internalize — maxes
+    this out at 1.0; landing on the beat is 0.0).
+
+    Returns 0.0 (safe no-op) when there's no beat grid or no trustworthy
+    tempo — this is a refinement layered onto the existing note-count
+    density signal, not a replacement, so absent tempo data must not
+    silently zero out density scoring altogether.
+    """
+    if not beat_times or not beat_interval:
+        return 0.0
+    nearest = min(abs(float(time) - b) for b in beat_times)
+    return min(1.0, nearest / (beat_interval / 2.0))
+
+
+# Syncopation blended into the density sub-score at this weight — enough to
+# separate a straight run of eighth notes from an equally-dense syncopated
+# off-beat pattern (independently harder to read per basic rhythm
+# pedagogy) without letting off-grid-ness alone dominate over actual note
+# count, which stays the primary density signal.
+_SYNCOPATION_DENSITY_WEIGHT = 0.30
+
+# Spread (how far apart the touched strings are) weighs slightly more than
+# raw string count in the hand-shape sub-score — a wide stretch across few
+# strings is characteristically harder than a full barre across many
+# adjacent ones (basic fretting-hand ergonomics), but count still matters
+# (more independent digits needed), so it isn't dropped entirely.
+_STRING_SPREAD_BLEND = 0.6
+
+# String-jump bonus, parallel to the existing fret-jump bonus below: a
+# skip across 4+ strings between consecutive lower-tier anchors is a hand-
+# shape change severe enough to nudge difficulty up, independent of how
+# far the fret position itself moved.
+_STRING_JUMP_THRESHOLD = 3
+_STRING_JUMP_COEF = 0.03
+_STRING_JUMP_MAX_BONUS = 0.08  # capped lower than the fret-jump bonus (0.18) — a secondary signal
+
+
+def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
+    tempo = tempo or _TempoParams()
     total = len(groups)
     for gi, g in enumerate(groups):
         ns = g["notes"]
@@ -179,31 +370,42 @@ def _score_groups(groups, n_strings, beat_times=()):
             g["score"] = 0.0
             continue
         avg_fret = sum(n.get("f", 0) for n in ns) / len(ns)
+        count_ratio = min(1.0, (len(ns) - 1) / max(n_strings - 1, 1))
+        spread_ratio = _string_span_score(ns, n_strings)
+        string_shape = _STRING_SPREAD_BLEND * spread_ratio + (1.0 - _STRING_SPREAD_BLEND) * count_ratio
         fretting = (
             0.4 * _fret_score(avg_fret)
             + 0.35 * _span_score(ns)
-            + 0.25 * min(1.0, (len(ns) - 1) / max(n_strings - 1, 1))
+            + 0.25 * string_shape
         )
         technique = max(_tech_score(n) for n in ns)
         lo = max(0, gi - 5)
         hi = min(total, gi + 6)
         nearby = sum(len(groups[k]["notes"]) for k in range(lo, hi))
-        density = min(1.0, nearby / 20.0)
+        raw_density = min(1.0, nearby / 20.0)
+        syncopation = _syncopation_score(g["time"], beat_times, tempo.beat_interval)
+        density = min(1.0, (1.0 - _SYNCOPATION_DENSITY_WEIGHT) * raw_density
+                      + _SYNCOPATION_DENSITY_WEIGHT * syncopation)
         max_sus = max(float(n.get("sus", 0)) for n in ns)
-        sustain_ease = min(1.0, max_sus / 2.0)
+        sustain_ease = min(1.0, max_sus / tempo.sustain_ease_norm_seconds)
         g["score"] = (
             0.35 * fretting + 0.30 * technique + 0.20 * density + 0.15 * (1.0 - sustain_ease)
         )
         # Easier tiers should retain rhythmic landmarks and avoid introducing
         # hand jumps that are absent between neighbouring authored groups.
-        if _is_beat_aligned(g["time"], beat_times):
+        if _is_beat_aligned(g["time"], beat_times, tolerance=tempo.beat_tolerance):
             g["score"] -= 0.12
-        if gi and float(g["time"]) - float(groups[gi - 1]["time"]) <= FRET_JUMP_WINDOW_SECONDS:
+        if gi and float(g["time"]) - float(groups[gi - 1]["time"]) <= tempo.fret_jump_window_seconds:
             prev = _group_anchor_note(groups[gi - 1])
             cur = _group_anchor_note(g)
             if prev and cur:
-                jump = abs(int(cur.get("f", 0)) - int(prev.get("f", 0)))
-                g["score"] += min(0.18, max(0, jump - 5) * 0.03)
+                fret_jump = abs(int(cur.get("f", 0)) - int(prev.get("f", 0)))
+                g["score"] += min(0.18, max(0, fret_jump - 5) * 0.03)
+                string_jump = abs(int(cur.get("s", 0)) - int(prev.get("s", 0)))
+                g["score"] += min(
+                    _STRING_JUMP_MAX_BONUS,
+                    max(0, string_jump - _STRING_JUMP_THRESHOLD) * _STRING_JUMP_COEF,
+                )
         g["score"] = max(0.0, min(1.0, g["score"]))
 
 
@@ -261,9 +463,15 @@ def _assign_levels(groups, n_levels, curve_exponent=_RETENTION_CURVE_EXPONENT):
         g["level"] = min(lvl, n_levels - 1)
 
 
-def _best_bridge_candidate(groups, left, right, level, beat_times, original_jump):
-    left_fret = int(_group_anchor_note(left).get("f", 0))
-    right_fret = int(_group_anchor_note(right).get("f", 0))
+def _best_bridge_candidate(groups, left, right, level, beat_times, original_jump, *,
+                            original_string_jump=0, tempo=None):
+    tempo = tempo or _TempoParams()
+    left_anchor = _group_anchor_note(left)
+    right_anchor = _group_anchor_note(right)
+    left_fret = int(left_anchor.get("f", 0))
+    right_fret = int(right_anchor.get("f", 0))
+    left_string = int(left_anchor.get("s", 0))
+    right_string = int(right_anchor.get("s", 0))
     candidates = []
     for candidate in groups:
         if candidate["level"] <= level or not (left["time"] < candidate["time"] < right["time"]):
@@ -272,23 +480,52 @@ def _best_bridge_candidate(groups, left, right, level, beat_times, original_jump
         if not anchor:
             continue
         fret = int(anchor.get("f", 0))
+        string = int(anchor.get("s", 0))
         worst_jump = max(abs(fret - left_fret), abs(right_fret - fret))
-        if worst_jump < original_jump:
-            beat_penalty = 0 if _is_beat_aligned(candidate["time"], beat_times) else 1
-            candidates.append((worst_jump, beat_penalty, candidate["score"], candidate["time"], candidate))
-    return min(candidates, key=lambda item: item[:4])[4] if candidates else None
+        worst_string_jump = max(abs(string - left_string), abs(right_string - string))
+        # A candidate qualifies if it improves EITHER dimension, mirroring
+        # the OR-shaped trigger in _refine_lower_tier_path that decided
+        # bridging was needed. Fret-only acceptance (the original check)
+        # can never find a candidate for a pure string skip: when
+        # original_jump is already 0 (identical fret, only the string
+        # differs — exactly the case the string trigger exists for),
+        # `worst_jump < 0` is impossible, so bridging would silently
+        # promote nothing even though the trigger correctly fired.
+        if worst_jump < original_jump or worst_string_jump < original_string_jump:
+            beat_penalty = 0 if _is_beat_aligned(candidate["time"], beat_times, tolerance=tempo.beat_tolerance) else 1
+            candidates.append((
+                worst_jump, worst_string_jump, beat_penalty,
+                candidate["score"], candidate["time"], candidate,
+            ))
+    return min(candidates, key=lambda item: item[:5])[5] if candidates else None
 
 
-def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7):
+# A 4+-string skip between consecutive lower-tier anchors is a hand-shape
+# change severe enough to warrant hunting for an intermediate authored
+# note to bridge — mirrors the fret-jump continuity check (max_jump=7)
+# but on the orthogonal string axis. Deliberately kept as an independent
+# OR-trigger alongside the fret-distance check, not fused into one metric:
+# a chord-shape change that jumps strings will usually also move frets, so
+# the existing fret-distance-based ranking in _best_bridge_candidate
+# already does something sensible once bridging is triggered, without
+# redefining what the already-tuned max_jump=7 threshold means.
+_MAX_STRING_JUMP_FOR_CONTINUITY = 3
+
+
+def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
+                             tempo=None,
+                             max_string_jump=_MAX_STRING_JUMP_FOR_CONTINUITY):
     """Promote anchors needed for a playable, rhythmically grounded path.
 
     Promotions only add source groups to lower tiers, preserving nesting and
     providing a conservative fallback when percentile thinning omits every
-    beat landmark or creates a large avoidable jump.
+    beat landmark or creates a large avoidable jump (fret position or
+    string distance).
     """
+    tempo = tempo or _TempoParams()
     if not groups or max_level <= 0:
         return
-    beat_groups = [g for g in groups if _is_beat_aligned(g["time"], beat_times)]
+    beat_groups = [g for g in groups if _is_beat_aligned(g["time"], beat_times, tolerance=tempo.beat_tolerance)]
     for level in range(max_level):
         kept = [g for g in groups if g["level"] <= level]
         if beat_groups and not any(g in beat_groups for g in kept):
@@ -299,7 +536,7 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7):
             kept = sorted((g for g in groups if g["level"] <= level), key=lambda g: g["time"])
             promoted = False
             for left, right in pairwise(kept):
-                if float(right["time"]) - float(left["time"]) > FRET_JUMP_WINDOW_SECONDS:
+                if float(right["time"]) - float(left["time"]) > tempo.fret_jump_window_seconds:
                     continue
                 left_anchor = _group_anchor_note(left)
                 right_anchor = _group_anchor_note(right)
@@ -308,10 +545,12 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7):
                 left_fret = int(left_anchor.get("f", 0))
                 right_fret = int(right_anchor.get("f", 0))
                 original_jump = abs(right_fret - left_fret)
-                if original_jump <= max_jump:
+                string_jump = abs(int(right_anchor.get("s", 0)) - int(left_anchor.get("s", 0)))
+                if original_jump <= max_jump and string_jump <= max_string_jump:
                     continue
                 candidate = _best_bridge_candidate(
                     groups, left, right, level, beat_times, original_jump,
+                    original_string_jump=string_jump, tempo=tempo,
                 )
                 if candidate:
                     candidate["level"] = level
@@ -325,15 +564,37 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7):
 # is allowed to survive. Ordered coarsely from how corpus analysis (a wide
 # sample of authored ladders, hand-tuned and tool-generated, across genres)
 # showed these actually get introduced: sustain/legato-adjacent techniques
-# (bends, vibrato) show up earliest, palm mutes and slides in the middle,
-# harmonics/HOPO chains later, tremolo/tap reserved for the hardest tier.
+# (bends, vibrato) show up earliest, palm mutes/slides/pop in the middle,
+# natural harmonics/fret-hand-mutes/hammer-on/pull-off chains later,
+# tremolo/slap/tap/pinch-harmonic reserved for the hardest tier or two.
+# Pinch harmonics gate later than natural harmonics (0.95 vs 0.75) since
+# the thumb-touch timing they require is markedly less forgiving; on the
+# bass side, slap gates later than pop (0.90 vs 0.80) for the same reason
+# — slap's percussive thumb strike is the harder half of the "slap and
+# pop" pairing. fhm (fret-hand mute) gates alongside natural harmonics —
+# often paired with slap/pop for percussive muted "ghost notes," so it
+# belongs in the same "moderately advanced, single coordinated hand-
+# position" tier rather than the earlier pm/mt picking-hand mutes.
+#
+# bt/bnv gate the BEND'S SHAPE, layered above bn's own gate (0.50) rather
+# than as independent techniques — they only mean anything in the context
+# of an active bend, so both gates sit above 0.50 to guarantee a stripped
+# bend (bn=0) never leaves a stale bt/bnv behind describing a bend that no
+# longer exists. bt gates first (0.65: downgrades a hard bend variant —
+# pre-bend, pre-bend-release, round-trip — to a plain bend-up before the
+# bend itself is old enough to survive at full shape), bnv later (0.80:
+# an explicitly authored curve is the most precise bend representation, so
+# it's the last bend refinement to appear).
 _TECH_GATE_FRAC = {
     "bn": 0.50,
     "pm": 0.55, "mt": 0.55,
+    "bt": 0.65,
     "vb": 0.70,
-    "hm": 0.75,
+    "hm": 0.75, "fhm": 0.75,
     "ho": 0.80, "po": 0.80,
+    "plk": 0.80, "bnv": 0.80,
     "sl": 0.85, "slu": 0.85,
+    "slp": 0.90,
     "tr": 0.90,
     "hp": 0.95,
     "tp": 0.95,
@@ -352,9 +613,60 @@ def _prune_techniques(note, diff_percent):
                 out[key] = -1
             elif key == "bn":
                 out[key] = 0
+                # A stripped bend must not leave stale bend-shape metadata
+                # behind. bt's own gate below only downgrades the "harder"
+                # intents (2/3/4) since release (1) isn't penalized on its
+                # own — but once bn is gone entirely there's no bend left
+                # for ANY intent value, including release, to describe.
+                out["bt"] = 0
+            elif key == "bt":
+                # Only the genuinely harder intents (pre-bend, pre-bend-
+                # release, round-trip) get downgraded to a plain bend-up;
+                # release (1) isn't meaningfully harder than a plain bend
+                # and is left as authored (unless bn's own gate above
+                # already cleared it).
+                if out.get("bt", 0) in (2, 3, 4):
+                    out["bt"] = 0
             else:
                 out.pop(key, None)
     return out
+
+
+def _pick_partial_voicing(ranked, n):
+    """Pick `n` notes from a chord's notes (already sorted root-first — see
+    _notes_for_level's docstring on the root convention) for a reduced
+    voicing. Always keeps the root (ranked[0]), then greedily adds whichever
+    remaining note keeps the voicing's own fret span (_fret_span) smallest.
+    An open string (f=0) contributes nothing to the span, so it's always a
+    free, no-stretch add.
+
+    Deliberately diverges from the keys path's outer-voice selection
+    (_notes_for_level_keys picks by pitch extremes, since a piano hand
+    isn't fret-constrained): a fretted "partial" voicing that's still a
+    hard stretch defeats the point of simplifying it, so selection here
+    optimizes for playability over preserving the chord's full pitch range.
+    """
+    if n >= len(ranked):
+        return list(ranked)
+    kept = [ranked[0]]
+    remaining = list(ranked[1:])
+    while len(kept) < n and remaining:
+        def _span_if_added(cand, kept=kept):
+            return _fret_span(kept + [cand])
+        best = min(remaining, key=_span_if_added)
+        kept.append(best)
+        remaining.remove(best)
+    return kept
+
+
+# Named for clarity — unchanged from the original tuned root-only threshold.
+_CHORD_ROOT_ONLY_FRAC = 0.20
+# A 4+-note chord's middle voice appears only in roughly the top half of a
+# phrase's own ladder, keeping early tiers sparse the same way
+# _RETENTION_CURVE_EXPONENT and _TECH_GATE_FRAC already bias the bottom of
+# a ladder toward simplicity — a mid-tier chord widens root+1 -> root+2
+# instead of jumping straight from a partial voicing to the full chord.
+_CHORD_MID_VOICING_FRAC = 0.55
 
 
 def _notes_for_level(groups, level, max_level):
@@ -383,13 +695,19 @@ def _notes_for_level(groups, level, max_level):
                 # (Rocksmith-derived): index 0 = highest-pitched string, so
                 # the highest index among a chord's notes is its root.
                 ranked = sorted(ch_notes, key=lambda n: n.get("s", 0), reverse=True)
-                # root-only only very early, then a partial voicing — authored
+                # root-only only very early, then a partial voicing that grows
+                # by one note at a mid-ladder threshold, mirroring the keys
+                # path's outer-voices -> +middle -> full progression — authored
                 # ladders widen chords quickly (root-only is a bottom-tier-only
-                # thing, not a mid-ladder state)
-                if diff_percent < 0.20:
+                # thing) but a 4+-note chord still gets a real middle rung
+                # instead of jumping straight from 2 notes to the full voicing.
+                if diff_percent < _CHORD_ROOT_ONLY_FRAC:
                     ch_notes = [ranked[0]]
-                elif len(ranked) > 2:
-                    ch_notes = ranked[:2]
+                elif diff_percent < _CHORD_MID_VOICING_FRAC or len(ranked) <= 3:
+                    if len(ranked) > 2:
+                        ch_notes = _pick_partial_voicing(ranked, 2)
+                else:
+                    ch_notes = _pick_partial_voicing(ranked, 3)
             for cn in ch_notes:
                 merged = _prune_techniques(cn, diff_percent)
                 merged["t"] = ch_time
@@ -576,6 +894,64 @@ def _notes_for_level_keys(groups, level, max_level):
     return out_notes, []  # keys never emits chord-shaped entries at reduced tiers
 
 
+# 8 measures ≈ two 4-bar antecedent/consequent phrases, a common phrase length
+# in contemporary popular/rock music — a much closer approximation of a real
+# phrase's grain than a flat 30-second chunk, without fragmenting into
+# awkwardly short windows at slower tempos the way a 4-bar default would.
+_FALLBACK_PHRASE_MEASURES = 8
+# Enough consecutive downbeats to trust the grid is real, without requiring a
+# full phrase's worth of data before this fallback is allowed to kick in.
+_MIN_DOWNBEATS_FOR_MEASURE_FALLBACK = 4
+
+
+def _measure_aligned_windows(beats, duration, *,
+                              measures_per_phrase=_FALLBACK_PHRASE_MEASURES,
+                              min_downbeats=_MIN_DOWNBEATS_FOR_MEASURE_FALLBACK):
+    """Group the arrangement's own downbeats into phrase-length windows when
+    neither section_times nor arr['sections'] gave real boundaries — a
+    musically-aligned replacement for the blind 30-second chunking below.
+
+    Counts downbeat OCCURRENCES in time order rather than trusting
+    beats[].measure's numeric label to be globally monotonic (nothing in
+    the feedpak spec guarantees a chart never restarts measure numbering
+    at a structural repeat) — this only ever needs "every Nth downbeat" as
+    a position, never the label's value.
+
+    Returns None (caller falls back to the legacy 30s chunker) when there
+    aren't enough usable downbeats: `beats` is empty, sparse, or every
+    entry is `measure: -1` (not a downbeat, per feedpak-spec §6.8) — every
+    other value, including 0, is a real downbeat (see the filter below).
+    """
+    downbeat_times = sorted(
+        float(b.get("time", 0)) for b in beats
+        # feedpak-spec's song_timeline.json prose describes 1-based downbeat
+        # numbering ("`-1` = sub-beat"), but feedBack's own runtime treats
+        # ANY non-negative measure as a downbeat — static/highway.js's
+        # `isMeasure = beat.measure >= 0`, static/js/count-in.js, and
+        # plugins/highway_3d/screen.js all key off `measure >= 0`, and a
+        # song whose numbering happens to start at 0 must not have its
+        # first downbeat silently dropped here. `>= 0` and `> 0` behave
+        # identically on spec-conformant data (0 should never legitimately
+        # appear in this field), so matching core's actual, ecosystem-wide
+        # convention costs nothing and is the defensive choice.
+        if isinstance(b, dict) and int(b.get("measure", -1)) >= 0
+    )
+    if len(downbeat_times) < min_downbeats:
+        return None
+    windows = []
+    for i in range(0, len(downbeat_times), measures_per_phrase):
+        t0 = downbeat_times[i]
+        j = i + measures_per_phrase
+        t1 = downbeat_times[j] if j < len(downbeat_times) else duration
+        if t1 > t0:
+            windows.append((t0, t1))
+    if windows and windows[0][0] > 0.0:
+        # A pickup/intro before the first downbeat belongs in the first
+        # window, not silently dropped.
+        windows[0] = (0.0, windows[0][1])
+    return windows or None
+
+
 def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[float] | None = None):
     """Build a phrase-level difficulty ladder for one arrangement's raw wire
     dict (as stored in a sloppak's arrangements/*.json).
@@ -636,6 +1012,8 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
                 if i + 1 < len(secs) else duration
             )
             windows.append((t0, t1))
+    elif (measure_windows := _measure_aligned_windows(beats, duration)) is not None:
+        windows = measure_windows
     else:
         windows, t = [], 0.0
         while t < duration:
@@ -645,12 +1023,14 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         windows = [(0.0, duration)]
 
     beat_times = [float(b.get("time", 0)) for b in beats]
+    tempo = _TempoParams.from_beats(beat_times)
+
     if is_keys:
         groups_all = _group_notes_keys(notes, chords)
         _score_groups_keys(groups_all)
     else:
-        groups_all = _group_notes(notes, chords)
-        _score_groups(groups_all, n_strings, beat_times)
+        groups_all = _group_notes(notes, chords, time_window_ms=tempo.time_window_ms)
+        _score_groups(groups_all, n_strings, beat_times, tempo=tempo)
 
     phrases_out = []
     for t0, t1 in windows:
@@ -678,7 +1058,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         phrase_max_level = phrase_n_levels - 1
         _assign_levels(phrase_groups, phrase_n_levels)
         if not is_keys:
-            _refine_lower_tier_path(phrase_groups, beat_times, phrase_max_level)
+            _refine_lower_tier_path(phrase_groups, beat_times, phrase_max_level, tempo=tempo)
         levels_out = []
         for lvl in range(phrase_n_levels):
             if is_keys:

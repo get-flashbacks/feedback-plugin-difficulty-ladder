@@ -30,7 +30,7 @@ difficulty indicators.
 
 | Instrument | Supported? | Notes |
 |---|---|---|
-| Guitar / bass (fretted) | ✅ | Fret complexity, span, technique (bend/slide/hammer-on/tremolo/harmonic), density, sustain-ease. |
+| Guitar / bass (fretted) | ✅ | Fret complexity, span, string-skip/hand-shape distance, tempo/syncopation-aware density, sustain-ease. Technique scoring covers bend (base + pre-bend/round-trip/shaped-curve difficulty, `bt`/`bnv`), slide, hammer-on/pull-off, tremolo, natural vs. pinch harmonic (scored independently), palm/string mute, vibrato, fret-hand mute, and bass slap/pop (scored independently, slap weighted harder). Timing thresholds (grouping window, beat tolerance, fret-jump window) scale with the song's own tempo instead of fixed wall-clock constants. |
 | Keys / piano | ✅ | Separate pitch-based heuristic (polyphony, hand-span, density, sustain-ease) — keys notes encode `midi = string*24 + fret`, so the fretted heuristic doesn't apply and never runs against them. No fret anchors/hand-shapes generated (the piano renderer doesn't consume them). |
 | Drums | ❌ | Drum parts are a `drum_tab.json` pointer, not a `notes`/`chords` file — outside this generator's data model entirely. Detected and skipped cleanly (`unsupported-instrument-drums`), never mis-scored. |
 
@@ -110,7 +110,7 @@ All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 | Field | Value |
 |-------|-------|
 | id | `difficulty_ladder` |
-| version | 0.7.1 |
+| version | 0.9.1 |
 | category | practice |
 
 ## Possible Upgrades
@@ -119,12 +119,6 @@ Design notes only — not yet implemented. Each item should ship as an
 independent, opt-in setting so existing behavior doesn't change unless a
 user turns it on.
 
-**Recommended (low effort, self-contained):**
-
-| Upgrade | What it would do |
-|---|---|
-| Hand-position continuity check in generated ladders | The note-thinning heuristic scores each note group in isolation, with no check on fret distance between consecutive kept notes, and no explicit preference for keeping each group's root note or landing on-beat. A generated lower tier could introduce an awkward hand jump or drop the harmonic/rhythmic anchor the full arrangement doesn't have. Medium effort — touches generation output, needs fixture tests. |
-
 **Also considered:**
 
 - Per-section custom difficulty override — let a section being looped in
@@ -132,12 +126,45 @@ user turns it on.
   song-wide master-difficulty slider. A genuinely new capability, not
   something the plugin does today; would need to interact cleanly with
   auto-adjust and with any step-practice plugin active for the same
-  section, rather than duplicating it.
+  section, rather than duplicating it. (Measure-aligned fallback phrase
+  windows, added for songs with no authored sections, make this more
+  practical than it used to be — those songs previously only had blind
+  30s chunks to hang a per-section override on.)
 - Adaptive baseline per instrument, shown on the Profile screen — a card
   computed from this plugin's own per-song mastery memory, grouped by
   instrument, using the v3 Profile screen's plugin extension point
   (`v3:profile-rendered`). Informational only to start — no change to how
-  a brand-new song's starting difficulty is chosen.
+  a brand-new song's starting difficulty is chosen. (A generated ladder's
+  difficulty % is now calibrated against a much fuller technique
+  vocabulary — see Instrument coverage above — so it's a more consistent
+  cross-song signal for this to aggregate than it used to be.)
+- Per-technique player profile driving adaptive difficulty — go beyond a
+  passive per-instrument baseline (above) to a persisted, per-technique
+  proficiency profile (bends, pinch harmonics, slap/pop, vibrato, etc. —
+  the same vocabulary `_tech_score`/`_TECH_GATE_FRAC` now model at
+  generation time) built from live hit/miss judgments, then have
+  auto-adjust weight a phrase's accuracy signal by how much that phrase
+  leans on techniques the player is specifically weak or strong at,
+  instead of today's flat hit-rate. A rough pre-bend streak wouldn't need
+  to drag down a phrase's difficulty as much as an equally rough streak
+  on a technique the player has never struggled with, and vice versa.
+  Belongs entirely on the **live** side (auto-adjust's phrase-scoring
+  weight in `screen.js`), not as a per-player fork of `/generate`'s
+  output — generated ladders are written once into the shared sloppak
+  file, not regenerated per player, so the generation heuristic itself
+  should stay player-agnostic. The technique data needed to attribute a
+  miss already exists on every note the highway streams (`getFilteredNotes()`/
+  `getChords()` carry the same `bn`/`ho`/`hp`/`slp`/etc. flags `_tech_score`
+  reads), so no new capability contract would be required. Open questions:
+  cold-start (a new song or a technique never seen before has no signal
+  yet, so needs a neutral default weighting rather than an assumed
+  weakness), and how per-technique weighting composes with the existing
+  Sensitivity/Reaction speed settings and Resist isolated difficulty
+  drops — replacing them, scaling them, or applying only as a tiebreaker.
+  Meaningfully larger than the passive baseline above (its own persisted
+  store beyond the existing `songMastery` map, plus new live-scoring
+  logic) — closer in scope to the per-technique skill profile ruled out
+  below, but aimed at adapting difficulty rather than only displaying it.
 - Direction-asymmetric step size (larger downward steps than upward).
 - A passive "mastery streak" indicator on the glass HUD when accuracy
   stays high at max difficulty for several consecutive phrases — visual
@@ -155,10 +182,18 @@ user turns it on.
   consuming plugin can add unilaterally.
 - Generating dozens of levels per phrase — the cap is trivial to raise,
   but the thinning heuristic needs enough distinct note groups per phrase
-  to populate that many meaningfully different tiers.
+  to populate that many meaningfully different tiers. (Richer per-
+  technique scoring gives whatever depth *is* chosen a more honest score
+  spread to work from, but doesn't touch this group-count constraint, so
+  the verdict here is unchanged.)
 - A full cross-song, per-technique skill profile — a materially larger
   feature than the scoped per-instrument baseline above, and lower value
-  for a tool where users pick what to practice.
+  for a tool where users pick what to practice. (`_tech_score`/
+  `_TECH_GATE_FRAC` now cover the note wire format's full technique
+  vocabulary — bend shape, both harmonic types, all four mute/pop/slap
+  variants — instead of roughly half of it, so the data-layer cost of
+  ever revisiting this decision is lower than it used to be. Still not
+  something this plugin builds today.)
 
 ## Design notes
 
