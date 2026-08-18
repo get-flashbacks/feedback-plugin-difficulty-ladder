@@ -45,7 +45,7 @@
     const SONG_MASTERY_LS_KEY = `${LS_PREFIX}songMastery`;
     const PHRASE_ATTEMPTS_LS_KEY = `${LS_PREFIX}phraseAttempts.v1`;
     const MAX_PHRASE_ATTEMPTS = 5000;
-    const _sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const _sessionId = window.crypto?.randomUUID?.() || `session-${Date.now()}`;
     // Lazily loaded, kept in sync by saveSongMasteryMap() — avoids a fresh
     // JSON.parse of the whole map on every window.setMastery() call, which
     // slider drags can fire many times a second via oninput.
