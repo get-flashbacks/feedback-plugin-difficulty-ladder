@@ -1322,9 +1322,6 @@
             mountControls, onGenerateClick,
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
             tickOneSplitHighway: tickOneSplitHighway,
-            rampStep: rampStep, WARMUP_PHRASES: WARMUP_PHRASES, RAMP_PHRASES: RAMP_PHRASES,
-            currentTarget: currentTarget, currentTargetStatus: currentTargetStatus,
-            mountControls: mountControls, onGenerateClick: onGenerateClick,
         };
         return;
     }
