@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-08-18
+
+### Fixed
+- Remove duplicate test-helper exports from the module export object.
+
+## [0.9.5] - 2026-08-18
+
+### Fixed
+- Cache phrase-attempt records and debounce persistence so scoring does not
+  synchronously parse and stringify localStorage on every phrase completion.
+
+## [0.8.3] - 2026-08-16
+
+### Added
+- Persist per-phrase attempt logs for adaptive-difficulty analysis under
+  `difficulty_ladder.phraseAttempts.v1`. Each record includes a stable phrase
+  identifier, presented difficulty level, phrase-level hit/miss result, per-note
+  hit/miss details, note count, hit rate, session id, timestamp, and song
+  arrangement key. The log is bounded to the latest 5000 attempts and advertised
+  through diagnostics so Phase 3 player sessions have a queryable local source.
 ### Changed
 - The mastery slider's `oninput` (fires per pixel dragged) no longer runs the
   O(sections*phrases) section-difficulty recompute and event-bus emit on every

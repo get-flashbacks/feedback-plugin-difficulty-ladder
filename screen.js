@@ -25,13 +25,14 @@
     window._ddCapabilities.sectionDifficulty = true;
 
     function lsGet(key, def) {
+        let v;
         try {
-            var v = localStorage.getItem(LS_PREFIX + key);
+            v = localStorage.getItem(`${LS_PREFIX}${key}`);
             return v === null ? def : JSON.parse(v);
         } catch (_) { return def; }
     }
     function lsSet(key, val) {
-        try { localStorage.setItem(LS_PREFIX + key, JSON.stringify(val)); } catch (_) { /* noop */ }
+        try { localStorage.setItem(`${LS_PREFIX}${key}`, JSON.stringify(val)); } catch (_) { /* noop */ }
     }
     var _pendingSettingWrites = {};
     function lsSetDebounced(key, val) {
@@ -54,16 +55,22 @@
     // (Slopsmith's song_mastery plugin did the same, per-filename) so
     // revisiting a song you'd auto-adjusted or manually set restores where
     // you left off, instead of inheriting an unrelated song's difficulty.
-    var SONG_MASTERY_LS_KEY = LS_PREFIX + 'songMastery';
+    const SONG_MASTERY_LS_KEY = `${LS_PREFIX}songMastery`;
+    const PHRASE_ATTEMPTS_LS_KEY = `${LS_PREFIX}phraseAttempts.v1`;
+    const MAX_PHRASE_ATTEMPTS = 5000;
+    const _sessionId = window.crypto?.randomUUID?.() || `session-${Date.now()}`;
     // Lazily loaded, kept in sync by saveSongMasteryMap() — avoids a fresh
     // JSON.parse of the whole map on every window.setMastery() call, which
     // slider drags can fire many times a second via oninput.
-    var _songMasteryMapCache = null;
+    let _songMasteryMapCache = null;
+    let _phraseAttemptsCache = null;
+    let _phraseAttemptsFlushTimer = null;
 
     function loadSongMasteryMap() {
+        let parsed;
         if (_songMasteryMapCache) return _songMasteryMapCache;
         try {
-            var parsed = JSON.parse(localStorage.getItem(SONG_MASTERY_LS_KEY) || '{}');
+            parsed = JSON.parse(localStorage.getItem(SONG_MASTERY_LS_KEY) || '{}');
             // typeof [] === 'object' too — an array here would make
             // map[_songKey] = pct set a non-index property that
             // JSON.stringify silently drops from array output, so per-song
@@ -79,7 +86,8 @@
         try { localStorage.setItem(SONG_MASTERY_LS_KEY, JSON.stringify(map)); } catch (_) { /* noop */ }
     }
     function _masteryPct(record) {
-        var value = record && typeof record === 'object' ? record.mastery : record;
+        let value;
+        value = record && typeof record === 'object' ? record.mastery : record;
         return (typeof value === 'number' && isFinite(value)) ? value : null;
     }
     function _rememberSongInstrument(key, instrument) {
@@ -253,45 +261,46 @@
     // treatment as thresholds()/emaAlpha() above, so a future settings-slider
     // addition can follow the exact pattern already established for
     // sensitivity/reactionSpeed.
-    var WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
-    var RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
-    var DOWN_CONFIRM_PHRASES = 2;
-
-    function rampStep(th, progress) {
-        var index = Math.max(0, Math.min(RAMP_PHRASES - 1, Number(progress) || 0));
-        var before = Math.round(th.step * index / RAMP_PHRASES);
-        var after = Math.round(th.step * (index + 1) / RAMP_PHRASES);
-        return Math.max(1, after - before);
-    }
+    const WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
+    const RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
+    const DOWN_CONFIRM_PHRASES = 2;
 
     // ---- Per-song scoring state ----
-    var _songKey = null;
-    var _songInstrument = null;    // authoritative routes.py classification when available
-    var _emaHitRate = null;        // null = no phrase scored yet this song
+    let _songKey = null;
+    let _songInstrument = null;    // authoritative routes.py classification when available
+    let _emaHitRate = null;        // null = no phrase scored yet this song
     // EMA weight is now the reactionSpeed setting (emaAlpha(), above) rather
     // than a hardcoded constant — see issue #5. Read live (not cached) since
     // the settings-changed listener below can update settings.reactionSpeed
     // mid-song.
-    var _judgedKeys = null;        // Set, reset every phrase to bound memory
-    var _phraseHits = 0;
-    var _phraseTotal = 0;
-    var _phrasesScored = 0;        // counts real phrases committed this song, gates WARMUP_PHRASES
-    var _curPhraseIdx = -1;
-    var _lastObservedMasteryPct = null; // detects manual slider changes before or after auto-apply
-    var _lastAutoAction = null;     // { direction, pct, reason } - for diagnostics
-    var _rampDirection = null;
-    var _rampProgress = 0;
-    var _downStreak = 0;
+    let _judgedKeys = null;        // Set, reset every phrase to bound memory
+    let _phraseHits = 0;
+    let _phraseTotal = 0;
+    let _phraseJudgments = [];
+    let _phrasesScored = 0;        // counts real phrases committed this song, gates WARMUP_PHRASES
+    let _curPhraseIdx = -1;
+    let _lastObservedMasteryPct = null; // detects manual slider changes before or after auto-apply
+    let _lastAutoAction = null;     // { direction, pct, reason } - for diagnostics
+    let _rampDirection = null;
+    let _rampProgress = 0;
+    let _downStreak = 0;
     // Forward-advancing cursors into the time-sorted notes/chords arrays —
     // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
     // performance doctrine). Reset only on a backward seek (loop/rewind).
-    var _noteCursor = 0;
-    var _chordCursor = 0;
-    var _lastScoredT = -1;
+    let _noteCursor = 0;
+    let _chordCursor = 0;
+    let _lastScoredT = -1;
+
+    function rampStep(th, progress) {
+        const index = Math.max(0, Math.min(RAMP_PHRASES - 1, Number(progress) || 0));
+        const before = Math.round(th.step * index / RAMP_PHRASES);
+        const after = Math.round(th.step * (index + 1) / RAMP_PHRASES);
+        return Math.max(1, after - before);
+    }
 
     function songKeyOf(si) {
         if (!si) return null;
-        var arrKey = (si.arrangement_index != null) ? si.arrangement_index : (si.arrangement || '');
+        const arrKey = (si.arrangement_index != null) ? si.arrangement_index : (si.arrangement || '');
         return (si.filename || '') + '::' + arrKey;
     }
 
@@ -300,6 +309,7 @@
         _judgedKeys = new Set();
         _phraseHits = 0;
         _phraseTotal = 0;
+        _phraseJudgments = [];
         _phrasesScored = 0;
         _curPhraseIdx = -1;
         _lastObservedMasteryPct = null;
@@ -316,8 +326,92 @@
 
     function judgmentKey(time, s, f) { return time + '_' + s + '_' + f; }
 
+    function _phraseIdOf(songKey, idx, phrase) {
+        if (!songKey || idx == null || idx < 0 || !phrase) return null;
+        return [
+            songKey,
+            idx,
+            Number(phrase.start_time || 0).toFixed(3),
+            Number(phrase.end_time || 0).toFixed(3),
+        ].join('::');
+    }
+
+    function _presentedDifficultyLevel(hw, phrase) {
+        const max = Number(phrase?.max_difficulty);
+        let mastery;
+        const checks = [
+            { check: () => !hw || !phrase || typeof hw.getMastery !== 'function', result: () => null },
+            { check: () => !isFinite(max) || max <= 0, result: () => 0 },
+            { check: () => { mastery = Number(hw.getMastery()); return !isFinite(mastery); }, result: () => null },
+            { check: () => true, result: () => Math.min(max, Math.floor(Math.max(0, Math.min(1, mastery)) * (max + 1))) }
+        ];
+        const { result } = checks.find(c => c.check());
+        return result();
+    }
+
+    function loadPhraseAttempts() {
+        let parsed;
+        if (_phraseAttemptsCache) return _phraseAttemptsCache;
+        try {
+            parsed = JSON.parse(localStorage.getItem(PHRASE_ATTEMPTS_LS_KEY) || '[]');
+            _phraseAttemptsCache = Array.isArray(parsed) ? parsed : [];
+        } catch (_) {
+            _phraseAttemptsCache = [];
+        }
+        return _phraseAttemptsCache;
+    }
+
+    function savePhraseAttempts(attempts) {
+        _phraseAttemptsCache = Array.isArray(attempts) ? attempts : [];
+        try { localStorage.setItem(PHRASE_ATTEMPTS_LS_KEY, JSON.stringify(attempts)); } catch (_) { /* noop */ }
+    }
+
+    function flushPhraseAttempts() {
+        if (_phraseAttemptsFlushTimer) {
+            clearTimeout(_phraseAttemptsFlushTimer);
+            _phraseAttemptsFlushTimer = null;
+        }
+        if (!_phraseAttemptsCache) return;
+        try { localStorage.setItem(PHRASE_ATTEMPTS_LS_KEY, JSON.stringify(_phraseAttemptsCache)); } catch (_) { /* noop */ }
+    }
+
+    function schedulePhraseAttemptsFlush() {
+        if (_phraseAttemptsFlushTimer) clearTimeout(_phraseAttemptsFlushTimer);
+        _phraseAttemptsFlushTimer = setTimeout(flushPhraseAttempts, 150);
+    }
+
+    function recordPhraseAttempt(ratio) {
+        if (!_songKey || _curPhraseIdx < 0 || _phraseTotal <= 0) return;
+        const phrase = window.highway?.getPhrases()?.[_curPhraseIdx];
+        const phraseId = _phraseIdOf(_songKey, _curPhraseIdx, phrase);
+        if (!phraseId) return;
+        const attempts = loadPhraseAttempts();
+        attempts.push({
+            schema: 'difficulty_ladder.phrase_attempt.v1',
+            session_id: _sessionId,
+            song_key: _songKey,
+            instrument: _songInstrument,
+            phrase_id: phraseId,
+            phrase_index: _curPhraseIdx,
+            phrase_start_time: phrase.start_time,
+            phrase_end_time: phrase.end_time,
+            presented_difficulty: _presentedDifficultyLevel(window.highway, phrase),
+            hit: ratio >= 1,
+            hit_count: _phraseHits,
+            miss_count: _phraseTotal - _phraseHits,
+            note_count: _phraseTotal,
+            hit_rate: ratio,
+            note_results: _phraseJudgments.slice(),
+            timestamp: new Date().toISOString(),
+        });
+        _phraseAttemptsCache = attempts.slice(-MAX_PHRASE_ATTEMPTS);
+        schedulePhraseAttemptsFlush();
+    }
+
     function commitPhraseResult(ratio) {
-        var alpha = emaAlpha();
+        var alpha, hw;
+        recordPhraseAttempt(ratio);
+        alpha = emaAlpha();
         _emaHitRate = (_emaHitRate == null) ? ratio : (alpha * ratio + (1 - alpha) * _emaHitRate);
         // Counts every phrase actually played this song, regardless of
         // autoAdjust — a warm-up satisfied while paused should still count
@@ -330,7 +424,7 @@
             contributeDiagnostics();
             return;
         }
-        var hw = window.highway;
+        hw = window.highway;
         if (!hw || typeof hw.getMastery !== 'function') {
             _rampDirection = null;
             _rampProgress = 0;
@@ -411,6 +505,12 @@
             provider_registered: !!provider,
             auto_adjust_enabled: settings.autoAdjust,
             show_glasses: settings.showGlasses,
+            phrase_attempt_log: {
+                storage_key: PHRASE_ATTEMPTS_LS_KEY,
+                schema: 'difficulty_ladder.phrase_attempt.v1',
+            retained_attempts: (_phraseAttemptsCache || loadPhraseAttempts()).length,
+                max_retained_attempts: MAX_PHRASE_ATTEMPTS,
+            },
         });
     }
 
@@ -549,6 +649,7 @@
             _curPhraseIdx = idx;
             _phraseHits = 0;
             _phraseTotal = 0;
+            _phraseJudgments = [];
             _judgedKeys = new Set();
         }
         if (idx < 0) return;
@@ -582,6 +683,7 @@
                 _judgedKeys.add(nk);
                 _phraseTotal++;
                 if (nname === 'hit') _phraseHits++;
+                _phraseJudgments.push({ key: nk, time: n.t, string: n.s, fret: n.f, hit: nname === 'hit' });
             }
         }
 
@@ -604,6 +706,7 @@
                     _judgedKeys.add(ck);
                     _phraseTotal++;
                     if (cname === 'hit') _phraseHits++;
+                    _phraseJudgments.push({ key: ck, time: c.t, string: cn.s, fret: cn.f, hit: cname === 'hit' });
                 }
             }
         }
@@ -1103,6 +1206,7 @@
         var si = (hw && typeof hw.getSongInfo === 'function') ? hw.getSongInfo() : null;
         var key = songKeyOf(si);
         if (key !== _songKey) {
+            flushPhraseAttempts();
             _songKey = key;
             _songInstrument = null;
             resetPerSongState();
@@ -1145,6 +1249,7 @@
                 installSplitScreenDetectorHook();
                 startRafLoops();
             } else {
+                flushPhraseAttempts();
                 stopSplitScreenHookSubscription();
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
                 if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
@@ -1202,18 +1307,21 @@
     // behavior is unchanged.
     if (typeof module !== 'undefined' && module.exports) {
         module.exports = {
-            thresholds: thresholds, emaAlpha: emaAlpha, songKeyOf: songKeyOf,
-            judgmentKey: judgmentKey, settings: settings,
-            _dominantSongMastery: _dominantSongMastery,
-            _masteryPct: _masteryPct, _rememberSongInstrument: _rememberSongInstrument,
-            loadSongMasteryMap: loadSongMasteryMap, saveSongMasteryMap: saveSongMasteryMap,
-            calculateAndEmitSectionDifficulties: calculateAndEmitSectionDifficulties,
-            commitPhraseResult: commitPhraseResult, resetPerSongState: resetPerSongState,
+            thresholds, emaAlpha, songKeyOf,
+            judgmentKey, settings,
+            _dominantSongMastery,
+            _masteryPct, _rememberSongInstrument,
+            loadSongMasteryMap, saveSongMasteryMap,
+            loadPhraseAttempts, savePhraseAttempts,
+            recordPhraseAttempt, _phraseIdOf,
+            _presentedDifficultyLevel,
+            calculateAndEmitSectionDifficulties,
+            commitPhraseResult, resetPerSongState,
+            rampStep, WARMUP_PHRASES, RAMP_PHRASES,
+            currentTarget, currentTargetStatus,
+            mountControls, onGenerateClick,
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
             tickOneSplitHighway: tickOneSplitHighway,
-            rampStep: rampStep, WARMUP_PHRASES: WARMUP_PHRASES, RAMP_PHRASES: RAMP_PHRASES,
-            currentTarget: currentTarget, currentTargetStatus: currentTargetStatus,
-            mountControls: mountControls, onGenerateClick: onGenerateClick,
         };
         return;
     }
