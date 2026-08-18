@@ -1,7 +1,7 @@
 {
   "id": "difficulty_ladder",
   "name": "Difficulty Ladder",
-  "version": "0.9.7",
+  "version": "0.9.8",
   "private": false,
   "description": "Live accuracy-driven difficulty auto-adjustment with a glass-filling section HUD.",
   "category": "practice",
