@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `/generate-library` now computes canonical song-level section boundaries
+  the same way `/generate` does, so a song's phrase boundaries no longer
+  depend on which entry point generated it (#67).
+- `_generate_song` now records a JSON/filesystem/Unicode/scoring failure on
+  one arrangement instead of letting it abort the rest of the song (#67).
+- A note's `ln` (link-next) flag is now cleared when the slide it announced
+  was gated out at a lower tier, or when its linked target note didn't
+  survive tier reduction — previously it could survive and suppress a
+  target note's gem for a slide or note that no longer exists at that
+  tier (#68).
+- Fret anchors are now generated from chord constituents as well as
+  standalone notes, so a top tier made entirely of intact chords gets
+  anchors instead of none (#68).
+- Section/phrase boundaries (both the canonical song-level timeline and an
+  arrangement's own `sections`) are now validated as finite, nonnegative,
+  and strictly ordered before use, with duplicates collapsed — malformed
+  input could previously produce a zero-length or reversed phrase window,
+  or (for `nan`) silently corrupt sort order (#69).
+- Fret anchors can no longer be emitted at a time before their own phrase
+  starts (#69).
+- Arrangement duration now accounts for a chord's longest constituent note
+  sustain instead of a flat +0.1s, so a long final chord's sustain tail is
+  no longer truncated out of the last generated phrase (#69).
+- `/generate`'s response now reports the actual maximum difficulty reached
+  across an arrangement's phrases, separately from the requested cap
+  (`requested_levels`) — previously it always reported `levels - 1`
+  regardless of what was actually generated (#70).
+- Adjacent phrase tiers whose generated content is identical are now
+  collapsed into one, with `max_difficulty` recomputed — an equal-score
+  phrase or a fixed-depth keys phrase could previously ship two or more
+  tiers that played identically (#70).
+- Difficulty scoring now measures sequential note density relative to
+  tempo (onsets per beat/time window) instead of a fixed number of
+  neighboring groups — a passage's density no longer depends on how many
+  notes happen to be nearby in the note LIST rather than in TIME, so e.g.
+  eleven notes in one second no longer scores the same as eleven notes
+  over twenty seconds. Applies to both the fretted and keys scoring paths;
+  simultaneous polyphony (a wide chord) no longer inflates density, and
+  the same rhythmic pattern now scores equivalently across different
+  tempos (#71).
+
 ### Security
 - `/generate` and `/generate-library` now validate their request bodies with
   typed, bounds-checked models instead of ad-hoc dict parsing. `force` was
