@@ -3,9 +3,13 @@
 Self-contained sys.path bootstrap (this plugin has no pyproject.toml / shared
 conftest of its own) so `pytest tests/` works from this directory directly.
 """
+import logging
 import sys
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+from pydantic import ValidationError
 
 _PLUGIN_DIR = Path(__file__).resolve().parent.parent
 _CORE_LIB = _PLUGIN_DIR.parent / "feedBack" / "lib"
@@ -841,3 +845,105 @@ def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spar
         "a release flag on a bn=0 note is nonsensical and must not survive, "
         "even though release alone (bn intact) is never downgraded"
     )
+
+
+# ---------------------------------------------------------------------------
+# /generate and /generate-library input validation (issue #74) — `force`
+# used to be `bool(value)`, which makes any nonempty string (including the
+# literal string "false") truthy, and `levels`/`max_songs` were parsed with
+# a bare `int(...)` that either silently clamped out-of-range values or
+# raised an unhandled ValueError (500) on non-numeric input. GenerateIn /
+# GenerateLibraryIn replace that with typed, bounds-checked models so
+# malformed bodies are rejected (422) before any generation code runs.
+# ---------------------------------------------------------------------------
+
+def test_generate_in_accepts_a_well_formed_body():
+    body = routes.GenerateIn(filename="song.feedpak", levels=6, force=True)
+    assert body.filename == "song.feedpak"
+    assert body.levels == 6
+    assert body.force is True
+
+
+def test_generate_in_defaults_levels_and_force_when_omitted():
+    body = routes.GenerateIn(filename="song.feedpak")
+    assert body.levels == 4
+    assert body.force is False
+
+
+def test_generate_in_rejects_string_boolean_for_force():
+    # The historical bug: bool("false") is True. A strict model must
+    # reject the string outright rather than coerce it to True.
+    with pytest.raises(ValidationError):
+        routes.GenerateIn(filename="song.feedpak", force="false")
+
+
+def test_generate_in_rejects_out_of_range_levels():
+    with pytest.raises(ValidationError):
+        routes.GenerateIn(filename="song.feedpak", levels=99)
+    with pytest.raises(ValidationError):
+        routes.GenerateIn(filename="song.feedpak", levels=1)
+
+
+def test_generate_in_rejects_malformed_levels():
+    with pytest.raises(ValidationError):
+        routes.GenerateIn(filename="song.feedpak", levels="not-a-number")
+
+
+def test_generate_library_in_rejects_string_boolean_for_force():
+    with pytest.raises(ValidationError):
+        routes.GenerateLibraryIn(force="true")
+
+
+def test_generate_library_in_rejects_out_of_range_max_songs():
+    with pytest.raises(ValidationError):
+        routes.GenerateLibraryIn(max_songs=5000)
+    with pytest.raises(ValidationError):
+        routes.GenerateLibraryIn(max_songs=0)
+
+
+def _client_for(tmp_path):
+    """A real FastAPI app with only this plugin's routes registered,
+    wired to an empty tmp_path as the DLC root — lets the route-level
+    tests below prove malformed requests never reach the filesystem."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    routes.setup(app, {"log": logging.getLogger("dd-test"), "get_dlc_dir": lambda: tmp_path})
+    return TestClient(app)
+
+
+def test_generate_route_rejects_string_boolean_force_with_no_write(tmp_path):
+    client = _client_for(tmp_path)
+    with patch.object(routes, "_generate_song") as generate_song:
+        resp = client.post(
+            f"/api/plugins/{routes.PLUGIN_ID}/generate",
+            json={"filename": "song.feedpak", "force": "false"},
+        )
+    assert resp.status_code == 422
+    generate_song.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_generate_route_rejects_malformed_levels_with_no_write(tmp_path):
+    client = _client_for(tmp_path)
+    with patch.object(routes, "_generate_song") as generate_song:
+        resp = client.post(
+            f"/api/plugins/{routes.PLUGIN_ID}/generate",
+            json={"filename": "song.feedpak", "levels": "not-a-number"},
+        )
+    assert resp.status_code == 422
+    generate_song.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_generate_library_route_rejects_out_of_range_max_songs_with_no_write(tmp_path):
+    client = _client_for(tmp_path)
+    with patch.object(routes.sloppak, "load_manifest") as load_manifest:
+        resp = client.post(
+            f"/api/plugins/{routes.PLUGIN_ID}/generate-library",
+            json={"max_songs": 999999},
+        )
+    assert resp.status_code == 422
+    load_manifest.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
