@@ -726,31 +726,67 @@ def _prune_note_for_level(note, diff_percent):
     return pruned
 
 
-def _clear_orphaned_link_next(notes):
+def _global_link_next_survivors(groups_all):
+    """Object ids of every note in `groups_all` that has a genuine next
+    note on the same string SOMEWHERE later in the full arrangement --
+    not just within one phrase window.
+
+    A phrase-scoped check alone can't tell "arpeggio truncation actually
+    dropped this note's target" apart from "the target simply lives in the
+    NEXT phrase" -- the top tier never prunes or truncates notes, so its
+    `out_notes` entries are the exact same objects as here (id()-comparable),
+    while every reduced-tier note is always a fresh `dict()` copy from
+    `_prune_techniques`/`_prune_note_for_level` and therefore never
+    collides with these ids. Passing this set into every tier's
+    `_clear_orphaned_link_next` call is safe by construction: it can only
+    ever exempt an actual top-tier note.
+    """
+    by_string = {}
+    for g in groups_all:
+        for n in g.get("notes", []) or []:
+            by_string.setdefault(n.get("s"), []).append(n)
+    survivors = set()
+    for group in by_string.values():
+        group.sort(key=lambda n: float(n.get("t", 0)))
+        for i in range(len(group) - 1):
+            survivors.add(id(group[i]))
+    return survivors
+
+
+def _clear_orphaned_link_next(notes, keep_ids=None):
     """Clear `ln` on any note whose linked target -- the next note on the
     same string -- didn't survive this tier's reduction (arpeggio
     truncation via `keep_n`, or a whole later group excluded because its
     own `level` is above this tier). Must run once the tier's full note
     list is assembled, since the target can sit in a different group than
     the linking note. Mutates `notes` in place.
+
+    `keep_ids` (see _global_link_next_survivors) exempts a note whose real
+    target simply lives in the next phrase rather than having been pruned
+    away -- only ever matches an untouched top-tier note (see that
+    function's docstring for why).
     """
+    keep_ids = keep_ids or ()
     by_string = {}
     for n in notes:
         by_string.setdefault(n.get("s"), []).append(n)
     for group in by_string.values():
         group.sort(key=lambda n: float(n.get("t", 0)))
         for i, n in enumerate(group):
-            if n.get("ln") and i + 1 >= len(group):
+            if n.get("ln") and i + 1 >= len(group) and id(n) not in keep_ids:
                 n.pop("ln", None)
 
 
-def _notes_for_level(groups, level, max_level):
+def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None):
     """Return (notes, chords) wire lists at/below `level`.
 
     Below the top tier, chords are reduced by voicing and flattened to plain
     notes (no chord_id references — avoids stale chord-template indices on
     a level that never goes through chord reconstruction); the max-difficulty
     tier keeps chords intact and byte-identical to the source.
+
+    `link_next_keep_ids` (see _global_link_next_survivors) is threaded
+    straight through to _clear_orphaned_link_next.
     """
     diff_percent = (level + 1) / (max_level + 1) if max_level >= 0 else 1.0
     out_notes = []
@@ -806,7 +842,7 @@ def _notes_for_level(groups, level, max_level):
                 out_notes.extend(g["notes"])
     out_notes.sort(key=lambda n: float(n.get("t", 0)))
     out_chords.sort(key=lambda c: float(c.get("t", 0)))
-    _clear_orphaned_link_next(out_notes)
+    _clear_orphaned_link_next(out_notes, keep_ids=link_next_keep_ids)
     return out_notes, out_chords
 
 
@@ -1242,12 +1278,18 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     beat_times = [float(b.get("time", 0)) for b in beats]
     tempo = _TempoParams.from_beats(beat_times)
 
+    link_next_keep_ids = None
     if is_keys:
         groups_all = _group_notes_keys(notes, chords)
         _score_groups_keys(groups_all, tempo=tempo)
     else:
         groups_all = _group_notes(notes, chords, time_window_ms=tempo.time_window_ms)
         _score_groups(groups_all, n_strings, beat_times, tempo=tempo)
+        # A phrase-local ln check alone can't tell "the target was pruned
+        # away" apart from "the target is simply in the next phrase" --
+        # compute cross-phrase survivorship once up front (issue #68
+        # review follow-up) rather than per phrase/level.
+        link_next_keep_ids = _global_link_next_survivors(groups_all)
 
     phrases_out = []
     for t0, t1 in windows:
@@ -1281,7 +1323,9 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             if is_keys:
                 lvl_notes, lvl_chords = _notes_for_level_keys(phrase_groups, lvl, phrase_max_level)
             else:
-                lvl_notes, lvl_chords = _notes_for_level(phrase_groups, lvl, phrase_max_level)
+                lvl_notes, lvl_chords = _notes_for_level(
+                    phrase_groups, lvl, phrase_max_level, link_next_keep_ids=link_next_keep_ids,
+                )
             # Fret anchors and hand shapes are fretboard concepts the piano
             # renderer never consumes (mirrors feedBack's own editor plugin's
             # keys difficulty support) — leave them empty for keys.
@@ -1703,7 +1747,13 @@ def setup(app, context):
             # arrangement's own `sections` field instead, which can diverge
             # both from the /generate path and from Section Map's
             # highway.getSections() for the same song.
-            section_times = _canonical_section_times(entry, manifest)
+            try:
+                section_times = _canonical_section_times(entry, manifest)
+            except Exception as e:  # noqa: BLE001 — a corrupt archive/filesystem
+                # error here must not abort songs not yet visited, same
+                # best-effort contract as the load_manifest guard above.
+                failed.append({"filename": label, "error": str(e)})
+                continue
             arr_entries = manifest.get("arrangements", []) or []
             for idx, arr_entry in enumerate(arr_entries):
                 if not isinstance(arr_entry, dict) or not str(arr_entry.get("file", "")).strip():

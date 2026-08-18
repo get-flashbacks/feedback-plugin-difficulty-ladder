@@ -6,6 +6,7 @@ conftest of its own) so `pytest tests/` works from this directory directly.
 import json
 import logging
 import sys
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1341,7 +1342,7 @@ def test_repetitive_fretted_phrase_collapses_duplicate_tiers():
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
     assert phrases
     levels = phrases[0]["levels"]
-    for a, b in zip(levels, levels[1:]):
+    for a, b in pairwise(levels):
         a_notes = [routes._canonical_note_for_compare(n) for n in a["notes"]]
         b_notes = [routes._canonical_note_for_compare(n) for n in b["notes"]]
         assert a_notes != b_notes or a["chords"] != b["chords"]
@@ -1361,7 +1362,7 @@ def test_keys_fixed_depth_collapses_duplicate_tiers():
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     levels = phrases[0]["levels"]
-    for a, b in zip(levels, levels[1:]):
+    for a, b in pairwise(levels):
         assert a["notes"] != b["notes"] or a["chords"] != b["chords"]
     assert phrases[0]["max_difficulty"] == len(levels) - 1
     assert phrases[0]["max_difficulty"] < 3, (
@@ -1433,15 +1434,20 @@ def test_sequential_density_scores_compressed_pattern_higher_than_stretched():
 
 
 def test_sequential_density_normalizes_equivalent_patterns_across_bpm():
-    # The same musical pattern -- an onset every quarter beat -- must score
-    # the same density whether the song is slow or fast: it's the same
-    # rhythmic complexity either way, just at a different absolute tempo.
-    slow_tempo = routes._TempoParams(beat_interval=1.0)    # 60 BPM
-    fast_tempo = routes._TempoParams(beat_interval=0.5)    # 120 BPM
-    slow_times = [round(i * 0.25, 3) for i in range(21)]   # quarter-beat onsets at 60 BPM
-    fast_times = [round(i * 0.125, 3) for i in range(21)]  # quarter-beat onsets at 120 BPM
-    slow_density = routes._sequential_density(slow_times, 10, slow_tempo)
-    fast_density = routes._sequential_density(fast_times, 10, fast_tempo)
+    # The same musical pattern -- one onset per beat -- must score the same
+    # density whether the song is slow or fast: it's the same rhythmic
+    # complexity either way, just at a different absolute tempo. Sparse
+    # enough that neither density saturates to 1.0 -- a saturated pair
+    # would pass this assertion even if tempo normalization were broken
+    # (e.g. a fixed-size window ignoring beat_interval entirely), since
+    # both sides would coincidentally hit the same ceiling regardless.
+    slow_tempo = routes._TempoParams(beat_interval=1.0)  # 60 BPM
+    fast_tempo = routes._TempoParams(beat_interval=0.5)  # 120 BPM
+    slow_times = [round(i * 1.0, 3) for i in range(9)]   # one onset per beat at 60 BPM
+    fast_times = [round(i * 0.5, 3) for i in range(9)]   # one onset per beat at 120 BPM
+    slow_density = routes._sequential_density(slow_times, 4, slow_tempo)
+    fast_density = routes._sequential_density(fast_times, 4, fast_tempo)
+    assert 0 < slow_density < 1, "test fixture must not saturate, or it can't detect broken normalization"
     assert slow_density == fast_density
 
 
@@ -1501,3 +1507,110 @@ def test_wide_chord_does_not_inflate_density_beyond_a_single_note_group():
     single_density = routes._sequential_density(single_note_times, 1, tempo)
     chord_density = routes._sequential_density(wide_chord_times, 1, tempo)
     assert single_density == chord_density
+
+
+# ---------------------------------------------------------------------------
+# PR #76 review follow-ups: cross-phrase `ln` survivorship (#68) and
+# generate_library's canonical-section-times failure isolation (#67)
+# ---------------------------------------------------------------------------
+
+def test_global_link_next_survivors_marks_notes_with_a_later_same_string_note():
+    groups_all = [
+        {"time": 0.0, "notes": [{"t": 0.0, "s": 2, "ln": True}]},
+        {"time": 5.0, "notes": [{"t": 5.0, "s": 2}]},  # same string, later -- a genuine target
+    ]
+    survivors = routes._global_link_next_survivors(groups_all)
+    assert id(groups_all[0]["notes"][0]) in survivors
+    assert id(groups_all[1]["notes"][0]) not in survivors  # last note on its string has no target
+
+
+def test_notes_for_level_keeps_top_tier_ln_when_target_is_in_the_next_phrase():
+    # Phrase A's own groups only contain the FIRST note; its real target
+    # (same string, later) lives in phrase B and is therefore invisible to
+    # a phrase-local check alone -- global survivorship must still
+    # preserve it at the (unpruned) top tier.
+    groups_all = [
+        {"time": 0.0, "type": "note", "notes": [{"t": 0.0, "s": 2, "f": 5, "ln": True}], "level": 0},
+        {"time": 5.0, "type": "note", "notes": [{"t": 5.0, "s": 2, "f": 7}], "level": 0},
+    ]
+    keep_ids = routes._global_link_next_survivors(groups_all)
+    phrase_a_groups = [groups_all[0]]  # phrase A's window excludes phrase B's group
+    notes, _chords = routes._notes_for_level(
+        phrase_a_groups, level=0, max_level=0, link_next_keep_ids=keep_ids,
+    )
+    assert notes[0]["ln"] is True
+
+
+def test_notes_for_level_still_drops_ln_with_no_target_anywhere_even_with_keep_ids():
+    groups_all = [
+        {"time": 0.0, "type": "note", "notes": [{"t": 0.0, "s": 2, "f": 5, "ln": True}], "level": 0},
+    ]
+    keep_ids = routes._global_link_next_survivors(groups_all)
+    notes, _chords = routes._notes_for_level(
+        groups_all, level=0, max_level=0, link_next_keep_ids=keep_ids,
+    )
+    assert "ln" not in notes[0]
+
+
+def test_notes_for_level_keep_ids_never_matches_a_pruned_lower_tier_copy():
+    # keep_ids holds the object ids of the ORIGINAL grouped notes. A lower
+    # (non-top) tier always emits fresh dict() copies (_prune_note_for_level),
+    # so keep_ids must never accidentally preserve an orphaned ln there --
+    # this is what makes passing keep_ids to every tier safe by construction.
+    groups_all = [{
+        "time": 0.0, "type": "arpeggio", "level": 0,
+        "notes": [
+            {"t": 0.0, "s": 2, "f": 5, "sus": 0, "ln": True},
+            {"t": 0.1, "s": 2, "f": 9, "sus": 0},
+        ],
+    }]
+    keep_ids = routes._global_link_next_survivors(groups_all)
+    # level=0 of max_level=3 truncates the arpeggio down to just the anchor
+    # note, dropping its target -- a lower-tier copy, so keep_ids must not
+    # rescue it.
+    notes, _chords = routes._notes_for_level(
+        groups_all, level=0, max_level=3, link_next_keep_ids=keep_ids,
+    )
+    assert len(notes) == 1
+    assert "ln" not in notes[0]
+
+
+def test_generate_phrases_preserves_ln_across_a_phrase_boundary():
+    # letRing-style ln (no sl/slu) on the last note before a section
+    # boundary; its real target sits just after the boundary, in the next
+    # phrase. A phrase-local-only check would incorrectly clear it.
+    notes = _simple_notes(0, 10, step=0.5, string=2, fret=3)
+    for n in notes:
+        if n["t"] == 4.5:
+            n["ln"] = True
+    arr = _arrangement(notes, sections=[{"time": 0}, {"time": 5}])
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=2)
+    assert phrases
+    first_phrase = phrases[0]
+    top_level = first_phrase["levels"][first_phrase["max_difficulty"]]
+    tagged = [n for n in top_level["notes"] if n["t"] == 4.5]
+    assert tagged and tagged[0].get("ln") is True
+
+
+def test_generate_library_route_records_canonical_section_times_failure_and_continues(tmp_path):
+    # Even if _canonical_section_times() raises something outside its own
+    # internal ValueError handling, one bad pack's boundary computation
+    # must not abort songs not yet visited in the sweep (matches the
+    # load_manifest guard immediately above it).
+    dlc_root = tmp_path / "dlc"
+    dlc_root.mkdir()
+    arrangements = [("arrangements/lead.json", _arrangement(_simple_notes(0, 10, step=0.5)))]
+    _write_pack(dlc_root, "bad.feedpak", arrangements)
+    _write_pack(dlc_root, "good.feedpak", arrangements, song_timeline_sections=[0, 5])
+
+    client = _client_for(dlc_root)
+    with patch.object(
+        routes, "_canonical_section_times",
+        side_effect=[RuntimeError("corrupt archive"), []],
+    ):
+        resp = client.post(f"/api/plugins/{routes.PLUGIN_ID}/generate-library", json={"force": True})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["generated"] == 1
+    assert any("corrupt archive" in f.get("error", "") for f in data["failed"])
