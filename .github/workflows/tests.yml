@@ -46,15 +46,19 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Only what routes.py actually reaches at import time: fastapi directly,
-      # and PyYAML via the host's sloppak module. Deliberately NOT the host's
-      # full requirements.txt — that pulls 19 packages (Pillow, yt-dlp,
-      # curl_cffi, midiutil) for a suite that needs two, and midiutil in
-      # particular fails to build on some interpreters. If this list rots, the
-      # symptom is a clear ModuleNotFoundError naming the missing package; add
-      # it here rather than reaching for the whole host manifest.
+      # Only what routes.py actually reaches at import time: fastapi directly
+      # (which pulls in pydantic, used for the /generate* request models),
+      # and PyYAML via the host's sloppak module. httpx is added only for
+      # fastapi.testclient.TestClient, used by the route-level validation
+      # tests in test_dd_generation.py. Deliberately NOT the host's full
+      # requirements.txt — that pulls 19 packages (Pillow, yt-dlp,
+      # curl_cffi, midiutil) for a suite that needs a handful, and midiutil
+      # in particular fails to build on some interpreters. If this list
+      # rots, the symptom is a clear ModuleNotFoundError naming the missing
+      # package; add it here rather than reaching for the whole host
+      # manifest.
       - name: Install test dependencies
-        run: python -m pip install pytest fastapi PyYAML
+        run: python -m pip install pytest fastapi httpx PyYAML
 
       - name: Run pytest
         working-directory: work/difficulty-ladder

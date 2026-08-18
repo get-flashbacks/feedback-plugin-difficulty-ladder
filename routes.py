@@ -26,7 +26,8 @@ from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 
-from fastapi import Body, HTTPException
+from fastapi import HTTPException
+from pydantic import BaseModel, Field, StrictBool
 
 import sloppak
 from dlc_paths import _resolve_dlc_path
@@ -1361,6 +1362,26 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
     }
 
 
+class GenerateIn(BaseModel):
+    """Body for POST .../generate. `force` is strict (only a real JSON
+    boolean, never a truthy-string like "false") since `bool("false")`
+    is True in Python and previously let any nonempty string clobber an
+    authored ladder; `levels` is bounds-checked here instead of via a
+    silent `max(2, min(..., 8))` clamp so out-of-range/non-numeric input
+    is rejected (422) rather than silently coerced."""
+    filename: str
+    levels: int = Field(default=4, ge=2, le=8)
+    force: StrictBool = False
+
+
+class GenerateLibraryIn(BaseModel):
+    """Body for POST .../generate-library — same strictness as GenerateIn,
+    plus a bounds-checked max_songs."""
+    levels: int = Field(default=4, ge=2, le=8)
+    force: StrictBool = False
+    max_songs: int = Field(default=500, ge=1, le=2000)
+
+
 def setup(app, context):
     log = context["log"]
     get_dlc_dir = context["get_dlc_dir"]
@@ -1376,12 +1397,12 @@ def setup(app, context):
         return safe
 
     @app.post(f"/api/plugins/{PLUGIN_ID}/generate")
-    def generate(body: dict = Body(...)):
-        filename = str((body or {}).get("filename") or "").strip()
+    def generate(body: GenerateIn):
+        filename = body.filename.strip()
         if not filename:
             raise HTTPException(400, "filename required")
-        n_levels = max(2, min(int((body or {}).get("levels", 4) or 4), 8))
-        force = bool((body or {}).get("force", False))
+        n_levels = body.levels
+        force = body.force
 
         dlc_root = get_dlc_dir()
         if dlc_root is None:
@@ -1397,13 +1418,13 @@ def setup(app, context):
             raise HTTPException(500, str(e))
 
     @app.post(f"/api/plugins/{PLUGIN_ID}/generate-library")
-    def generate_library(body: dict = Body(...)):
+    def generate_library(body: GenerateLibraryIn):
         """Best-effort sweep: generate a phrase ladder for every sloppak
         arrangement in the library that doesn't already have one. One bad
         pack must never abort the whole sweep."""
-        n_levels = max(2, min(int((body or {}).get("levels", 4) or 4), 8))
-        force = bool((body or {}).get("force", False))
-        max_songs = max(1, min(int((body or {}).get("max_songs", 500) or 500), 2000))
+        n_levels = body.levels
+        force = body.force
+        max_songs = body.max_songs
 
         dlc_root = get_dlc_dir()
         if dlc_root is None:

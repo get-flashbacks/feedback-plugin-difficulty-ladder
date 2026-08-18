@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- `/generate` and `/generate-library` now validate their request bodies with
+  typed, bounds-checked models instead of ad-hoc dict parsing. `force` was
+  previously `bool(value)`, so any nonempty string — including the literal
+  string `"false"` — was treated as `true` and could silently overwrite an
+  authored ladder; it now only accepts a real JSON boolean. `levels` and
+  `max_songs` were parsed with a bare `int(...)` that either silently
+  clamped out-of-range values or raised an unhandled `ValueError` (500) on
+  non-numeric input; malformed or out-of-range values are now rejected with
+  422 before any generation code runs.
+
 ## [0.9.6] - 2026-08-18
 
 ### Fixed
