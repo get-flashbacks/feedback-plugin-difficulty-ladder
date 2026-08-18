@@ -63,6 +63,8 @@
     // JSON.parse of the whole map on every window.setMastery() call, which
     // slider drags can fire many times a second via oninput.
     let _songMasteryMapCache = null;
+    let _phraseAttemptsCache = null;
+    let _phraseAttemptsFlushTimer = null;
 
     function loadSongMasteryMap() {
         let parsed;
@@ -336,11 +338,12 @@
 
     function _presentedDifficultyLevel(hw, phrase) {
         const max = Number(phrase?.max_difficulty);
+        let mastery;
         const checks = [
             { check: () => !hw || !phrase || typeof hw.getMastery !== 'function', result: () => null },
             { check: () => !isFinite(max) || max <= 0, result: () => 0 },
-            { check: () => { const m = Number(hw.getMastery()); return !isFinite(m); }, result: () => null },
-            { check: () => true, result: () => Math.min(max, Math.floor(Math.max(0, Math.min(1, Number(hw.getMastery()))) * (max + 1))) }
+            { check: () => { mastery = Number(hw.getMastery()); return !isFinite(mastery); }, result: () => null },
+            { check: () => true, result: () => Math.min(max, Math.floor(Math.max(0, Math.min(1, mastery)) * (max + 1))) }
         ];
         const { result } = checks.find(c => c.check());
         return result();
@@ -348,16 +351,33 @@
 
     function loadPhraseAttempts() {
         let parsed;
+        if (_phraseAttemptsCache) return _phraseAttemptsCache;
         try {
             parsed = JSON.parse(localStorage.getItem(PHRASE_ATTEMPTS_LS_KEY) || '[]');
-            return Array.isArray(parsed) ? parsed : [];
+            _phraseAttemptsCache = Array.isArray(parsed) ? parsed : [];
         } catch (_) {
-            return [];
+            _phraseAttemptsCache = [];
         }
+        return _phraseAttemptsCache;
     }
 
     function savePhraseAttempts(attempts) {
+        _phraseAttemptsCache = Array.isArray(attempts) ? attempts : [];
         try { localStorage.setItem(PHRASE_ATTEMPTS_LS_KEY, JSON.stringify(attempts)); } catch (_) { /* noop */ }
+    }
+
+    function flushPhraseAttempts() {
+        if (_phraseAttemptsFlushTimer) {
+            clearTimeout(_phraseAttemptsFlushTimer);
+            _phraseAttemptsFlushTimer = null;
+        }
+        if (!_phraseAttemptsCache) return;
+        try { localStorage.setItem(PHRASE_ATTEMPTS_LS_KEY, JSON.stringify(_phraseAttemptsCache)); } catch (_) { /* noop */ }
+    }
+
+    function schedulePhraseAttemptsFlush() {
+        if (_phraseAttemptsFlushTimer) clearTimeout(_phraseAttemptsFlushTimer);
+        _phraseAttemptsFlushTimer = setTimeout(flushPhraseAttempts, 150);
     }
 
     function recordPhraseAttempt(ratio) {
@@ -365,7 +385,7 @@
         const phrase = window.highway?.getPhrases()?.[_curPhraseIdx];
         const phraseId = _phraseIdOf(_songKey, _curPhraseIdx, phrase);
         if (!phraseId) return;
-        let attempts = loadPhraseAttempts();
+        const attempts = loadPhraseAttempts();
         attempts.push({
             schema: 'difficulty_ladder.phrase_attempt.v1',
             session_id: _sessionId,
@@ -384,8 +404,8 @@
             note_results: _phraseJudgments.slice(),
             timestamp: new Date().toISOString(),
         });
-        attempts = attempts.slice(-MAX_PHRASE_ATTEMPTS);
-        savePhraseAttempts(attempts);
+        _phraseAttemptsCache = attempts.slice(-MAX_PHRASE_ATTEMPTS);
+        schedulePhraseAttemptsFlush();
     }
 
     function commitPhraseResult(ratio) {
@@ -488,7 +508,7 @@
             phrase_attempt_log: {
                 storage_key: PHRASE_ATTEMPTS_LS_KEY,
                 schema: 'difficulty_ladder.phrase_attempt.v1',
-                retained_attempts: loadPhraseAttempts().length,
+            retained_attempts: (_phraseAttemptsCache || loadPhraseAttempts()).length,
                 max_retained_attempts: MAX_PHRASE_ATTEMPTS,
             },
         });
@@ -1186,6 +1206,7 @@
         var si = (hw && typeof hw.getSongInfo === 'function') ? hw.getSongInfo() : null;
         var key = songKeyOf(si);
         if (key !== _songKey) {
+            flushPhraseAttempts();
             _songKey = key;
             _songInstrument = null;
             resetPerSongState();
@@ -1228,6 +1249,7 @@
                 installSplitScreenDetectorHook();
                 startRafLoops();
             } else {
+                flushPhraseAttempts();
                 stopSplitScreenHookSubscription();
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
                 if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }

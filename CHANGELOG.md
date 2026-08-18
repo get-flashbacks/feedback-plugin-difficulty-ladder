@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-08-18
+
+### Fixed
+- Cache phrase-attempt records and debounce persistence so scoring does not
+  synchronously parse and stringify localStorage on every phrase completion.
+
 ## [0.8.3] - 2026-08-16
 
 ### Added

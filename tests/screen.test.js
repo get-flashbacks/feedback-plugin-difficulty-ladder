@@ -141,6 +141,12 @@ test('_presentedDifficultyLevel maps current mastery onto the phrase ladder leve
     assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.74 }, { max_difficulty: 3 }), 2);
     assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 1.0 }, { max_difficulty: 3 }), 3);
     assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.5 }, { max_difficulty: 0 }), 0);
+    assert.equal(mod._presentedDifficultyLevel(null, { max_difficulty: 3 }), null);
+    assert.equal(mod._presentedDifficultyLevel({}, { max_difficulty: 3 }), null);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.5 }, { max_difficulty: NaN }), 0);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.5 }, { max_difficulty: 'not-a-number' }), 0);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => NaN }, { max_difficulty: 3 }), null);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 'not-a-number' }, { max_difficulty: 3 }), null);
 });
 
 test('phrase attempt log helpers ignore malformed storage and retain an array shape', () => {
