@@ -19,6 +19,7 @@ feedBack's actual data.
 
 import bisect
 import json
+import math
 import os
 import re
 import threading
@@ -28,7 +29,8 @@ from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
 
-from fastapi import Body, HTTPException
+from fastapi import HTTPException
+from pydantic import BaseModel, Field, StrictBool
 
 import sloppak
 from dlc_paths import _resolve_dlc_path
@@ -363,10 +365,46 @@ _STRING_JUMP_THRESHOLD = 3
 _STRING_JUMP_COEF = 0.03
 _STRING_JUMP_MAX_BONUS = 0.08  # capped lower than the fret-jump bonus (0.18) — a secondary signal
 
+# How many beats wide the sequential-density window is on EACH side of a
+# group's own onset (issue #71). Sized in beats, not seconds, so the same
+# rhythmic pattern -- straight eighth notes, say -- scores the same
+# density at 80 BPM and at 160 BPM, instead of the absolute-time-per-note
+# gap between them producing different scores for musically equivalent
+# content.
+_DENSITY_WINDOW_BEATS = 2.0
+# Onsets-per-window that saturates the density score at 1.0. Chosen so a
+# genuinely dense passage (an onset every ~half beat within the window)
+# still reaches the top of the 0..1 range.
+_DENSITY_SATURATION_ONSETS = 8.0
+# Absolute-time fallback window (seconds, each side), used only when no
+# trustworthy beat grid exists (_TempoParams.beat_interval is None) and
+# there is therefore no tempo to be relative to.
+_DENSITY_WINDOW_SECONDS_FALLBACK = 1.0
+
+
+def _sequential_density(times_sorted, gi, tempo):
+    """Tempo-relative sequential event density around group index `gi`.
+
+    Counts DISTINCT ONSETS (groups) within a time window, not each nearby
+    group's constituent note count — a single wide chord shouldn't inflate
+    density on its own, since simultaneous polyphony is already scored
+    separately (fretting/string_shape here, `poly` in the keys path) and
+    must not double up with sequential density (#71). `times_sorted` must
+    be sorted ascending (grouping already produces groups in time order).
+    """
+    half_window = (
+        _DENSITY_WINDOW_BEATS * tempo.beat_interval
+        if tempo.beat_interval else _DENSITY_WINDOW_SECONDS_FALLBACK
+    )
+    t = times_sorted[gi]
+    lo = bisect.bisect_left(times_sorted, t - half_window)
+    hi = bisect.bisect_right(times_sorted, t + half_window)
+    return min(1.0, (hi - lo) / _DENSITY_SATURATION_ONSETS)
+
 
 def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
     tempo = tempo or _TempoParams()
-    total = len(groups)
+    times_sorted = [float(g["time"]) for g in groups]
     for gi, g in enumerate(groups):
         ns = g["notes"]
         if not ns:
@@ -382,10 +420,7 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
             + 0.25 * string_shape
         )
         technique = max(_tech_score(n) for n in ns)
-        lo = max(0, gi - 5)
-        hi = min(total, gi + 6)
-        nearby = sum(len(groups[k]["notes"]) for k in range(lo, hi))
-        raw_density = min(1.0, nearby / 20.0)
+        raw_density = _sequential_density(times_sorted, gi, tempo)
         syncopation = _syncopation_score(g["time"], beat_times, tempo.beat_interval)
         density = min(1.0, (1.0 - _SYNCOPATION_DENSITY_WEIGHT) * raw_density
                       + _SYNCOPATION_DENSITY_WEIGHT * syncopation)
@@ -670,13 +705,88 @@ _CHORD_ROOT_ONLY_FRAC = 0.20
 _CHORD_MID_VOICING_FRAC = 0.55
 
 
-def _notes_for_level(groups, level, max_level):
+def _prune_note_for_level(note, diff_percent):
+    """`_prune_techniques`, plus: clear a slide-contingent `ln` (link-next)
+    when the slide it announced didn't survive this tier's own gating.
+
+    gp2rs sets `ln` in exactly two cases (see gp2rs.py): alongside a pitched
+    slide (to suppress the target note's gem so the slide visually connects
+    into it), or alongside `letRing` with no slide at all. `_prune_techniques`
+    already gates `sl`/`slu` independently at 0.85 -- without this, a note
+    below that gate keeps `ln=True` with `sl`/`slu` both reverted to -1,
+    which would suppress the next note's gem for a slide that no longer
+    exists in this tier. Only touches slide-linked notes: a letRing-only
+    `ln` (no `sl`/`slu` to begin with) has no technique to strip and is left
+    for `_clear_orphaned_link_next` to validate against target survival.
+    """
+    pruned = _prune_techniques(note, diff_percent)
+    if pruned.get("ln") and (note.get("sl", -1) >= 0 or note.get("slu", -1) >= 0):
+        if pruned.get("sl", -1) < 0 and pruned.get("slu", -1) < 0:
+            pruned.pop("ln", None)
+    return pruned
+
+
+def _global_link_next_survivors(groups_all):
+    """Object ids of every note in `groups_all` that has a genuine next
+    note on the same string SOMEWHERE later in the full arrangement --
+    not just within one phrase window.
+
+    A phrase-scoped check alone can't tell "arpeggio truncation actually
+    dropped this note's target" apart from "the target simply lives in the
+    NEXT phrase" -- the top tier never prunes or truncates notes, so its
+    `out_notes` entries are the exact same objects as here (id()-comparable),
+    while every reduced-tier note is always a fresh `dict()` copy from
+    `_prune_techniques`/`_prune_note_for_level` and therefore never
+    collides with these ids. Passing this set into every tier's
+    `_clear_orphaned_link_next` call is safe by construction: it can only
+    ever exempt an actual top-tier note.
+    """
+    by_string = {}
+    for g in groups_all:
+        for n in g.get("notes", []) or []:
+            by_string.setdefault(n.get("s"), []).append(n)
+    survivors = set()
+    for group in by_string.values():
+        group.sort(key=lambda n: float(n.get("t", 0)))
+        for i in range(len(group) - 1):
+            survivors.add(id(group[i]))
+    return survivors
+
+
+def _clear_orphaned_link_next(notes, keep_ids=None):
+    """Clear `ln` on any note whose linked target -- the next note on the
+    same string -- didn't survive this tier's reduction (arpeggio
+    truncation via `keep_n`, or a whole later group excluded because its
+    own `level` is above this tier). Must run once the tier's full note
+    list is assembled, since the target can sit in a different group than
+    the linking note. Mutates `notes` in place.
+
+    `keep_ids` (see _global_link_next_survivors) exempts a note whose real
+    target simply lives in the next phrase rather than having been pruned
+    away -- only ever matches an untouched top-tier note (see that
+    function's docstring for why).
+    """
+    keep_ids = keep_ids or ()
+    by_string = {}
+    for n in notes:
+        by_string.setdefault(n.get("s"), []).append(n)
+    for group in by_string.values():
+        group.sort(key=lambda n: float(n.get("t", 0)))
+        for i, n in enumerate(group):
+            if n.get("ln") and i + 1 >= len(group) and id(n) not in keep_ids:
+                n.pop("ln", None)
+
+
+def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None):
     """Return (notes, chords) wire lists at/below `level`.
 
     Below the top tier, chords are reduced by voicing and flattened to plain
     notes (no chord_id references — avoids stale chord-template indices on
     a level that never goes through chord reconstruction); the max-difficulty
     tier keeps chords intact and byte-identical to the source.
+
+    `link_next_keep_ids` (see _global_link_next_survivors) is threaded
+    straight through to _clear_orphaned_link_next.
     """
     diff_percent = (level + 1) / (max_level + 1) if max_level >= 0 else 1.0
     out_notes = []
@@ -721,27 +831,59 @@ def _notes_for_level(groups, level, max_level):
                 # easier bottom-tier simplification, so don't skew toward a
                 # fretted note here the way the jump-scoring anchor does.
                 anchor = _group_anchor_note(g, prefer_fretted=False) or ns[0]
-                out_notes.append(_prune_techniques(anchor, diff_percent))
+                out_notes.append(_prune_note_for_level(anchor, diff_percent))
             else:
                 keep_n = max(1, (len(ns) * (level + 1)) // max_level)
-                out_notes.extend(_prune_techniques(n, diff_percent) for n in ns[:keep_n])
+                out_notes.extend(_prune_note_for_level(n, diff_percent) for n in ns[:keep_n])
         else:
             if level < max_level:
-                out_notes.extend(_prune_techniques(n, diff_percent) for n in g["notes"])
+                out_notes.extend(_prune_note_for_level(n, diff_percent) for n in g["notes"])
             else:
                 out_notes.extend(g["notes"])
     out_notes.sort(key=lambda n: float(n.get("t", 0)))
     out_chords.sort(key=lambda c: float(c.get("t", 0)))
+    _clear_orphaned_link_next(out_notes, keep_ids=link_next_keep_ids)
     return out_notes, out_chords
 
 
-def _generate_anchors(notes, beat_times, *, default_width=4):
+def _notes_for_anchors(notes, chords):
+    """Flatten standalone notes and chord constituents (each stamped with
+    its chord's own onset time) into one note-shaped list for
+    `_generate_anchors`, which only reads `t`/`f`. Fret anchors need every
+    fretted event in a tier, not just the ones that happen to already be
+    standalone notes -- without this, a top tier made entirely of intact
+    chords (`lvl_chords`; chords aren't flattened into `lvl_notes` at the
+    top tier -- see `_notes_for_level`) produced zero anchors, since
+    `_generate_anchors` only ever saw the (empty) `lvl_notes` list.
+    """
+    out = list(notes)
+    for c in chords:
+        t = c.get("t", 0)
+        for cn in c.get("notes", []) or []:
+            out.append({"t": t, "f": cn.get("f", 0)})
+    return out
+
+
+def _generate_anchors(notes, beat_times, *, default_width=4, phrase_start=None, phrase_end=None):
+    """`notes` is already scoped to one phrase, but `beat_times` is the
+    arrangement's full song-global beat grid -- a beat straddling the
+    phrase's own start (bt < phrase_start <= note.t < bt_end) would
+    otherwise emit an anchor timestamped at `bt`, before the phrase it
+    belongs to even starts (issue #69). When phrase bounds are given,
+    beats whose window doesn't overlap [phrase_start, phrase_end) are
+    skipped entirely, and any anchor time is clamped to phrase_start so it
+    can never precede its own phrase interval.
+    """
     if not notes:
         return []
     anchors = []
     prev_fret = prev_width = None
     for i, bt in enumerate(beat_times):
         bt_end = beat_times[i + 1] if i + 1 < len(beat_times) else bt + 2.0
+        if phrase_end is not None and bt >= phrase_end:
+            continue
+        if phrase_start is not None and bt_end <= phrase_start:
+            continue
         window = [n for n in notes if bt <= float(n.get("t", 0)) < bt_end and n.get("f", 0) >= 1]
         if not window:
             continue
@@ -749,8 +891,9 @@ def _generate_anchors(notes, beat_times, *, default_width=4):
         min_fret = max(1, min(frets))
         max_fret = max(frets)
         width = max(default_width, max_fret - min_fret + 3)
+        anchor_time = bt if phrase_start is None else max(bt, phrase_start)
         if min_fret != prev_fret or width != prev_width:
-            anchors.append({"time": round(bt, 3), "fret": min_fret, "width": width})
+            anchors.append({"time": round(anchor_time, 3), "fret": min_fret, "width": width})
             prev_fret, prev_width = min_fret, width
     return anchors
 
@@ -800,8 +943,10 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
     return groups
 
 
-def _score_groups_keys(groups):
+def _score_groups_keys(groups, *, tempo=None):
+    tempo = tempo or _TempoParams()
     total = len(groups)
+    times_sorted = [float(g["time"]) for g in groups]
     for gi, g in enumerate(groups):
         ns = g["notes"]
         if not ns:
@@ -813,10 +958,11 @@ def _score_groups_keys(groups):
         span = (max(midis) - min(midis)) if len(midis) > 1 else 0
         span_score = min(1.0, span / 12.0)  # an octave reach = 1.0
 
-        lo = max(0, gi - 5)
-        hi = min(total, gi + 6)
-        nearby = sum(len(groups[k]["notes"]) for k in range(lo, hi))
-        density = min(1.0, nearby / 20.0)
+        # Distinct onsets in a tempo-relative time window, not each nearby
+        # group's own note count -- same reasoning as the fretted path's
+        # _sequential_density (#71): a wide block chord shouldn't inflate
+        # density on its own, since polyphony is already `poly` above.
+        density = _sequential_density(times_sorted, gi, tempo)
 
         speed = 0.0
         if gi + 1 < total:
@@ -953,6 +1099,101 @@ def _measure_aligned_windows(beats, duration, *,
     return windows or None
 
 
+def _valid_section_times(raw_times):
+    """Coerce a raw list of section-boundary times into a finite,
+    nonnegative, strictly increasing sequence with duplicates removed
+    (issue #69). Both the canonical song-level `section_times` and an
+    arrangement's own `sections` field are user/importer-supplied and have
+    shown missing-as-zero, negative, non-finite (`inf`/`nan`), and
+    duplicate values in the wild — any of those can turn a phrase window
+    into a zero-length or reversed interval, or (for `nan`) silently break
+    sort order entirely, since every comparison against `nan` is False.
+
+    Non-finite/non-numeric entries are dropped outright (there's no sane
+    boundary to recover from `nan`); negative times are clamped to 0.0 (a
+    corrupt offset, not a meaningful "before the song" position); and
+    duplicate times collapse to a single boundary so no window degenerates
+    to zero length purely from the input carrying the same time twice.
+    """
+    cleaned = []
+    for t in raw_times or []:
+        try:
+            f = float(t)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(f):
+            continue
+        cleaned.append(max(0.0, f))
+    seen = set()
+    out = []
+    for f in sorted(cleaned):
+        if f in seen:
+            continue
+        seen.add(f)
+        out.append(f)
+    return out
+
+
+# Wire fields whose documented default (feedpak-v1.md §6.2.1) `_prune_techniques`
+# writes EXPLICITLY when gating a technique out, rather than popping the key --
+# `sl`/`slu` are always set to -1, and a fully-stripped bend always sets both
+# `bn` and `bt` to 0 (see _prune_techniques). A raw, never-pruned top-tier note
+# simply never carries these keys at all. Without normalizing this away, a
+# pruned tier and an untouched tier describing the exact same playable notes
+# compare as different dicts purely because one has `sl: -1` and the other
+# doesn't -- which would make _collapse_identical_levels miss a real duplicate.
+_NOTE_FIELD_DEFAULTS = {"sl": -1, "slu": -1, "bn": 0, "bt": 0}
+
+
+def _canonical_note_for_compare(note):
+    """`note` with any field sitting at its wire-format default dropped, so
+    tier-duplicate comparison sees past _prune_techniques's explicit
+    sentinel writes (see _NOTE_FIELD_DEFAULTS) to the actual playable
+    content."""
+    return {
+        k: v for k, v in note.items()
+        if k not in _NOTE_FIELD_DEFAULTS or v != _NOTE_FIELD_DEFAULTS[k]
+    }
+
+
+def _collapse_identical_levels(levels_out):
+    """Merge adjacent tiers whose generated content is identical, then
+    renumber `difficulty` 0..k sequentially (issue #70).
+
+    A ladder cap (`n_levels`) is a MAXIMUM depth, not a promise every rung
+    differs from its neighbor: `_phrase_level_count`'s floor of 2 still
+    applies to a phrase with zero score spread (every group scored
+    identically), and keys always generates the full requested depth
+    regardless of content variation. Either can produce two or more tiers
+    with identical notes/chords -- pure noise for the player, since the
+    mastery slider would show distinct positions that play identically.
+    Anchors/handshapes are derived purely from notes/chords, so comparing
+    those two fields (through _canonical_note_for_compare, to see past
+    prune-artifact sentinel keys) is sufficient to detect a true duplicate.
+
+    Within a run of duplicates, the LATER (higher-difficulty) tier's dict is
+    kept as the representative rather than the first: pruning only ever adds
+    sentinel keys (never removes real content — see _NOTE_FIELD_DEFAULTS), so
+    the later tier in an equal-content run is always the same-or-cleaner
+    version, up to and including the untouched top tier itself.
+    """
+    if not levels_out:
+        return levels_out
+    collapsed = [levels_out[0]]
+    for lvl in levels_out[1:]:
+        prev = collapsed[-1]
+        same_notes = [_canonical_note_for_compare(n) for n in lvl["notes"]] == [
+            _canonical_note_for_compare(n) for n in prev["notes"]
+        ]
+        if same_notes and lvl["chords"] == prev["chords"]:
+            collapsed[-1] = lvl
+            continue
+        collapsed.append(lvl)
+    for i, lvl in enumerate(collapsed):
+        lvl["difficulty"] = i
+    return collapsed
+
+
 def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[float] | None = None):
     """Build a phrase-level difficulty ladder for one arrangement's raw wire
     dict (as stored in a sloppak's arrangements/*.json).
@@ -984,7 +1225,13 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     for n in notes:
         duration = max(duration, float(n.get("t", 0)) + float(n.get("sus", 0)))
     for c in chords:
-        duration = max(duration, float(c.get("t", 0)) + 0.1)
+        # A flat +0.1 ignored how long the chord's own constituent notes
+        # actually ring — a final chord held for several seconds could get
+        # windowed as if it ended almost immediately, truncating (or, in the
+        # no-sections fallback, altogether dropping) its own sustain tail.
+        c_notes = c.get("notes", []) or []
+        max_sus = max((float(n.get("sus", 0)) for n in c_notes), default=0.0)
+        duration = max(duration, float(c.get("t", 0)) + max(max_sus, 0.1))
     if duration <= 0.0:
         duration = 30.0
 
@@ -993,7 +1240,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # through highway.getSections().  Keep an interval for every boundary,
         # including a section with no notes in this particular arrangement:
         # Section Map is song-level while note content is arrangement-level.
-        secs = sorted(float(t) for t in section_times)
+        secs = _valid_section_times(section_times)
         windows = []
         for i, t0 in enumerate(secs):
             # An arrangement can end before the song-level timeline because
@@ -1004,15 +1251,20 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             if t1 > t0:
                 windows.append((t0, t1))
     elif sections:
-        secs = sorted(sections, key=lambda s: float(s.get("time", s.get("start_time", 0))))
+        # Same validation as the canonical section_times path above (both
+        # were missing-as-zero/negative/non-finite/duplicate hazards before
+        # #69) -- this branch additionally used to skip the zero-length/
+        # reversed-interval guard entirely, so a duplicate or malformed
+        # section time here could silently emit a degenerate window.
+        raw_times = [
+            s.get("time", s.get("start_time", 0)) for s in sections if isinstance(s, dict)
+        ]
+        secs = _valid_section_times(raw_times)
         windows = []
-        for i, s in enumerate(secs):
-            t0 = float(s.get("time", s.get("start_time", 0)))
-            t1 = (
-                float(secs[i + 1].get("time", secs[i + 1].get("start_time", 0)))
-                if i + 1 < len(secs) else duration
-            )
-            windows.append((t0, t1))
+        for i, t0 in enumerate(secs):
+            t1 = secs[i + 1] if i + 1 < len(secs) else duration
+            if t1 > t0:
+                windows.append((t0, t1))
     elif (measure_windows := _measure_aligned_windows(beats, duration)) is not None:
         windows = measure_windows
     else:
@@ -1026,12 +1278,18 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     beat_times = [float(b.get("time", 0)) for b in beats]
     tempo = _TempoParams.from_beats(beat_times)
 
+    link_next_keep_ids = None
     if is_keys:
         groups_all = _group_notes_keys(notes, chords)
-        _score_groups_keys(groups_all)
+        _score_groups_keys(groups_all, tempo=tempo)
     else:
         groups_all = _group_notes(notes, chords, time_window_ms=tempo.time_window_ms)
         _score_groups(groups_all, n_strings, beat_times, tempo=tempo)
+        # A phrase-local ln check alone can't tell "the target was pruned
+        # away" apart from "the target is simply in the next phrase" --
+        # compute cross-phrase survivorship once up front (issue #68
+        # review follow-up) rather than per phrase/level.
+        link_next_keep_ids = _global_link_next_survivors(groups_all)
 
     phrases_out = []
     for t0, t1 in windows:
@@ -1065,11 +1323,19 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             if is_keys:
                 lvl_notes, lvl_chords = _notes_for_level_keys(phrase_groups, lvl, phrase_max_level)
             else:
-                lvl_notes, lvl_chords = _notes_for_level(phrase_groups, lvl, phrase_max_level)
+                lvl_notes, lvl_chords = _notes_for_level(
+                    phrase_groups, lvl, phrase_max_level, link_next_keep_ids=link_next_keep_ids,
+                )
             # Fret anchors and hand shapes are fretboard concepts the piano
             # renderer never consumes (mirrors feedBack's own editor plugin's
             # keys difficulty support) — leave them empty for keys.
-            lvl_anchors = [] if is_keys else _generate_anchors(lvl_notes, beat_times)
+            lvl_anchors = (
+                [] if is_keys
+                else _generate_anchors(
+                    _notes_for_anchors(lvl_notes, lvl_chords), beat_times,
+                    phrase_start=t0, phrase_end=t1,
+                )
+            )
             levels_out.append({
                 "difficulty": lvl,
                 "notes": lvl_notes,
@@ -1077,10 +1343,11 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
                 "anchors": lvl_anchors,
                 "handshapes": [],  # not generated in v1 — additive, safe to omit
             })
+        levels_out = _collapse_identical_levels(levels_out)
         phrases_out.append({
             "start_time": round(t0, 3),
             "end_time": round(t1, 3),
-            "max_difficulty": phrase_max_level,
+            "max_difficulty": len(levels_out) - 1,
             "levels": levels_out,
         })
     return phrases_out if phrases_out else None
@@ -1255,7 +1522,16 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
               len(phrases), pack_path.name, arrangement_index)
     return {
         "ok": True, "arrangement_index": arrangement_index,
-        "phrases": len(phrases), "max_difficulty": n_levels - 1,
+        "phrases": len(phrases),
+        # `requested_levels` is the cap the caller asked for (n_levels);
+        # `max_difficulty` is what generation actually reached across this
+        # arrangement's phrases -- these diverge whenever any phrase's own
+        # adaptive depth (_phrase_level_count) landed under the cap, or
+        # duplicate-tier collapsing (_collapse_identical_levels) shortened
+        # a phrase's ladder. Reporting only `n_levels - 1` here previously
+        # claimed a depth generation may not have actually produced.
+        "requested_levels": n_levels,
+        "max_difficulty": max((p["max_difficulty"] for p in phrases), default=0),
         "instrument": instrument,
     }
 
@@ -1322,7 +1598,7 @@ def _canonical_section_times(pack_path: Path, manifest: dict) -> list[float]:
     return []
 
 
-def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log, section_times: list[float] | None = None) -> dict:
+def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
     """Generate every eligible arrangement in one song.
 
     Arrangement indices are manifest/storage indices, not the player UI's
@@ -1332,8 +1608,7 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log, section_
     """
     manifest = sloppak.load_manifest(pack_path)
     entries = manifest.get("arrangements", []) or []
-    if section_times is None:
-        section_times = _canonical_section_times(pack_path, manifest)
+    section_times = _canonical_section_times(pack_path, manifest)
     results = []
     generated = skipped = failed = 0
     for index, entry in enumerate(entries):
@@ -1350,6 +1625,17 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log, section_
             # A bad arrangement must not prevent the remaining arrangements
             # in the song from receiving their difficulty ladders.
             result = {"arrangement_index": index, "error": exc.detail}
+        except Exception as exc:  # noqa: BLE001 — same best-effort contract as
+            # HTTPException above: a JSON/Unicode/filesystem/scoring failure on
+            # one arrangement must not abort the rest of the song, and must not
+            # bubble up to /generate as an opaque 500 that hides which
+            # arrangements did succeed.
+            if log is not None:
+                log.exception(
+                    "difficulty_ladder: unexpected error generating arrangement %d of %s",
+                    index, pack_path.name,
+                )
+            result = {"arrangement_index": index, "error": str(exc)}
         results.append(result)
         if result.get("skipped") or result.get("error"):
             skipped += 1
@@ -1363,16 +1649,28 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log, section_
     }
 
 
-def _parse_generate_params(body: dict):
-    body = body or {}
-    filename = str(body.get("filename") or "").strip()
-    if not filename:
-        raise HTTPException(400, "filename required")
-    raw_levels = body.get("levels", 4) or 4
-    n_levels = max(2, min(int(raw_levels), 8))
-    force = bool(body.get("force", False))
-    section_times = body.get("section_times")
-    return filename, n_levels, force, section_times
+class GenerateIn(BaseModel):
+    """Body for POST .../generate. `force` is strict (only a real JSON
+    boolean, never a truthy-string like "false") since `bool("false")`
+    is True in Python and previously let any nonempty string clobber an
+    authored ladder; `levels` is bounds-checked here instead of via a
+    silent `max(2, min(..., 8))` clamp so out-of-range/non-numeric input
+    is rejected (422) rather than silently coerced."""
+    filename: str
+    levels: int = Field(default=4, ge=2, le=8)
+    force: StrictBool = False
+
+
+class GenerateLibraryIn(BaseModel):
+    """Body for POST .../generate-library — same strictness as GenerateIn,
+    plus a bounds-checked max_songs and a bounds-checked processing-time
+    cap (issue #40) so a caller can shrink the budget for a quick sweep
+    without being able to raise it past MAX_PROCESSING_SECONDS' own
+    600s ceiling."""
+    levels: int = Field(default=4, ge=2, le=8)
+    force: StrictBool = False
+    max_songs: int = Field(default=500, ge=1, le=2000)
+    max_processing_seconds: int = Field(default=MAX_PROCESSING_SECONDS, ge=1, le=600)
 
 
 def setup(app, context):
@@ -1390,15 +1688,20 @@ def setup(app, context):
         return safe
 
     @app.post(f"/api/plugins/{PLUGIN_ID}/generate")
-    def generate(body: dict = Body(...)):
-        filename, n_levels, force, section_times = _parse_generate_params(body)
+    def generate(body: GenerateIn):
+        filename = body.filename.strip()
+        if not filename:
+            raise HTTPException(400, "filename required")
+        n_levels = body.levels
+        force = body.force
+
         dlc_root = get_dlc_dir()
         if dlc_root is None:
             raise HTTPException(400, "no DLC library configured")
         pack_path = _resolve_pack(Path(dlc_root), filename)
 
         try:
-            return _generate_song(pack_path, n_levels=n_levels, force=force, log=log, section_times=section_times or None)
+            return _generate_song(pack_path, n_levels=n_levels, force=force, log=log)
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001 — surface as a clean 500, never crash the server
@@ -1406,14 +1709,14 @@ def setup(app, context):
             raise HTTPException(500, str(e))
 
     @app.post(f"/api/plugins/{PLUGIN_ID}/generate-library")
-    def generate_library(body: dict = Body(...)):
+    def generate_library(body: GenerateLibraryIn):
         """Best-effort sweep: generate a phrase ladder for every sloppak
         arrangement in the library that doesn't already have one. One bad
         pack must never abort the whole sweep."""
-        n_levels = max(2, min(int((body or {}).get("levels", 4) or 4), 8))
-        force = bool((body or {}).get("force", False))
-        max_songs = max(1, min(int((body or {}).get("max_songs", 500) or 500), 2000))
-        max_processing_seconds = max(1, min(int((body or {}).get("max_processing_seconds", MAX_PROCESSING_SECONDS) or MAX_PROCESSING_SECONDS), 600))
+        n_levels = body.levels
+        force = body.force
+        max_songs = body.max_songs
+        max_processing_seconds = body.max_processing_seconds
 
         dlc_root = get_dlc_dir()
         if dlc_root is None:
@@ -1428,28 +1731,39 @@ def setup(app, context):
         # `dlc.rglob(f"*{ext}")` across both SONG_EXTS) — a shallow
         # root.iterdir() would silently miss any song organized in a
         # subfolder (e.g. DLC/ArtistName/Song.feedpak), which is a layout
-        # core's own scan explicitly supports.
-        seen = set()
-        for entry in (
-            p
-            for ext in sloppak.SONG_EXTS
-            for p in root.rglob(f"*{ext}")
-        ):
+        # core's own scan explicitly supports. Sorted (not just deduped via
+        # the set) so which packs land inside vs. outside the max_songs/
+        # time budget cutoff is deterministic, not filesystem-order-dependent.
+        candidates = sorted(
+            {p for ext in sloppak.SONG_EXTS for p in root.rglob(f"*{ext}")},
+            key=lambda p: p.relative_to(root).as_posix(),
+        )
+        for entry in candidates:
             if scanned >= max_songs:
                 break
             if time.monotonic() - start_time > max_processing_seconds:
                 time_limit_reached = True
                 break
-            if entry in seen:
-                continue
             if not sloppak.is_sloppak(entry):
                 continue
-            seen.add(entry)
             label = entry.relative_to(root).as_posix()
             scanned += 1
             try:
                 manifest = sloppak.load_manifest(entry)
             except Exception as e:  # noqa: BLE001
+                failed.append({"filename": label, "error": str(e)})
+                continue
+            # Same canonical song-level section source _generate_song() uses
+            # for the single-song /generate path (issue #67) — without this,
+            # a library sweep computed phrase boundaries from each
+            # arrangement's own `sections` field instead, which can diverge
+            # both from the /generate path and from Section Map's
+            # highway.getSections() for the same song.
+            try:
+                section_times = _canonical_section_times(entry, manifest)
+            except Exception as e:  # noqa: BLE001 — a corrupt archive/filesystem
+                # error here must not abort songs not yet visited, same
+                # best-effort contract as the load_manifest guard above.
                 failed.append({"filename": label, "error": str(e)})
                 continue
             arr_entries = manifest.get("arrangements", []) or []
@@ -1460,7 +1774,10 @@ def setup(app, context):
                     time_limit_reached = True
                     break
                 try:
-                    result = _generate_one(entry, idx, n_levels=n_levels, force=force, log=log)
+                    result = _generate_one(
+                        entry, idx, n_levels=n_levels, force=force, log=log,
+                        section_times=section_times or None,
+                    )
                 except HTTPException as e:
                     failed.append({"filename": label, "arrangement_index": idx, "error": e.detail})
                     continue

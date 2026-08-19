@@ -125,6 +125,39 @@ test('judgmentKey is stable and distinct per (time, string, fret)', () => {
     assert.notEqual(mod.judgmentKey(1.5, 2, 3), mod.judgmentKey(1.5, 3, 2));
 });
 
+// ── Per-phrase attempt logging (issue #53) ─────────────────────────────────
+
+test('_phraseIdOf includes the song arrangement, phrase index, and stable time window', () => {
+    const mod = freshPlugin();
+    assert.equal(
+        mod._phraseIdOf('song.feedpak::0', 2, { start_time: 12.34567, end_time: 15 }),
+        'song.feedpak::0::2::12.346::15.000'
+    );
+});
+
+test('_presentedDifficultyLevel maps current mastery onto the phrase ladder level', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.0 }, { max_difficulty: 3 }), 0);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.74 }, { max_difficulty: 3 }), 2);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 1.0 }, { max_difficulty: 3 }), 3);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.5 }, { max_difficulty: 0 }), 0);
+    assert.equal(mod._presentedDifficultyLevel(null, { max_difficulty: 3 }), null);
+    assert.equal(mod._presentedDifficultyLevel({}, { max_difficulty: 3 }), null);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.5 }, { max_difficulty: NaN }), 0);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 0.5 }, { max_difficulty: 'not-a-number' }), 0);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => NaN }, { max_difficulty: 3 }), null);
+    assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 'not-a-number' }, { max_difficulty: 3 }), null);
+});
+
+test('phrase attempt log helpers ignore malformed storage and retain an array shape', () => {
+    const key = 'difficulty_ladder.phraseAttempts.v1';
+    const mod = freshPlugin({ stored: { [key]: '{"not":"an array"}' } });
+
+    assert.deepEqual(mod.loadPhraseAttempts(), []);
+    mod.savePhraseAttempts([{ phrase_id: 'p1' }]);
+    assert.deepEqual(mod.loadPhraseAttempts(), [{ phrase_id: 'p1' }]);
+});
+
 // ── reactionSpeed / EMA_ALPHA (issue #5) ────────────────────────────────────
 
 test('emaAlpha() at the default reactionSpeed (2) matches the plugin\'s original hardcoded EMA_ALPHA (0.35)', () => {
@@ -274,6 +307,26 @@ test('warm-up phrases scored while autoAdjust is off still count toward WARMUP_P
     mod.settings.autoAdjust = true;
     mod.commitPhraseResult(1.0);
     assert.equal(calls.length, 1, 'warm-up was already satisfied while paused');
+});
+
+test('Split Screen scoring state is isolated and changes only its own panel highway', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    const stateA = mod.newSplitScoreState();
+    const stateB = mod.newSplitScoreState();
+    let masteryA = 0.50;
+    let masteryB = 0.50;
+    const highwayA = { getMastery: () => masteryA, setMastery: (v) => { masteryA = v; } };
+    const highwayB = { getMastery: () => masteryB, setMastery: (v) => { masteryB = v; } };
+
+    // Each panel needs its own warm-up; A's second result must not warm B up.
+    mod.commitSplitPhraseResult(stateA, highwayA, 1);
+    mod.commitSplitPhraseResult(stateB, highwayB, 1);
+    mod.commitSplitPhraseResult(stateA, highwayA, 1);
+
+    assert.equal(masteryA, 0.55); // first third of the default 15-point ramp
+    assert.equal(masteryB, 0.50);
 });
 
 test('qualifying streaks total the configured step for every sensitivity and direction', () => {

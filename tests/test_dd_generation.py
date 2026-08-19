@@ -3,9 +3,16 @@
 Self-contained sys.path bootstrap (this plugin has no pyproject.toml / shared
 conftest of its own) so `pytest tests/` works from this directory directly.
 """
+import json
+import logging
 import sys
+from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+import yaml
+from pydantic import ValidationError
 
 _PLUGIN_DIR = Path(__file__).resolve().parent.parent
 _CORE_LIB = _PLUGIN_DIR.parent / "feedBack" / "lib"
@@ -234,7 +241,11 @@ def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
     routes._score_groups(after_rest, n_strings=6)
 
     assert nearby[1]["score"] > after_rest[1]["score"]
-    assert abs(nearby[1]["score"] - after_rest[1]["score"] - 0.18) < 1e-9
+    # The 0.18 fret-jump bonus applies only within fret_jump_window_seconds
+    # (nearby) and not beyond it (after_rest). Tempo-relative density (#71)
+    # now also legitimately scores the close-together case as denser, so
+    # the total gap is at least the isolated bonus, not exactly equal to it.
+    assert nearby[1]["score"] - after_rest[1]["score"] >= 0.18 - 1e-9
 
 
 def test_group_anchor_note_prefers_a_fretted_note_over_an_incidental_open_string():
@@ -841,3 +852,833 @@ def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spar
         "a release flag on a bn=0 note is nonsensical and must not survive, "
         "even though release alone (bn intact) is never downgraded"
     )
+
+
+# ---------------------------------------------------------------------------
+# /generate and /generate-library input validation (issue #74) — `force`
+# used to be `bool(value)`, which makes any nonempty string (including the
+# literal string "false") truthy, and `levels`/`max_songs` were parsed with
+# a bare `int(...)` that either silently clamped out-of-range values or
+# raised an unhandled ValueError (500) on non-numeric input. GenerateIn /
+# GenerateLibraryIn replace that with typed, bounds-checked models so
+# malformed bodies are rejected (422) before any generation code runs.
+# ---------------------------------------------------------------------------
+
+def test_generate_in_accepts_a_well_formed_body():
+    body = routes.GenerateIn(filename="song.feedpak", levels=6, force=True)
+    assert body.filename == "song.feedpak"
+    assert body.levels == 6
+    assert body.force is True
+
+
+def test_generate_in_defaults_levels_and_force_when_omitted():
+    body = routes.GenerateIn(filename="song.feedpak")
+    assert body.levels == 4
+    assert body.force is False
+
+
+def test_generate_in_rejects_string_boolean_for_force():
+    # The historical bug: bool("false") is True. A strict model must
+    # reject the string outright rather than coerce it to True.
+    with pytest.raises(ValidationError):
+        routes.GenerateIn(filename="song.feedpak", force="false")
+
+
+def test_generate_in_rejects_out_of_range_levels():
+    with pytest.raises(ValidationError):
+        routes.GenerateIn(filename="song.feedpak", levels=99)
+    with pytest.raises(ValidationError):
+        routes.GenerateIn(filename="song.feedpak", levels=1)
+
+
+def test_generate_in_rejects_malformed_levels():
+    with pytest.raises(ValidationError):
+        routes.GenerateIn(filename="song.feedpak", levels="not-a-number")
+
+
+def test_generate_library_in_rejects_string_boolean_for_force():
+    with pytest.raises(ValidationError):
+        routes.GenerateLibraryIn(force="true")
+
+
+def test_generate_library_in_rejects_out_of_range_max_songs():
+    with pytest.raises(ValidationError):
+        routes.GenerateLibraryIn(max_songs=5000)
+    with pytest.raises(ValidationError):
+        routes.GenerateLibraryIn(max_songs=0)
+
+
+def test_generate_library_in_rejects_out_of_range_max_processing_seconds():
+    with pytest.raises(ValidationError):
+        routes.GenerateLibraryIn(max_processing_seconds=601)
+    with pytest.raises(ValidationError):
+        routes.GenerateLibraryIn(max_processing_seconds=0)
+
+
+def _client_for(tmp_path):
+    """A real FastAPI app with only this plugin's routes registered,
+    wired to an empty tmp_path as the DLC root — lets the route-level
+    tests below prove malformed requests never reach the filesystem."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    routes.setup(app, {"log": logging.getLogger("dd-test"), "get_dlc_dir": lambda: tmp_path})
+    return TestClient(app)
+
+
+def test_generate_route_rejects_string_boolean_force_with_no_write(tmp_path):
+    client = _client_for(tmp_path)
+    with patch.object(routes, "_generate_song") as generate_song:
+        resp = client.post(
+            f"/api/plugins/{routes.PLUGIN_ID}/generate",
+            json={"filename": "song.feedpak", "force": "false"},
+        )
+    assert resp.status_code == 422
+    generate_song.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_generate_route_rejects_malformed_levels_with_no_write(tmp_path):
+    client = _client_for(tmp_path)
+    with patch.object(routes, "_generate_song") as generate_song:
+        resp = client.post(
+            f"/api/plugins/{routes.PLUGIN_ID}/generate",
+            json={"filename": "song.feedpak", "levels": "not-a-number"},
+        )
+    assert resp.status_code == 422
+    generate_song.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_generate_library_route_rejects_out_of_range_max_songs_with_no_write(tmp_path):
+    client = _client_for(tmp_path)
+    with patch.object(routes.sloppak, "load_manifest") as load_manifest:
+        resp = client.post(
+            f"/api/plugins/{routes.PLUGIN_ID}/generate-library",
+            json={"max_songs": 999999},
+        )
+    assert resp.status_code == 422
+    load_manifest.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# _generate_song / /generate-library: canonical section boundaries and
+# failure isolation (issue #67) — a directory-form feedpak fixture is real
+# enough to drive both entry points end-to-end and diff their output.
+# ---------------------------------------------------------------------------
+
+_TEST_LOG = logging.getLogger("dd-generation-test")
+
+
+def _write_pack(root, name, arrangements, song_timeline_sections=None):
+    """A minimal directory-form feedpak under root/name. `arrangements` is a
+    list of (relpath, arr_dict) pairs. When `song_timeline_sections` is
+    given, a timeline.json is written and wired up as the manifest's
+    `song_timeline` key -- feedBack's canonical section source (see
+    routes._canonical_section_times)."""
+    pack_dir = root / name
+    (pack_dir / "arrangements").mkdir(parents=True)
+    manifest = {"arrangements": [{"file": rel} for rel, _ in arrangements]}
+    if song_timeline_sections is not None:
+        (pack_dir / "timeline.json").write_text(json.dumps({
+            "beats": [{"time": i * 0.5} for i in range(40)],
+            "sections": [{"time": t} for t in song_timeline_sections],
+        }))
+        manifest["song_timeline"] = "timeline.json"
+    (pack_dir / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+    for rel, arr in arrangements:
+        (pack_dir / rel).write_text(json.dumps(arr))
+    return pack_dir
+
+
+def _phrase_boundaries(pack_dir, rel):
+    arr = json.loads((pack_dir / rel).read_text())
+    return [(p["start_time"], p["end_time"]) for p in arr["phrases"]]
+
+
+def test_generate_song_uses_canonical_song_timeline_over_arrangement_sections(tmp_path):
+    # Two arrangements with DIFFERENT own `sections`, and a manifest-level
+    # song_timeline with a THIRD set of boundaries. _generate_song must use
+    # the canonical song_timeline for both, not each arrangement's own
+    # (divergent) `sections` field -- this is what keeps generated phrases
+    # aligned with Section Map's highway.getSections().
+    arrangements = [
+        ("arrangements/lead.json", _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0}, {"time": 4}])),
+        ("arrangements/bass.json", _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0}, {"time": 6}])),
+    ]
+    pack_dir = _write_pack(tmp_path, "song.feedpak", arrangements, song_timeline_sections=[0, 5])
+
+    summary = routes._generate_song(pack_dir, n_levels=4, force=True, log=_TEST_LOG)
+    assert summary["generated"] == 2
+
+    lead_bounds = _phrase_boundaries(pack_dir, "arrangements/lead.json")
+    bass_bounds = _phrase_boundaries(pack_dir, "arrangements/bass.json")
+    # Canonical boundary is 5.0 -- neither arrangement's own 4.0 nor 6.0.
+    assert lead_bounds[0][1] == 5.0
+    assert bass_bounds[0][1] == 5.0
+    assert lead_bounds == bass_bounds
+
+
+def test_generate_library_route_matches_generate_song_phrase_boundaries(tmp_path):
+    # Same fixture (two copies), one run through _generate_song() directly,
+    # one through the /generate-library sweep -- both entry points must
+    # compute identical canonical-section phrase boundaries for the same
+    # song content.
+    arrangements = [
+        ("arrangements/lead.json", _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0}, {"time": 4}])),
+        ("arrangements/bass.json", _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0}, {"time": 6}])),
+    ]
+    single_song = _write_pack(tmp_path, "single.feedpak", arrangements, song_timeline_sections=[0, 5])
+    single_summary = routes._generate_song(single_song, n_levels=4, force=True, log=_TEST_LOG)
+    assert single_summary["generated"] == 2
+
+    dlc_root = tmp_path / "dlc"
+    dlc_root.mkdir()
+    library_song = _write_pack(dlc_root, "library.feedpak", arrangements, song_timeline_sections=[0, 5])
+
+    client = _client_for(dlc_root)
+    resp = client.post(f"/api/plugins/{routes.PLUGIN_ID}/generate-library", json={"force": True})
+    assert resp.status_code == 200
+    assert resp.json()["generated"] == 2
+
+    for rel in ("arrangements/lead.json", "arrangements/bass.json"):
+        assert _phrase_boundaries(single_song, rel) == _phrase_boundaries(library_song, rel)
+
+
+def test_generate_library_route_stops_at_time_budget_and_reports_time_limit_reached(tmp_path):
+    # Issue #40 (DoS mitigation): a sweep that exceeds max_processing_seconds
+    # must stop early rather than run unbounded, and must say so in the
+    # response instead of looking like a normal, complete sweep.
+    #
+    # Uses a real (small) sleep per pack rather than mocking time.monotonic:
+    # generate_library's budget check shares the process-global time module
+    # with anyio/httpx's own internals (patch.object(routes.time, ...)
+    # patches the *actual* time module, not a copy), and freezing/jumping it
+    # wedges TestClient's underlying event loop instead of just the code
+    # under test.
+    arrangements = [
+        ("arrangements/lead.json", _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0}, {"time": 4}])),
+    ]
+    for name in ("a.feedpak", "b.feedpak", "c.feedpak"):
+        _write_pack(tmp_path, name, arrangements, song_timeline_sections=[0, 5])
+
+    client = _client_for(tmp_path)
+    real_generate_one = routes._generate_one
+
+    def slow_generate_one(*args, **kwargs):
+        import time as _time
+        _time.sleep(0.6)
+        return real_generate_one(*args, **kwargs)
+
+    # Each pack takes ~0.6s; a 1s budget lets at most one pack finish before
+    # the per-pack check (ahead of the second pack) trips the cutoff.
+    with patch.object(routes, "_generate_one", side_effect=slow_generate_one):
+        resp = client.post(
+            f"/api/plugins/{routes.PLUGIN_ID}/generate-library",
+            json={"force": True, "max_processing_seconds": 1},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["time_limit_reached"] is True
+    assert body["scanned"] < 3
+    assert body["generated"] < 3
+
+
+def test_generate_library_route_completes_normally_within_time_budget(tmp_path):
+    # Sanity check for the above: with a generous budget and time.monotonic
+    # unpatched, both packs are actually processed and time_limit_reached
+    # is False -- the flag isn't stuck on or spuriously tripped.
+    arrangements = [
+        ("arrangements/lead.json", _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0}, {"time": 4}])),
+    ]
+    _write_pack(tmp_path, "a.feedpak", arrangements, song_timeline_sections=[0, 5])
+    _write_pack(tmp_path, "b.feedpak", arrangements, song_timeline_sections=[0, 5])
+
+    client = _client_for(tmp_path)
+    resp = client.post(
+        f"/api/plugins/{routes.PLUGIN_ID}/generate-library",
+        json={"force": True},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["time_limit_reached"] is False
+    assert body["scanned"] == 2
+    assert body["generated"] == 2
+
+
+def test_generate_song_records_unexpected_error_and_generates_remaining_arrangements(tmp_path):
+    # A JSON decode failure on one arrangement -- NOT an HTTPException -- must
+    # not abort the whole song: the remaining arrangement still gets
+    # generated, and the failure is recorded per-arrangement instead of
+    # propagating out of _generate_song as an unhandled exception.
+    arrangements = [
+        ("arrangements/bad.json", {}),  # placeholder; overwritten with invalid JSON below
+        ("arrangements/lead.json", _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0}, {"time": 4}])),
+    ]
+    pack_dir = _write_pack(tmp_path, "song.feedpak", arrangements, song_timeline_sections=[0, 5])
+    (pack_dir / "arrangements/bad.json").write_text("{not valid json")
+
+    summary = routes._generate_song(pack_dir, n_levels=4, force=True, log=_TEST_LOG)
+
+    assert summary["generated"] == 1
+    assert summary["failed"] == 1
+    bad_result, good_result = summary["arrangements"]
+    assert bad_result["arrangement_index"] == 0
+    assert "error" in bad_result
+    assert good_result.get("ok") is True
+    assert _phrase_boundaries(pack_dir, "arrangements/lead.json")
+
+
+# ---------------------------------------------------------------------------
+# link-next (`ln`) integrity and chord-onset anchors (issue #68)
+# ---------------------------------------------------------------------------
+
+def test_prune_note_for_level_clears_ln_when_slide_is_gated_out():
+    # sl=9 is a real pitched slide destination; ln announces it. The sl/slu
+    # gate is 0.85 -- below it the slide itself gets stripped to -1, and ln
+    # must go with it (otherwise the highway would suppress the next note's
+    # gem for a slide that no longer exists at this tier).
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "sl": 9, "ln": True}
+    pruned = routes._prune_note_for_level(note, diff_percent=0.5)
+    assert pruned["sl"] == -1
+    assert "ln" not in pruned
+
+
+def test_prune_note_for_level_keeps_ln_when_slide_survives():
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "sl": 9, "ln": True}
+    pruned = routes._prune_note_for_level(note, diff_percent=0.9)  # above the 0.85 gate
+    assert pruned["sl"] == 9
+    assert pruned["ln"] is True
+
+
+def test_prune_note_for_level_leaves_letring_only_ln_to_the_target_check():
+    # No sl/slu at all -- a letRing-only link has no technique to strip;
+    # _prune_note_for_level must not touch it (target survival is
+    # _clear_orphaned_link_next's job).
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 1.0, "ln": True}
+    pruned = routes._prune_note_for_level(note, diff_percent=0.1)
+    assert pruned["ln"] is True
+
+
+def test_clear_orphaned_link_next_drops_ln_with_no_target_on_same_string():
+    notes = [{"t": 0.0, "s": 2, "f": 5, "ln": True}]
+    routes._clear_orphaned_link_next(notes)
+    assert "ln" not in notes[0]
+
+
+def test_clear_orphaned_link_next_keeps_ln_when_target_follows_on_same_string():
+    notes = [
+        {"t": 0.0, "s": 2, "f": 5, "ln": True},
+        {"t": 0.5, "s": 2, "f": 7},
+    ]
+    routes._clear_orphaned_link_next(notes)
+    assert notes[0]["ln"] is True
+
+
+def test_clear_orphaned_link_next_ignores_a_later_note_on_a_different_string():
+    notes = [
+        {"t": 0.0, "s": 2, "f": 5, "ln": True},
+        {"t": 0.5, "s": 3, "f": 7},  # different string -- not a valid target
+    ]
+    routes._clear_orphaned_link_next(notes)
+    assert "ln" not in notes[0]
+
+
+def test_notes_for_level_drops_ln_when_arpeggio_truncation_removes_the_target():
+    # letRing-style ln (no sl/slu) so only target survival is exercised --
+    # keep_n at level 0 of a 3-note arpeggio keeps just the anchor note,
+    # truncating away the note it was linked into.
+    groups = [{
+        "level": 0,
+        "type": "arpeggio",
+        "notes": [
+            {"t": 0.0, "s": 2, "f": 5, "sus": 0, "ln": True},
+            {"t": 0.1, "s": 2, "f": 9, "sus": 0},
+            {"t": 0.2, "s": 2, "f": 12, "sus": 0},
+        ],
+    }]
+    notes, _chords = routes._notes_for_level(groups, level=0, max_level=3)
+    assert len(notes) == 1
+    assert "ln" not in notes[0], "target was truncated away -- ln must not survive"
+
+
+def test_notes_for_level_keeps_ln_when_arpeggio_target_survives():
+    groups = [{
+        "level": 0,
+        "type": "arpeggio",
+        "notes": [
+            {"t": 0.0, "s": 2, "f": 5, "sus": 0, "ln": True},
+            {"t": 0.1, "s": 2, "f": 9, "sus": 0},
+            {"t": 0.2, "s": 2, "f": 12, "sus": 0},
+        ],
+    }]
+    # level=2 of max_level=4 keeps 2 of the 3 notes -- the linked target
+    # (t=0.1) survives alongside the anchor note.
+    notes, _chords = routes._notes_for_level(groups, level=2, max_level=4)
+    assert [n["t"] for n in notes] == [0.0, 0.1]
+    assert notes[0]["ln"] is True
+
+
+def test_notes_for_anchors_includes_chord_constituents_at_chord_onset():
+    chord = {"t": 1.0, "notes": [{"s": 5, "f": 3}, {"s": 4, "f": 5}]}
+    combined = routes._notes_for_anchors([{"t": 0.5, "f": 2}], [chord])
+    assert {"t": 0.5, "f": 2} in combined
+    assert {"t": 1.0, "f": 3} in combined
+    assert {"t": 1.0, "f": 5} in combined
+    assert len(combined) == 3
+
+
+def test_chord_only_top_tier_gets_anchors():
+    # No standalone notes at all -- every event is a chord constituent, so
+    # a top tier that keeps chords intact (see _notes_for_level) must still
+    # get fret anchors from _notes_for_anchors, not an empty list.
+    chords = [
+        {"t": t, "notes": [{"s": 5, "f": 3}, {"s": 4, "f": 5}, {"s": 3, "f": 5}, {"s": 2, "f": 4}]}
+        for t in (0.0, 0.5, 1.0, 1.5)
+    ]
+    arr = _arrangement([], chords=chords)
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases
+    max_level = phrases[0]["max_difficulty"]
+    top = phrases[0]["levels"][max_level]
+    assert top["notes"] == []
+    assert len(top["chords"]) == 4
+    assert top["anchors"], "a chord-only top tier must still get fret anchors"
+
+
+def test_generated_anchors_are_time_monotonic_with_chord_constituents():
+    chord = {"t": 4.0, "notes": [{"s": 5, "f": 8}, {"s": 4, "f": 10}]}
+    notes = _simple_notes(0, 4, step=0.5, fret=3)
+    combined = routes._notes_for_anchors(notes, [chord])
+    beat_times = [i * 0.5 for i in range(12)]
+    anchors = routes._generate_anchors(combined, beat_times)
+    assert anchors
+    times = [a["time"] for a in anchors]
+    assert times == sorted(times), "anchors must be strictly time-ordered"
+
+
+# ---------------------------------------------------------------------------
+# Phrase boundary validation, anchor containment, and chord-sustain-aware
+# duration (issue #69)
+# ---------------------------------------------------------------------------
+
+def test_valid_section_times_drops_non_finite_and_non_numeric():
+    assert routes._valid_section_times(
+        [0, float("nan"), float("inf"), float("-inf"), "not-a-number", None, 5]
+    ) == [0.0, 5.0]
+
+
+def test_valid_section_times_clamps_negatives_to_zero():
+    assert routes._valid_section_times([-5, 2, -1]) == [0.0, 2.0]
+
+
+def test_valid_section_times_dedupes_and_sorts():
+    assert routes._valid_section_times([3, 0, 3, 0, 6]) == [0.0, 3.0, 6.0]
+
+
+def test_valid_section_times_preserves_a_real_pickup_offset():
+    # A pickup (anacrusis) section legitimately starts after t=0 -- only
+    # genuinely negative/non-finite input gets clamped/dropped.
+    assert routes._valid_section_times([0.3, 4.0, 8.0]) == [0.3, 4.0, 8.0]
+
+
+def test_generate_phrases_survives_malformed_canonical_section_times():
+    arr = _arrangement(_simple_notes(0, 10, step=0.5))
+    phrases = routes.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[0, float("nan"), 0, -3, 5, float("inf")]
+    )
+    assert phrases
+    bounds = [(p["start_time"], p["end_time"]) for p in phrases]
+    for t0, t1 in bounds:
+        assert t1 > t0, "no window may be zero-length or reversed"
+    assert bounds == sorted(bounds)
+
+
+def test_generate_phrases_own_sections_reject_degenerate_duplicate_boundary():
+    # The `elif sections:` (per-arrangement) path had no t1>t0 guard at all
+    # before #69 -- a duplicate boundary silently produced a zero-length
+    # window.
+    arr = _arrangement(
+        _simple_notes(0, 10, step=0.5),
+        sections=[{"time": 0}, {"time": 3}, {"time": 3}, {"time": 6}],
+    )
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases
+    for p in phrases:
+        assert p["end_time"] > p["start_time"]
+
+
+def test_generate_phrases_with_a_pickup_first_section():
+    arr = _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0.3}, {"time": 5}])
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases
+    assert phrases[0]["start_time"] == 0.3
+    assert phrases[0]["end_time"] == 5.0
+
+
+def test_anchors_never_precede_their_own_phrase():
+    # The note's enclosing beat starts before the phrase boundary even
+    # though the note itself is inside the phrase -- the anchor must be
+    # clamped to the phrase start, not emitted at the earlier beat time.
+    notes = [{"t": 2.05, "s": 2, "f": 5, "sus": 0}]
+    beat_times = [1.98, 2.48, 2.98]
+    anchors = routes._generate_anchors(notes, beat_times, phrase_start=2.0, phrase_end=2.5)
+    assert anchors
+    assert all(a["time"] >= 2.0 for a in anchors)
+
+
+def test_anchors_excluded_when_beat_window_is_entirely_outside_the_phrase():
+    notes = [{"t": 2.05, "s": 2, "f": 5, "sus": 0}]
+    beat_times = [1.98, 2.48]
+    anchors = routes._generate_anchors(notes, beat_times, phrase_start=5.0, phrase_end=6.0)
+    assert anchors == []
+
+
+def test_generated_anchors_stay_within_their_phrase_across_the_full_pipeline():
+    arr = _arrangement(
+        _technical_notes(0, 12, step=0.1),
+        sections=[{"time": 0}, {"time": 4}, {"time": 8}],
+    )
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases
+    for p in phrases:
+        for lvl in p["levels"]:
+            for a in lvl["anchors"]:
+                assert p["start_time"] - 1e-6 <= a["time"] < p["end_time"] + 1e-6
+
+
+def test_duration_includes_chord_constituent_sustain():
+    chord = {"t": 5.0, "notes": [{"s": 5, "f": 3, "sus": 3.0}, {"s": 4, "f": 5, "sus": 0.5}]}
+    arr = _arrangement(_simple_notes(0, 5, step=0.5), chords=[chord])
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, section_times=[0, 5])
+    assert phrases
+    last = phrases[-1]
+    # duration must reflect the chord's longest constituent sustain (3.0s),
+    # not the old flat +0.1 -- so the trailing window extends to ~8.0, not ~5.001.
+    assert last["end_time"] >= 8.0
+
+
+# ---------------------------------------------------------------------------
+# Reporting actual generated depth and collapsing duplicate tiers (issue #70)
+# ---------------------------------------------------------------------------
+
+def test_canonical_note_for_compare_drops_prune_sentinel_defaults():
+    pruned = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "sl": -1, "slu": -1, "bn": 0, "bt": 0}
+    raw = {"t": 0.0, "s": 2, "f": 5, "sus": 0}
+    assert routes._canonical_note_for_compare(pruned) == routes._canonical_note_for_compare(raw)
+
+
+def test_canonical_note_for_compare_keeps_a_real_slide_destination():
+    with_slide = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "sl": 9}
+    without = {"t": 0.0, "s": 2, "f": 5, "sus": 0}
+    assert routes._canonical_note_for_compare(with_slide) != routes._canonical_note_for_compare(without)
+
+
+def test_collapse_identical_levels_merges_duplicate_adjacent_tiers():
+    levels = [
+        {"difficulty": 0, "notes": [{"t": 0, "s": 2, "f": 3, "sl": -1, "slu": -1}],
+         "chords": [], "anchors": [], "handshapes": []},
+        {"difficulty": 1, "notes": [{"t": 0, "s": 2, "f": 3}], "chords": [], "anchors": [], "handshapes": []},
+        {"difficulty": 2, "notes": [{"t": 0, "s": 2, "f": 5}], "chords": [], "anchors": [], "handshapes": []},
+    ]
+    collapsed = routes._collapse_identical_levels(levels)
+    assert len(collapsed) == 2
+    assert [lvl["difficulty"] for lvl in collapsed] == [0, 1]
+    # the cleaner (un-pruned) representative of the duplicate run survives
+    assert collapsed[0]["notes"] == [{"t": 0, "s": 2, "f": 3}]
+    assert collapsed[1]["notes"] == [{"t": 0, "s": 2, "f": 5}]
+
+
+def test_collapse_identical_levels_keeps_distinct_tiers_untouched():
+    levels = [
+        {"difficulty": 0, "notes": [{"t": 0}], "chords": [], "anchors": [], "handshapes": []},
+        {"difficulty": 1, "notes": [{"t": 0}, {"t": 1}], "chords": [], "anchors": [], "handshapes": []},
+    ]
+    collapsed = routes._collapse_identical_levels(levels)
+    assert len(collapsed) == 2
+
+
+def test_repetitive_fretted_phrase_collapses_duplicate_tiers():
+    # Equal-score-ish content: identical string/fret/no techniques,
+    # evenly spaced. _phrase_level_count's floor + percentile bucketing
+    # can still nominally split this into more tiers than there's real
+    # variation for -- no two adjacent tiers may describe the same notes.
+    notes = [{"t": round(i * 0.25, 3), "s": 2, "f": 3, "sus": 0} for i in range(60)]
+    arr = _arrangement(notes, n_beats=60)
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+    assert phrases
+    levels = phrases[0]["levels"]
+    for a, b in pairwise(levels):
+        a_notes = [routes._canonical_note_for_compare(n) for n in a["notes"]]
+        b_notes = [routes._canonical_note_for_compare(n) for n in b["notes"]]
+        assert a_notes != b_notes or a["chords"] != b["chords"]
+    assert phrases[0]["max_difficulty"] == len(levels) - 1
+
+
+def test_keys_fixed_depth_collapses_duplicate_tiers():
+    # Keys always requests the full n_levels regardless of content
+    # variation (generate_phrases_for_arrangement's is_keys branch) --
+    # a uniform, unvarying keys pattern must not ship duplicate tiers
+    # just because the fixed depth was asked for.
+    notes = [{"t": round(i * 0.5, 3), "s": 2, "f": 0, "sus": 0} for i in range(20)]
+    arr = {
+        "type": "keys", "name": "keys", "notes": notes, "chords": [],
+        "beats": [{"time": i * 0.5} for i in range(40)], "sections": [], "tuning": [],
+    }
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases
+    levels = phrases[0]["levels"]
+    for a, b in pairwise(levels):
+        assert a["notes"] != b["notes"] or a["chords"] != b["chords"]
+    assert phrases[0]["max_difficulty"] == len(levels) - 1
+    assert phrases[0]["max_difficulty"] < 3, (
+        "keys must not always ship the full requested depth when tiers are duplicates"
+    )
+
+
+def test_shallow_phrase_reports_actual_depth_not_the_requested_cap():
+    # A near-minimal phrase (just above MIN_EVENTS_FOR_GENERATION) has too
+    # little content to fill out a deep ladder.
+    notes = _simple_notes(0, 4, step=0.5, fret=3)  # 8 events, right at the floor
+    arr = _arrangement(notes)
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=8)
+    assert phrases
+    assert phrases[0]["max_difficulty"] < 7
+
+
+def test_empty_section_phrase_still_reports_zero_depth_after_collapse():
+    arr = _arrangement(_simple_notes(0, 2, step=0.2, fret=3))
+    phrases = routes.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[0, 2, 6]
+    ) or []
+    empty_phrase = phrases[2]
+    assert empty_phrase["max_difficulty"] == 0
+    assert len(empty_phrase["levels"]) == 1
+    assert empty_phrase["levels"][0]["notes"] == []
+
+
+def test_generate_one_reports_requested_cap_separately_from_actual_depth():
+    class _Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    fake_arr = {"type": "lead", "phrases": None}
+    fake_phrases = [
+        {"start_time": 0.0, "end_time": 2.0, "max_difficulty": 1, "levels": []},
+        {"start_time": 2.0, "end_time": 5.0, "max_difficulty": 3, "levels": []},
+    ]
+    with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
+         patch.object(routes, "_load_manifest_and_arrangement",
+                      return_value=("arrangements/lead.json", fake_arr, None)), \
+         patch.object(routes, "_instrument_kind", return_value="fretted"), \
+         patch.object(routes, "generate_phrases_for_arrangement", return_value=fake_phrases), \
+         patch.object(routes, "_write_member_bytes"):
+        result = routes._generate_one(
+            Path("unused"), 0, n_levels=6, force=False, log=_TEST_LOG
+        )
+
+    assert result["requested_levels"] == 6
+    # actual max across the generated phrases, not the old n_levels - 1 (5)
+    assert result["max_difficulty"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Tempo-relative sequential density, replacing the fixed-index-neighborhood
+# approach (issue #71)
+# ---------------------------------------------------------------------------
+
+def test_sequential_density_scores_compressed_pattern_higher_than_stretched():
+    tempo = routes._TempoParams(beat_interval=0.5)
+    compressed_times = [round(i * 0.1, 3) for i in range(11)]  # 11 onsets in ~1 second
+    stretched_times = [round(i * 2.0, 3) for i in range(11)]   # 11 onsets over ~20 seconds
+    compressed_density = routes._sequential_density(compressed_times, 5, tempo)
+    stretched_density = routes._sequential_density(stretched_times, 5, tempo)
+    assert compressed_density > stretched_density
+
+
+def test_sequential_density_normalizes_equivalent_patterns_across_bpm():
+    # The same musical pattern -- one onset per beat -- must score the same
+    # density whether the song is slow or fast: it's the same rhythmic
+    # complexity either way, just at a different absolute tempo. Sparse
+    # enough that neither density saturates to 1.0 -- a saturated pair
+    # would pass this assertion even if tempo normalization were broken
+    # (e.g. a fixed-size window ignoring beat_interval entirely), since
+    # both sides would coincidentally hit the same ceiling regardless.
+    slow_tempo = routes._TempoParams(beat_interval=1.0)  # 60 BPM
+    fast_tempo = routes._TempoParams(beat_interval=0.5)  # 120 BPM
+    slow_times = [round(i * 1.0, 3) for i in range(9)]   # one onset per beat at 60 BPM
+    fast_times = [round(i * 0.5, 3) for i in range(9)]   # one onset per beat at 120 BPM
+    slow_density = routes._sequential_density(slow_times, 4, slow_tempo)
+    fast_density = routes._sequential_density(fast_times, 4, fast_tempo)
+    assert 0 < slow_density < 1, "test fixture must not saturate, or it can't detect broken normalization"
+    assert slow_density == fast_density
+
+
+def test_sequential_density_window_scales_with_tempo_not_a_fixed_index_count():
+    # A pattern that's dense in BEATS but sparse in raw event count must
+    # still register as dense -- the window is sized in beats
+    # (_DENSITY_WINDOW_BEATS), not a fixed number of neighboring groups
+    # (the pre-#71 approach), so a handful of onsets at a slow tempo can
+    # still saturate density the same way many onsets do at a fast tempo.
+    slow_tempo = routes._TempoParams(beat_interval=2.0)  # 30 BPM -- a wide window in seconds
+    times = [0.0, 2.0, 4.0]  # one onset per beat, only 3 total onsets
+    # The middle onset's window (±2 beats = ±4s) covers all three onsets.
+    density = routes._sequential_density(times, 1, slow_tempo)
+    assert density == min(1.0, 3 / routes._DENSITY_SATURATION_ONSETS)
+
+
+def test_compressed_fretted_notes_score_higher_density_than_stretched():
+    tempo = routes._TempoParams(beat_interval=0.5)
+    compressed = [{"time": round(i * 0.1, 3), "notes": [{"s": 2, "f": 3, "sus": 0}]} for i in range(11)]
+    stretched = [{"time": round(i * 2.0, 3), "notes": [{"s": 2, "f": 3, "sus": 0}]} for i in range(11)]
+    routes._score_groups(compressed, n_strings=6, tempo=tempo)
+    routes._score_groups(stretched, n_strings=6, tempo=tempo)
+    # A middle group (unaffected by start/end edge effects) scores
+    # meaningfully higher when packed into ~1 second than spread across
+    # ~20 seconds -- previously both scored identically (issue #71).
+    assert compressed[5]["score"] > stretched[5]["score"]
+
+
+def test_compressed_keys_notes_score_higher_density_than_stretched():
+    tempo = routes._TempoParams(beat_interval=0.5)
+    compressed = [{"time": round(i * 0.1, 3), "notes": [{"s": 2, "f": 0, "sus": 0}]} for i in range(11)]
+    stretched = [{"time": round(i * 2.0, 3), "notes": [{"s": 2, "f": 0, "sus": 0}]} for i in range(11)]
+    routes._score_groups_keys(compressed, tempo=tempo)
+    routes._score_groups_keys(stretched, tempo=tempo)
+    assert compressed[5]["score"] > stretched[5]["score"]
+
+
+def test_wide_chord_does_not_inflate_density_beyond_a_single_note_group():
+    # Simultaneous polyphony (a wide chord) must not count as "denser" than
+    # a single note at the same onset -- density counts distinct onsets
+    # (groups), never each group's own note count, since polyphony is
+    # already scored separately (fretting/string_shape here, `poly` in the
+    # keys path). _sequential_density's signature only ever takes onset
+    # TIMES, never per-group note counts, so a group's polyphony is
+    # structurally invisible to it -- extracting the times from a
+    # 6-note-wide chord group gives the exact same density as a run of
+    # single-note groups at the same onsets.
+    tempo = routes._TempoParams(beat_interval=0.5)
+    single_note_times = [0.0, 0.5, 1.0]
+    wide_chord_groups = [
+        {"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0}]},
+        {"time": 0.5, "notes": [{"s": s, "f": 3, "sus": 0} for s in range(6)]},
+        {"time": 1.0, "notes": [{"s": 2, "f": 3, "sus": 0}]},
+    ]
+    wide_chord_times = [g["time"] for g in wide_chord_groups]
+    assert wide_chord_times == single_note_times
+    single_density = routes._sequential_density(single_note_times, 1, tempo)
+    chord_density = routes._sequential_density(wide_chord_times, 1, tempo)
+    assert single_density == chord_density
+
+
+# ---------------------------------------------------------------------------
+# PR #76 review follow-ups: cross-phrase `ln` survivorship (#68) and
+# generate_library's canonical-section-times failure isolation (#67)
+# ---------------------------------------------------------------------------
+
+def test_global_link_next_survivors_marks_notes_with_a_later_same_string_note():
+    groups_all = [
+        {"time": 0.0, "notes": [{"t": 0.0, "s": 2, "ln": True}]},
+        {"time": 5.0, "notes": [{"t": 5.0, "s": 2}]},  # same string, later -- a genuine target
+    ]
+    survivors = routes._global_link_next_survivors(groups_all)
+    assert id(groups_all[0]["notes"][0]) in survivors
+    assert id(groups_all[1]["notes"][0]) not in survivors  # last note on its string has no target
+
+
+def test_notes_for_level_keeps_top_tier_ln_when_target_is_in_the_next_phrase():
+    # Phrase A's own groups only contain the FIRST note; its real target
+    # (same string, later) lives in phrase B and is therefore invisible to
+    # a phrase-local check alone -- global survivorship must still
+    # preserve it at the (unpruned) top tier.
+    groups_all = [
+        {"time": 0.0, "type": "note", "notes": [{"t": 0.0, "s": 2, "f": 5, "ln": True}], "level": 0},
+        {"time": 5.0, "type": "note", "notes": [{"t": 5.0, "s": 2, "f": 7}], "level": 0},
+    ]
+    keep_ids = routes._global_link_next_survivors(groups_all)
+    phrase_a_groups = [groups_all[0]]  # phrase A's window excludes phrase B's group
+    notes, _chords = routes._notes_for_level(
+        phrase_a_groups, level=0, max_level=0, link_next_keep_ids=keep_ids,
+    )
+    assert notes[0]["ln"] is True
+
+
+def test_notes_for_level_still_drops_ln_with_no_target_anywhere_even_with_keep_ids():
+    groups_all = [
+        {"time": 0.0, "type": "note", "notes": [{"t": 0.0, "s": 2, "f": 5, "ln": True}], "level": 0},
+    ]
+    keep_ids = routes._global_link_next_survivors(groups_all)
+    notes, _chords = routes._notes_for_level(
+        groups_all, level=0, max_level=0, link_next_keep_ids=keep_ids,
+    )
+    assert "ln" not in notes[0]
+
+
+def test_notes_for_level_keep_ids_never_matches_a_pruned_lower_tier_copy():
+    # keep_ids holds the object ids of the ORIGINAL grouped notes. A lower
+    # (non-top) tier always emits fresh dict() copies (_prune_note_for_level),
+    # so keep_ids must never accidentally preserve an orphaned ln there --
+    # this is what makes passing keep_ids to every tier safe by construction.
+    groups_all = [{
+        "time": 0.0, "type": "arpeggio", "level": 0,
+        "notes": [
+            {"t": 0.0, "s": 2, "f": 5, "sus": 0, "ln": True},
+            {"t": 0.1, "s": 2, "f": 9, "sus": 0},
+        ],
+    }]
+    keep_ids = routes._global_link_next_survivors(groups_all)
+    # level=0 of max_level=3 truncates the arpeggio down to just the anchor
+    # note, dropping its target -- a lower-tier copy, so keep_ids must not
+    # rescue it.
+    notes, _chords = routes._notes_for_level(
+        groups_all, level=0, max_level=3, link_next_keep_ids=keep_ids,
+    )
+    assert len(notes) == 1
+    assert "ln" not in notes[0]
+
+
+def test_generate_phrases_preserves_ln_across_a_phrase_boundary():
+    # letRing-style ln (no sl/slu) on the last note before a section
+    # boundary; its real target sits just after the boundary, in the next
+    # phrase. A phrase-local-only check would incorrectly clear it.
+    notes = _simple_notes(0, 10, step=0.5, string=2, fret=3)
+    for n in notes:
+        if n["t"] == 4.5:
+            n["ln"] = True
+    arr = _arrangement(notes, sections=[{"time": 0}, {"time": 5}])
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=2)
+    assert phrases
+    first_phrase = phrases[0]
+    top_level = first_phrase["levels"][first_phrase["max_difficulty"]]
+    tagged = [n for n in top_level["notes"] if n["t"] == 4.5]
+    assert tagged and tagged[0].get("ln") is True
+
+
+def test_generate_library_route_records_canonical_section_times_failure_and_continues(tmp_path):
+    # Even if _canonical_section_times() raises something outside its own
+    # internal ValueError handling, one bad pack's boundary computation
+    # must not abort songs not yet visited in the sweep (matches the
+    # load_manifest guard immediately above it).
+    dlc_root = tmp_path / "dlc"
+    dlc_root.mkdir()
+    arrangements = [("arrangements/lead.json", _arrangement(_simple_notes(0, 10, step=0.5)))]
+    _write_pack(dlc_root, "bad.feedpak", arrangements)
+    _write_pack(dlc_root, "good.feedpak", arrangements, song_timeline_sections=[0, 5])
+
+    client = _client_for(dlc_root)
+    with patch.object(
+        routes, "_canonical_section_times",
+        side_effect=[RuntimeError("corrupt archive"), []],
+    ):
+        resp = client.post(f"/api/plugins/{routes.PLUGIN_ID}/generate-library", json={"force": True})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["generated"] == 1
+    assert any("corrupt archive" in f.get("error", "") for f in data["failed"])

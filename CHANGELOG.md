@@ -5,15 +5,102 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.2] - 2026-08-17
+## [0.9.9] - 2026-08-19
 
 ### Fixed
-- Bound `/generate-library` to a 120-second processing budget (`MAX_PROCESSING_SECONDS`) to prevent runaway CPU use on large libraries (issue #40). The response now includes `time_limit_reached` so the frontend can surface when the sweep was truncated.
+- Bound `/generate-library` to a processing-time budget (`MAX_PROCESSING_SECONDS`, default 120s, caller-adjustable up to 600s via `max_processing_seconds`) to prevent runaway CPU use on large libraries (issue #40). The budget is now also checked per-arrangement (not just per-pack), so a single large multi-arrangement pack can't blow past it. The response now includes `time_limit_reached` so the frontend can surface when the sweep was truncated.
 - Replaced the O(groups) scan in `_best_bridge_candidate` with a bisect-based time-window slice, and pre-sort groups once in `_refine_lower_tier_path` instead of re-sorting on every iteration, reducing the super-linear cost on large charts.
 
 ## [Unreleased]
 
 ### Fixed
+- `/generate-library` now computes canonical song-level section boundaries
+  the same way `/generate` does, so a song's phrase boundaries no longer
+  depend on which entry point generated it (#67).
+- `_generate_song` now records a JSON/filesystem/Unicode/scoring failure on
+  one arrangement instead of letting it abort the rest of the song (#67).
+- A note's `ln` (link-next) flag is now cleared when the slide it announced
+  was gated out at a lower tier, or when its linked target note didn't
+  survive tier reduction — previously it could survive and suppress a
+  target note's gem for a slide or note that no longer exists at that
+  tier (#68).
+- Fret anchors are now generated from chord constituents as well as
+  standalone notes, so a top tier made entirely of intact chords gets
+  anchors instead of none (#68).
+- Section/phrase boundaries (both the canonical song-level timeline and an
+  arrangement's own `sections`) are now validated as finite, nonnegative,
+  and strictly ordered before use, with duplicates collapsed — malformed
+  input could previously produce a zero-length or reversed phrase window,
+  or (for `nan`) silently corrupt sort order (#69).
+- Fret anchors can no longer be emitted at a time before their own phrase
+  starts (#69).
+- Arrangement duration now accounts for a chord's longest constituent note
+  sustain instead of a flat +0.1s, so a long final chord's sustain tail is
+  no longer truncated out of the last generated phrase (#69).
+- `/generate`'s response now reports the actual maximum difficulty reached
+  across an arrangement's phrases, separately from the requested cap
+  (`requested_levels`) — previously it always reported `levels - 1`
+  regardless of what was actually generated (#70).
+- Adjacent phrase tiers whose generated content is identical are now
+  collapsed into one, with `max_difficulty` recomputed — an equal-score
+  phrase or a fixed-depth keys phrase could previously ship two or more
+  tiers that played identically (#70).
+- Difficulty scoring now measures sequential note density relative to
+  tempo (onsets per beat/time window) instead of a fixed number of
+  neighboring groups — a passage's density no longer depends on how many
+  notes happen to be nearby in the note LIST rather than in TIME, so e.g.
+  eleven notes in one second no longer scores the same as eleven notes
+  over twenty seconds. Applies to both the fretted and keys scoring paths;
+  simultaneous polyphony (a wide chord) no longer inflates density, and
+  the same rhythmic pattern now scores equivalently across different
+  tempos (#71).
+
+### Security
+- `/generate` and `/generate-library` now validate their request bodies with
+  typed, bounds-checked models instead of ad-hoc dict parsing. `force` was
+  previously `bool(value)`, so any nonempty string — including the literal
+  string `"false"` — was treated as `true` and could silently overwrite an
+  authored ladder; it now only accepts a real JSON boolean. `levels` and
+  `max_songs` were parsed with a bare `int(...)` that either silently
+  clamped out-of-range values or raised an unhandled `ValueError` (500) on
+  non-numeric input; malformed or out-of-range values are now rejected with
+  422 before any generation code runs.
+
+## [0.9.6] - 2026-08-18
+
+### Fixed
+- Remove duplicate test-helper exports from the module export object.
+
+## [0.9.5] - 2026-08-18
+
+### Fixed
+- Cache phrase-attempt records and debounce persistence so scoring does not
+  synchronously parse and stringify localStorage on every phrase completion.
+
+## [0.8.3] - 2026-08-16
+
+### Added
+- Persist per-phrase attempt logs for adaptive-difficulty analysis under
+  `difficulty_ladder.phraseAttempts.v1`. Each record includes a stable phrase
+  identifier, presented difficulty level, phrase-level hit/miss result, per-note
+  hit/miss details, note count, hit rate, session id, timestamp, and song
+  arrangement key. The log is bounded to the latest 5000 attempts and advertised
+  through diagnostics so Phase 3 player sessions have a queryable local source.
+### Changed
+- The mastery slider's `oninput` (fires per pixel dragged) no longer runs the
+  O(sections*phrases) section-difficulty recompute and event-bus emit on every
+  tick; it's now coalesced into an at-most-once-per-150ms trailing throttle,
+  so Section Map's display still updates live during a drag instead of only
+  once the user lets go.
+- The HUD's per-frame draw loop no longer rescans the full phrase list with
+  `findIndex()` every frame to find the current phrase; it now caches the
+  index the same way the scoring loop already does.
+
+### Fixed
+- Difficulty Ladder now follows Split Screen's per-panel note detectors and
+  applies adaptive difficulty independently to the panel being scored. Its
+  standalone glasses HUD also yields to Section Map's section-bar glasses,
+  preventing the duplicate display.
 - `_measure_aligned_windows` dropped a song's first downbeat whenever its measure
   numbering started at 0 instead of 1 — the filter required `measure > 0`, but feedBack's
   own runtime convention (`static/highway.js`'s `isMeasure = beat.measure >= 0`,
