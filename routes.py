@@ -320,11 +320,11 @@ def _group_anchor_note(group, *, prefer_fretted=True):
     return max(notes, key=lambda n: n.get("s", 0), default=None)
 
 
-def _is_beat_aligned(time, beat_times, tolerance=0.06):
-    return any(abs(float(time) - beat) <= tolerance for beat in beat_times)
+def _is_beat_aligned(t, beat_times, tolerance=0.06):
+    return any(abs(float(t) - beat) <= tolerance for beat in beat_times)
 
 
-def _syncopation_score(time, beat_times, beat_interval):
+def _syncopation_score(t, beat_times, beat_interval):
     """How far a group's onset lands from the nearest beat, as a fraction
     of a half-beat (landing exactly between two beats — the "and" of an
     off-beat eighth, the hardest possible offset to internalize — maxes
@@ -337,7 +337,7 @@ def _syncopation_score(time, beat_times, beat_interval):
     """
     if not beat_times or not beat_interval:
         return 0.0
-    nearest = min(abs(float(time) - b) for b in beat_times)
+    nearest = min(abs(float(t) - b) for b in beat_times)
     return min(1.0, nearest / (beat_interval / 2.0))
 
 
