@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9] - 2026-08-19
+
+### Fixed
+- Bound `/generate-library` to a processing-time budget (`MAX_PROCESSING_SECONDS`, default 120s, caller-adjustable up to 600s via `max_processing_seconds`) to prevent runaway CPU use on large libraries (issue #40). The budget is now also checked per-arrangement (not just per-pack), so a single large multi-arrangement pack can't blow past it. The response now includes `time_limit_reached` so the frontend can surface when the sweep was truncated.
+- Replaced the O(groups) scan in `_best_bridge_candidate` with a bisect-based time-window slice, and pre-sort groups once in `_refine_lower_tier_path` instead of re-sorting on every iteration, reducing the super-linear cost on large charts.
+
 ## [Unreleased]
 
 ### Fixed

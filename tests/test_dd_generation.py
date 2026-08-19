@@ -908,6 +908,13 @@ def test_generate_library_in_rejects_out_of_range_max_songs():
         routes.GenerateLibraryIn(max_songs=0)
 
 
+def test_generate_library_in_rejects_out_of_range_max_processing_seconds():
+    with pytest.raises(ValidationError):
+        routes.GenerateLibraryIn(max_processing_seconds=601)
+    with pytest.raises(ValidationError):
+        routes.GenerateLibraryIn(max_processing_seconds=0)
+
+
 def _client_for(tmp_path):
     """A real FastAPI app with only this plugin's routes registered,
     wired to an empty tmp_path as the DLC root — lets the route-level
@@ -1038,6 +1045,67 @@ def test_generate_library_route_matches_generate_song_phrase_boundaries(tmp_path
 
     for rel in ("arrangements/lead.json", "arrangements/bass.json"):
         assert _phrase_boundaries(single_song, rel) == _phrase_boundaries(library_song, rel)
+
+
+def test_generate_library_route_stops_at_time_budget_and_reports_time_limit_reached(tmp_path):
+    # Issue #40 (DoS mitigation): a sweep that exceeds max_processing_seconds
+    # must stop early rather than run unbounded, and must say so in the
+    # response instead of looking like a normal, complete sweep.
+    #
+    # Uses a real (small) sleep per pack rather than mocking time.monotonic:
+    # generate_library's budget check shares the process-global time module
+    # with anyio/httpx's own internals (patch.object(routes.time, ...)
+    # patches the *actual* time module, not a copy), and freezing/jumping it
+    # wedges TestClient's underlying event loop instead of just the code
+    # under test.
+    arrangements = [
+        ("arrangements/lead.json", _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0}, {"time": 4}])),
+    ]
+    for name in ("a.feedpak", "b.feedpak", "c.feedpak"):
+        _write_pack(tmp_path, name, arrangements, song_timeline_sections=[0, 5])
+
+    client = _client_for(tmp_path)
+    real_generate_one = routes._generate_one
+
+    def slow_generate_one(*args, **kwargs):
+        import time as _time
+        _time.sleep(0.6)
+        return real_generate_one(*args, **kwargs)
+
+    # Each pack takes ~0.6s; a 1s budget lets at most one pack finish before
+    # the per-pack check (ahead of the second pack) trips the cutoff.
+    with patch.object(routes, "_generate_one", side_effect=slow_generate_one):
+        resp = client.post(
+            f"/api/plugins/{routes.PLUGIN_ID}/generate-library",
+            json={"force": True, "max_processing_seconds": 1},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["time_limit_reached"] is True
+    assert body["scanned"] < 3
+    assert body["generated"] < 3
+
+
+def test_generate_library_route_completes_normally_within_time_budget(tmp_path):
+    # Sanity check for the above: with a generous budget and time.monotonic
+    # unpatched, both packs are actually processed and time_limit_reached
+    # is False -- the flag isn't stuck on or spuriously tripped.
+    arrangements = [
+        ("arrangements/lead.json", _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0}, {"time": 4}])),
+    ]
+    _write_pack(tmp_path, "a.feedpak", arrangements, song_timeline_sections=[0, 5])
+    _write_pack(tmp_path, "b.feedpak", arrangements, song_timeline_sections=[0, 5])
+
+    client = _client_for(tmp_path)
+    resp = client.post(
+        f"/api/plugins/{routes.PLUGIN_ID}/generate-library",
+        json={"force": True},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["time_limit_reached"] is False
+    assert body["scanned"] == 2
+    assert body["generated"] == 2
 
 
 def test_generate_song_records_unexpected_error_and_generates_remaining_arrangements(tmp_path):
