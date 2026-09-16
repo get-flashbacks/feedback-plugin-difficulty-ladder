@@ -4,6 +4,24 @@ A feedBack plugin that keeps a song's difficulty matched to how well you're
 actually playing it, and shows upcoming sections as a row of glass-filling
 difficulty indicators.
 
+## Multi-player and profile isolation
+
+Difficulty Ladder supports the v1 player-context model used for concurrent
+play. Each player has independent profile, song, arrangement, instrument/role,
+skill, current difficulty, best mastery, and phrase-attempt state. The model is
+designed for at least four Split Screen players and normalizes karaoke players
+to `role: "karaoke"` / `instrument: "voice"`; vocal state never shares a
+fretted-instrument record.
+
+Saved state is separated as `profile → player → song → arrangement → instrument
+→ role → skill`. `player_id` remains part of persistence identity even when two
+local players select the same profile. `overall` is the default skill and a missing skill may fall back to it;
+skill-specific values never overwrite `overall`. Profile-aware Hosts are gated
+until identity is ready, so a pending profile cannot accidentally read or write
+another player's progress. See [`PLAYER_CONTEXT.md`](PLAYER_CONTEXT.md) for
+the event, capability, `note_detect`, karaoke, Split Screen, and Section Map
+contract.
+
 ## What it does
 
 **Generate missing difficulty ladders**
@@ -64,6 +82,12 @@ the case that's now rejected explicitly instead of guessed at.
   other. Captures both manual slider moves and this plugin's own
   auto-adjustments, for songs with phrase-level difficulty data only.
 
+The legacy single-player storage is migrated conservatively into the
+`difficulty_ladder.progress.v2` and `difficulty_ladder.phraseAttempts.v2`
+stores under `skill: "overall"`; unscoped legacy data is not claimed by
+concurrent profiles. A legacy record can be claimed by only one player, and its
+claim marker prevents another player sharing that profile from reading it.
+
 **Live auto-adjustment**
 - Reads live per-note hit/miss judgments from whichever note-detection scorer
   is active (e.g. the `note_detect` plugin) via `highway.getNoteStateProvider()`
@@ -71,6 +95,9 @@ the case that's now rejected explicitly instead of guessed at.
 - Tracks a rolling accuracy average per song section (phrase) and nudges the
   master-difficulty slider (`window.setMastery`) up after a run of clean
   sections, or down after a rough one.
+- Records monotonic best mastery at phrase finalization as the live difficulty
+  percentage multiplied by the phrase hit rate. This never changes the separate
+  current-difficulty target.
 - Only ever changes difficulty at section boundaries — never mid-phrase.
 - Stands down the instant you move the difficulty slider yourself. Manual
   action always wins; auto-adjust must be explicitly re-enabled afterward.

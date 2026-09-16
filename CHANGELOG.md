@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-09-16
+
+### Changed
+- Promoted the player-context persistence foundation to a minor feature release.
+- Normalized legacy fretted records to guitar and documented the
+  `difficulty_ladder.sections.v2` Section Map payload contract.
+- Merged the player-context persistence foundation with the mastery streak
+  indicator and instrument baseline profile card work landed on `main`
+  (0.11.0), consolidating onto `0.12.0`.
+
+## [0.9.13] - 2026-09-10
+
+### Added
+- Documented the v1 player-context contract in [`PLAYER_CONTEXT.md`](PLAYER_CONTEXT.md)
+  and linked it from `INTEGRATION.md` and `README.md`.
+- Added profile-aware progress and phrase-attempt documentation covering at
+  least four concurrent Split Screen players, independent instrument/role and
+  future skill records, karaoke/vocal contexts, note-detection finalization,
+  player-scoped difficulty commands, readiness gating, and lifecycle ownership.
+- Added focused test coverage for context-carrying section events, capability
+  dispatch, and player-scoped phrase finalization.
+
+### Changed
+- Bumped the plugin patch version to `0.9.13`.
+
 ## [0.9.12] - 2026-08-19
 
 ### Fixed

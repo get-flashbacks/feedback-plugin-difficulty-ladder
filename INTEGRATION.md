@@ -1,5 +1,9 @@
 # Integration — feedBack-plugin-sectionmap
 
+> For the shared multi-player contract used by Split Screen, `note_detect`,
+> karaoke, and Section Map, see [`PLAYER_CONTEXT.md`](PLAYER_CONTEXT.md).
+> This file keeps the Section Map-specific phrase/glass contract and formula.
+
 > **Superseded (issue #63).** This file originally tracked issue #8, written
 > against the Host-getters-only architecture `section_map` had at the time
 > (see `COMPLIANCE.md` and the bottom "Original issue #8 record" section for
