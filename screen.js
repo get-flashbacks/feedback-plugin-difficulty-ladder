@@ -231,6 +231,7 @@
         dropResistance: lsGet('dropResistance', false) === true,
         showGlasses: lsGet('showGlasses', true),
         sensitivity: lsGet('sensitivity', 2),     // 1 (lenient) .. 3 (strict) — confidence thresholds + step size
+        downStepRatio: lsGet('downStepRatio', 1), // 1..2 — downward target multiplier; upward target is unchanged
         reactionSpeed: lsGet('reactionSpeed', 2), // 1 (slow) .. 3 (fast) — EMA_ALPHA, how much one phrase's result moves the rolling average
         minMastery: lsGet('minMastery', 0),     // percent
         maxMastery: lsGet('maxMastery', 100),   // percent
@@ -314,10 +315,19 @@
     let _chordCursor = 0;
     let _lastScoredT = -1;
 
-    function rampStep(th, progress) {
+    function downStepRatio() {
+        var ratio = Number(settings.downStepRatio);
+        return isFinite(ratio) ? Math.max(1, Math.min(2, ratio)) : 1;
+    }
+
+    function rampStep(th, progress, direction) {
         const index = Math.max(0, Math.min(RAMP_PHRASES - 1, Number(progress) || 0));
-        const before = Math.round(th.step * index / RAMP_PHRASES);
-        const after = Math.round(th.step * (index + 1) / RAMP_PHRASES);
+        // Keep the ramp curve symmetric; only its final target differs by
+        // direction. Rounding the target once guarantees the three increments
+        // still total an integer mastery percentage.
+        const target = Math.round(th.step * (direction === 'down' ? downStepRatio() : 1));
+        const before = Math.round(target * index / RAMP_PHRASES);
+        const after = Math.round(target * (index + 1) / RAMP_PHRASES);
         return Math.max(1, after - before);
     }
 
@@ -516,7 +526,7 @@
             _rampDirection = direction;
             _rampProgress = 0;
         }
-        var step = rampStep(th, _rampProgress);
+        var step = rampStep(th, _rampProgress, direction);
         var next = direction === 'up' ? curPct + step : curPct - step;
         next = Math.max(settings.minMastery, Math.min(settings.maxMastery, next));
 
@@ -880,7 +890,7 @@
             state.rampDirection = direction;
             state.rampProgress = 0;
         }
-        var step = rampStep(th, state.rampProgress);
+        var step = rampStep(th, state.rampProgress, direction);
         var next = Math.max(settings.minMastery, Math.min(settings.maxMastery,
             direction === 'up' ? curPct + step : curPct - step));
         if (next !== curPct && typeof hw.setMastery === 'function') {
@@ -1371,7 +1381,7 @@
     // behavior is unchanged.
     if (typeof module !== 'undefined' && module.exports) {
         module.exports = {
-            thresholds, emaAlpha, songKeyOf,
+            thresholds, emaAlpha, downStepRatio, songKeyOf,
             judgmentKey, settings,
             _normalizeMasteryBounds,
             _dominantSongMastery,

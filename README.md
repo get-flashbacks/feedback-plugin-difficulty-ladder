@@ -108,6 +108,7 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 | Glass-filling section HUD | Show/hide the in-player glass row. |
 | Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. |
 | Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
+| Difficulty drop speed (1×-2×) | Multiplies only the downward auto-adjust target so difficulty can ease off faster than it climbs. The default 1× preserves symmetric behavior. |
 | Min / Max % | Hard bounds auto-adjust will never cross. |
 | Generate ladder depth cap (2-8) | Maximum difficulty tiers "⚙️ Generate Difficulties" can give a phrase when building a ladder for a song that doesn't have one yet — threaded into `/generate`'s existing `levels` parameter. |
 
@@ -181,7 +182,6 @@ user turns it on.
   store beyond the existing `songMastery` map, plus new live-scoring
   logic) — closer in scope to the per-technique skill profile ruled out
   below, but aimed at adapting difficulty rather than only displaying it.
-- Direction-asymmetric step size (larger downward steps than upward).
 - A passive "mastery streak" indicator on the glass HUD when accuracy
   stays high at max difficulty for several consecutive phrases — visual
   only.

@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added an opt-in Difficulty drop speed setting (1×-2×). It scales only the
+  total downward auto-adjust step while retaining the existing symmetric
+  three-phrase ramp shape and leaving upward adjustments unchanged (#24).
+
 ### Fixed
 - The per-section difficulty "glass fill" emitted for feedBack-plugin-sectionmap
   (`difficulty:sections-updated`) now uses the same discrete difficulty-tier
