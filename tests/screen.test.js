@@ -297,7 +297,10 @@ test('players sharing one profile keep independent progress and phrase-attempt r
     assert.deepEqual(mod.loadPhraseAttempts(playerB).map(x => x.phrase_id), ['b-only']);
 
     const progress = mod.loadProgressStore();
-    assert.deepEqual(Object.keys(progress.profiles['hash-1'].players).sort(), ['player-a', 'player-b']);
+    assert.deepEqual(
+        Object.keys(progress.profiles[mod._nodeKey('hash-1')].players).sort(),
+        [mod._nodeKey('player-a'), mod._nodeKey('player-b')].sort(),
+    );
 });
 
 test('library badge scan ignores malformed role nodes in scoped progress', () => {
@@ -306,8 +309,8 @@ test('library badge scan ignores malformed role nodes in scoped progress', () =>
     mod.upsertPlayerContext(main);
     mod.writeProgress(main, { currentDifficulty: 45 });
     const store = mod.loadProgressStore();
-    store.profiles['hash-1'].players.main.songs['song.feedpak']
-        .arrangements.lead.instruments.guitar.roles.lead = null;
+    store.profiles[mod._nodeKey('hash-1')].players[mod._nodeKey('main')].songs[mod._nodeKey('song.feedpak')]
+        .arrangements[mod._nodeKey('lead')].instruments[mod._nodeKey('guitar')].roles[mod._nodeKey('lead')] = null;
     mod.saveProgressStore(store);
 
     assert.doesNotThrow(() => mod._dominantSongMastery({ filename: 'song.feedpak' }));
@@ -728,9 +731,11 @@ test('a compatibility profile switch on the same song resets main scoring state'
 
 test('recordPhraseAttempt fails closed when a malformed scoped node cannot be created', () => {
     const ctx = playerContext();
+    // Node keys are 'k_' + encodeURIComponent(value) (see _nodeKey in
+    // screen.js) — 'hash-1' has no characters encodeURIComponent touches.
     const malformed = {
         schema: 'difficulty_ladder.phrase_attempts.v2', version: 2,
-        profiles: { 'hash-1': 'not-an-object' }, migrations: {},
+        profiles: { 'k_hash-1': 'not-an-object' }, migrations: {},
     };
     const mod = freshPlugin({ stored: {
         'difficulty_ladder.phraseAttempts.v2': JSON.stringify(malformed),

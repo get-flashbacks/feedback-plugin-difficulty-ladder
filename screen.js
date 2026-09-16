@@ -85,8 +85,19 @@
         return String(value).trim();
     }
 
+    // Every dynamic object key derived from context identity (profile,
+    // player, song, arrangement, instrument, role, skill) in this file's
+    // storage trees funnels through here. Prefixed so an identity value of
+    // "__proto__", "constructor", or "prototype" — plausible from an
+    // externally-supplied Host/profile/session identity, not just a local
+    // user — can never collide with a plain object's own inherited
+    // properties when used as `obj[key] = ...` below. This is a real
+    // prototype-pollution guard, not decoration: without the prefix,
+    // `store.profiles['__proto__'] = {...}` would write onto
+    // Object.prototype instead of an own property. New in this PR's v2
+    // schema, so there is no pre-existing on-disk key format to preserve.
     function _nodeKey(value) {
-        return encodeURIComponent(_id(value, 'unknown'));
+        return 'k_' + encodeURIComponent(_id(value, 'unknown'));
     }
 
     function _pct(value) {
@@ -161,6 +172,17 @@
         return ctx ? _nodeKey(ctx.profile_hash || ctx.profile_id) : null;
     }
 
+    /* eslint-disable security/detect-object-injection --
+       Every bracket access in this file's storage-tree accessor functions
+       (through the matching eslint-enable below, and in the equivalent
+       phrase-attempt-store functions further down) is keyed exclusively
+       through _nodeKey()/_profileKey(), which prefixes every key so
+       "__proto__"/"constructor"/"prototype" can never collide with a plain
+       object's own inherited properties — see the comment on _nodeKey.
+       eslint-plugin-security's detect-object-injection can't see that
+       data-flow guarantee and flags the bracket syntax on sight; scoped to
+       just these accessor functions rather than a whole-file suppression
+       so a future non-_nodeKey-derived key elsewhere still gets flagged. */
     function _profilePlayerNode(profile, context, create) {
         var ctx = normalizePlayerContext(context);
         if (!ctx || !_plainObject(profile)) return null;
@@ -338,6 +360,7 @@
         });
         return matches.length === 1 ? matches[0] : null;
     }
+    /* eslint-enable security/detect-object-injection */
 
     function loadSongMasteryMap() {
         let parsed;
@@ -363,6 +386,12 @@
         value = record && typeof record === 'object' ? record.mastery : record;
         return (typeof value === 'number' && isFinite(value)) ? value : null;
     }
+    // key is always songKeyOf()'s `filename + '::' + arrangementKey` — the
+    // literal '::' substring means it can never equal a dangerous prototype
+    // name ("__proto__"/"constructor"/"prototype"), so map[key] below can't
+    // reach Object.prototype. eslint-plugin-security's detect-object-injection
+    // can't verify that shape guarantee and flags the bracket syntax anyway.
+    /* eslint-disable security/detect-object-injection */
     function _rememberSongInstrument(key, instrument) {
         if (!key || !instrument) return;
         var map = loadSongMasteryMap();
@@ -371,6 +400,7 @@
         map[key] = { mastery: pct, instrument: instrument };
         saveSongMasteryMap(map);
     }
+    /* eslint-enable security/detect-object-injection */
 
     // Mirrors routes.py's _instrument_kind() for authoritative song_info
     // metadata. The WebSocket calls the field arrangement_type because its
@@ -406,6 +436,10 @@
     // a remembered difficulty) with the exact percentage in its title/aria
     // label, and a generic glyph otherwise — the closest faithful
     // approximation, with the exact-text gap filed as a follow-up.
+    // ak/ik/rk below are Object.keys() of already-enumerated store nodes —
+    // reads of own properties already discovered, not externally-chosen
+    // keys — plus every other bracket access is _nodeKey()/_profileKey()-derived.
+    /* eslint-disable security/detect-object-injection */
     function _dominantSongMastery(song) {
         if (!song || !song.filename) return null;
         if (_mainPlayerContext) {
@@ -449,6 +483,7 @@
         }
         return fallback;
     }
+    /* eslint-enable security/detect-object-injection */
 
     function registerLibraryCardBadge() {
         var fb = window.feedBack;
@@ -773,8 +808,8 @@
         return _compatibilityContext(value, si);
     }
 
-    function _reportCompatibilityProfileError(error, token) {
-        if (token !== _mainContextResolution) return null;
+    function _reportCompatibilityProfileError(error, resolutionId) {
+        if (resolutionId !== _mainContextResolution) return null;
         var message = error && error.message ? String(error.message) : String(error || 'unknown profile error');
         if (window.console && typeof window.console.warn === 'function') {
             window.console.warn('[difficulty_ladder] main profile context resolution failed:', error);
@@ -786,12 +821,12 @@
             message: message,
         });
         // Keep persistence and unscoped Section Map output gated. A later
-        // song/profile lifecycle activation gets a fresh token and can recover.
+        // song/profile lifecycle activation gets a fresh resolutionId and can recover.
         return null;
     }
 
-    function _acceptMainPlayerContext(context, token, previousPersistenceKey) {
-        if (token !== _mainContextResolution) return null;
+    function _acceptMainPlayerContext(context, resolutionId, previousPersistenceKey) {
+        if (resolutionId !== _mainContextResolution) return null;
         var ctx = normalizePlayerContext(context);
         if (!ctx) return null;
         _mainPlayerContext = ctx;
@@ -810,22 +845,22 @@
     }
 
     function activateCompatibilityPlayerContext(si) {
-        var token = ++_mainContextResolution;
+        var resolutionId = ++_mainContextResolution;
         var previousPersistenceKey = persistenceContextKey(_mainPlayerContext);
         _mainPlayerContext = null; // gate writes while a new identity resolves
         var resolved;
         try {
             resolved = resolveCompatibilityPlayerContext(si);
         } catch (error) {
-            return _reportCompatibilityProfileError(error, token);
+            return _reportCompatibilityProfileError(error, resolutionId);
         }
         if (resolved && typeof resolved.then === 'function') {
             return resolved.then(
-                function (context) { return _acceptMainPlayerContext(context, token, previousPersistenceKey); },
-                function (error) { return _reportCompatibilityProfileError(error, token); }
+                function (context) { return _acceptMainPlayerContext(context, resolutionId, previousPersistenceKey); },
+                function (error) { return _reportCompatibilityProfileError(error, resolutionId); }
             );
         }
-        return _acceptMainPlayerContext(resolved, token, previousPersistenceKey);
+        return _acceptMainPlayerContext(resolved, resolutionId, previousPersistenceKey);
     }
 
     function upsertPlayerContext(raw) {
@@ -1108,6 +1143,10 @@
         });
     }
 
+    // See the matching eslint-disable block around _profilePlayerNode/
+    // _progressSkillNode/readProgress above: every bracket key here is
+    // _nodeKey()/_profileKey()-derived and prototype-pollution-safe.
+    /* eslint-disable security/detect-object-injection */
     function _phraseAttemptNode(store, context, create) {
         var ctx = normalizePlayerContext(context || _defaultPersistenceContext());
         if (!ctx) return null;
@@ -1177,6 +1216,7 @@
         });
         return matches;
     }
+    /* eslint-enable security/detect-object-injection */
 
     function loadPhraseAttempts(context) {
         var ctx = normalizePlayerContext(context || _defaultPersistenceContext());
@@ -1295,6 +1335,10 @@
         var progressMigration = progress.migrations.songMasteryV1;
         if (!progressMigration) {
             var legacyMap = loadSongMasteryMap();
+            // key here is one of Object.keys(legacyMap) — a read of an
+            // already-enumerated own property, not an externally-chosen
+            // key — so the bracket reads below can't be redirected.
+            /* eslint-disable security/detect-object-injection */
             Object.keys(legacyMap).forEach(function (key) {
                 var identity = _legacySongIdentity(key);
                 var currentDifficulty = _masteryPct(legacyMap[key]);
@@ -1317,6 +1361,7 @@
                     });
                 }
             });
+            /* eslint-enable security/detect-object-injection */
             progress.migrations.songMasteryV1 = {
                 completed: true, claimed_by: claimedBy, claimed_player_id: ctx.player_id,
                 source_retained: true,
@@ -2634,6 +2679,7 @@
             _masteryPct, _rememberSongInstrument, _instrumentKind,
             loadSongMasteryMap, saveSongMasteryMap,
             normalizePlayerContext, playerContextKey, persistenceContextKey,
+            _nodeKey,
             loadProgressStore, saveProgressStore, readProgress, writeProgress,
             flushProgressStore,
             migrateLegacyData, resolveCompatibilityPlayerContext,
