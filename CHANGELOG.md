@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added a read-only v3 Profile card showing average and median remembered
+  difficulty for fretted and keys arrangements (#23).
 - Added a passive gold Mastery streak badge to the glass HUD after three
   consecutive phrases at the configured maximum mastery and at least 95%
   accuracy. Pausing, transitioning through Split Screen, or missing the

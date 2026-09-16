@@ -333,6 +333,68 @@ test('_rememberSongInstrument persists classification before the first mastery v
     assert.equal(mod._dominantSongMastery({ filename: 'new.feedpak' }), null);
 });
 
+test('aggregateMasteryByInstrument computes averages and medians by authoritative classifier', () => {
+    const mod = freshPlugin();
+    assert.deepEqual(mod.aggregateMasteryByInstrument({
+        'a.feedpak::0': { mastery: 40, instrument: 'fretted' },
+        'b.feedpak::0': { mastery: 80, instrument: 'fretted' },
+        'c.feedpak::0': { mastery: 75, instrument: 'keys' },
+    }), [
+        { instrument: 'fretted', label: 'Fretted', count: 2, average: 60, median: 60 },
+        { instrument: 'keys', label: 'Keys', count: 1, average: 75, median: 75 },
+    ]);
+});
+
+test('aggregateMasteryByInstrument excludes null, legacy, and unsupported records', () => {
+    const mod = freshPlugin();
+    assert.deepEqual(mod.aggregateMasteryByInstrument({
+        'pending.feedpak::0': { mastery: null, instrument: 'keys' },
+        'legacy.feedpak::0': 70,
+        'drums.feedpak::0': { mastery: 90, instrument: 'drums' },
+        'keys.feedpak::0': { mastery: 120, instrument: 'keys' },
+    }), [
+        { instrument: 'keys', label: 'Keys', count: 1, average: 100, median: 100 },
+    ]);
+});
+
+test('aggregateMasteryByInstrument returns no groups for malformed or empty maps', () => {
+    const mod = freshPlugin();
+    assert.deepEqual(mod.aggregateMasteryByInstrument(null), []);
+    assert.deepEqual(mod.aggregateMasteryByInstrument([]), []);
+    assert.deepEqual(mod.aggregateMasteryByInstrument({}), []);
+});
+
+test('renderProfileBaseline injects a read-only card after the core best-scores card', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({
+        'lead.feedpak::0': { mastery: 64, instrument: 'fretted' },
+        'keys.feedpak::0': { mastery: 82, instrument: 'keys' },
+    });
+    let inserted = null;
+    const anchor = { insertAdjacentElement: (where, node) => { assert.equal(where, 'afterend'); inserted = node; } };
+    function element(tag) {
+        return {
+            tag, children: [], style: {},
+            appendChild(child) { this.children.push(child); },
+            remove() {},
+        };
+    }
+    global.document = {
+        getElementById(id) {
+            if (id === 'v3-profile-bests') return { parentElement: anchor };
+            return null;
+        },
+        createElement: element,
+    };
+
+    mod.renderProfileBaseline();
+    assert.equal(inserted.id, 'difficulty-ladder-profile-baseline');
+    assert.equal(inserted.children[0].textContent, 'Adaptive difficulty baseline');
+    assert.equal(inserted.children[2].children.length, 2);
+    assert.equal(inserted.children[2].children[0].children[0].children[1].textContent, '64%');
+    assert.equal(inserted.children[2].children[1].children[0].children[1].textContent, '82%');
+});
+
 // ── Auto-adjust warm-up window + ramped stepping ────────────────────────────
 // (Rocksmith-comparison audit follow-up: a fresh song no longer acts before
 // WARMUP_PHRASES phrases are scored, and a qualifying streak now ramps
