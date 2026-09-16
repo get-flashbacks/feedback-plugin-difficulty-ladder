@@ -413,6 +413,56 @@ test('warm-up phrases scored while autoAdjust is off still count toward WARMUP_P
     assert.equal(calls.length, 1, 'warm-up was already satisfied while paused');
 });
 
+test('mastery streak activates after three accurate phrases at configured max', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = false;
+    mod.settings.maxMastery = 80;
+    attachHighwayStub(80);
+    for (let i = 1; i <= mod.MASTERY_STREAK_PHRASES; i++) {
+        mod.commitPhraseResult(mod.MASTERY_STREAK_ACCURACY);
+        assert.deepEqual(mod.masteryStreakStatus(), {
+            count: i,
+            active: i >= mod.MASTERY_STREAK_PHRASES,
+        });
+    }
+});
+
+test('mastery streak resets below the accuracy floor or configured max', () => {
+    const mod = freshPlugin();
+    mod.settings.maxMastery = 100;
+    assert.equal(mod.updateMasteryStreak(1, 100), 1);
+    assert.equal(mod.updateMasteryStreak(mod.MASTERY_STREAK_ACCURACY - 0.01, 100), 0);
+    assert.equal(mod.updateMasteryStreak(1, 99), 0);
+});
+
+test('mastery streak reset helper models a pause without changing scoring state', () => {
+    const mod = freshPlugin();
+    mod.updateMasteryStreak(1, 100);
+    mod.updateMasteryStreak(1, 100);
+    mod.resetMasteryStreak();
+    assert.deepEqual(mod.masteryStreakStatus(), { count: 0, active: false });
+});
+
+test('mastery lifecycle subscriptions reset while active and detach while hidden', () => {
+    const mod = freshPlugin();
+    const handlers = new Map();
+    global.window.feedBack = {
+        on(eventName, handler) {
+            handlers.set(eventName, handler);
+            return () => handlers.delete(eventName);
+        },
+    };
+    mod.startMasteryLifecycleSubscriptions();
+    assert.deepEqual([...handlers.keys()], ['song:pause', 'song:stop', 'song:ended']);
+
+    mod.updateMasteryStreak(1, 100);
+    handlers.get('song:pause')();
+    assert.deepEqual(mod.masteryStreakStatus(), { count: 0, active: false });
+
+    mod.stopMasteryLifecycleSubscriptions();
+    assert.equal(handlers.size, 0);
+});
+
 test('Split Screen scoring state is isolated and changes only its own panel highway', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;

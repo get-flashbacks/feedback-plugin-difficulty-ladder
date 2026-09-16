@@ -14,11 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added a passive gold Mastery streak badge to the glass HUD after three
+  consecutive phrases at the configured maximum mastery and at least 95%
+  accuracy. Pausing, transitioning through Split Screen, or missing the
+  threshold resets the streak (#25).
 - Added an opt-in Difficulty drop speed setting (1×-2×). It scales only the
   total downward auto-adjust step while retaining the existing symmetric
   three-phrase ramp shape and leaving upward adjustments unchanged (#24).
 
 ### Fixed
+- Mastery-streak lifecycle subscriptions now detach while the player is hidden,
+  preventing inactive instances from retaining pause/stop/end handlers (#25).
 - The per-section difficulty "glass fill" emitted for feedBack-plugin-sectionmap
   (`difficulty:sections-updated`) now uses the same discrete difficulty-tier
   formula this plugin's own player HUD uses, instead of a different continuous

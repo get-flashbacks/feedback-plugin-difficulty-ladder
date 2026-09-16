@@ -288,6 +288,8 @@
     const WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
     const RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
     const DOWN_CONFIRM_PHRASES = 2;
+    const MASTERY_STREAK_PHRASES = 3;
+    const MASTERY_STREAK_ACCURACY = 0.95;
 
     // ---- Per-song scoring state ----
     let _songKey = null;
@@ -308,12 +310,16 @@
     let _rampDirection = null;
     let _rampProgress = 0;
     let _downStreak = 0;
+    let _masteryStreak = 0;     // consecutive high-accuracy phrases at configured max mastery
     // Forward-advancing cursors into the time-sorted notes/chords arrays —
     // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
     // performance doctrine). Reset only on a backward seek (loop/rewind).
     let _noteCursor = 0;
     let _chordCursor = 0;
     let _lastScoredT = -1;
+    let _hudMaxDifficulty = null;
+    let _hudBadgeMeasureKey = null;
+    let _hudBadgeWidth = 0;
 
     function downStepRatio() {
         var ratio = Number(settings.downStepRatio);
@@ -350,9 +356,13 @@
         _rampDirection = null;
         _rampProgress = 0;
         _downStreak = 0;
+        _masteryStreak = 0;
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
+        _hudMaxDifficulty = null;
+        _hudBadgeMeasureKey = null;
+        _hudBadgeWidth = 0;
         _hudPhraseIdx = -1;
     }
     resetPerSongState();
@@ -469,6 +479,9 @@
         // autoAdjust — a warm-up satisfied while paused should still count
         // once the user flips auto-adjust back on, rather than resetting.
         _phrasesScored++;
+        hw = window.highway;
+        updateMasteryStreak(ratio, hw && typeof hw.getMastery === 'function'
+            ? Math.round(hw.getMastery() * 100) : null);
         if (!settings.autoAdjust) {
             _rampDirection = null;
             _rampProgress = 0;
@@ -476,7 +489,6 @@
             contributeDiagnostics();
             return;
         }
-        hw = window.highway;
         if (!hw || typeof hw.getMastery !== 'function') {
             _rampDirection = null;
             _rampProgress = 0;
@@ -543,6 +555,27 @@
             };
         }
         contributeDiagnostics();
+    }
+
+    function updateMasteryStreak(ratio, masteryPct) {
+        var maxPct = Number(settings.maxMastery);
+        if (!isFinite(maxPct)) maxPct = 100;
+        maxPct = Math.max(0, Math.min(100, maxPct));
+        if (typeof masteryPct === 'number' && isFinite(masteryPct)
+            && masteryPct >= maxPct && ratio >= MASTERY_STREAK_ACCURACY) {
+            _masteryStreak++;
+        } else {
+            _masteryStreak = 0;
+        }
+        return _masteryStreak;
+    }
+
+    function resetMasteryStreak() {
+        _masteryStreak = 0;
+    }
+
+    function masteryStreakStatus() {
+        return { count: _masteryStreak, active: _masteryStreak >= MASTERY_STREAK_PHRASES };
     }
 
     function contributeDiagnostics() {
@@ -682,6 +715,7 @@
     var _scoreRafHandle = null;
     function tickScoring() {
         if (!isPlayerActive()) {
+            resetMasteryStreak();
             _scoreRafHandle = null;
             return;
         }
@@ -792,6 +826,7 @@
     // exact highway that owns the note-state provider.
     var _splitScoreStates = new Map();
     var _splitPanelsUnsubscribe = null;
+    var _masteryLifecycleUnsubscribes = [];
 
     function newSplitScoreState() {
         return {
@@ -841,7 +876,13 @@
     function startSplitScreenHookSubscription() {
         var fb = window.feedBack;
         if (_splitPanelsUnsubscribe || !fb || typeof fb.on !== 'function') return;
-        var handler = installSplitScreenDetectorHook;
+        var handler = function () {
+            // The single-player HUD is hidden throughout Split Screen. Clear
+            // its streak at either panel transition so it cannot resume with
+            // a count that predates an unrelated multiplayer session.
+            resetMasteryStreak();
+            installSplitScreenDetectorHook();
+        };
         var unsubscribe = fb.on('splitscreen:panels-changed', handler);
         _splitPanelsUnsubscribe = typeof unsubscribe === 'function'
             ? unsubscribe
@@ -852,6 +893,23 @@
         if (!_splitPanelsUnsubscribe) return;
         _splitPanelsUnsubscribe();
         _splitPanelsUnsubscribe = null;
+    }
+
+    function startMasteryLifecycleSubscriptions() {
+        var fb = window.feedBack;
+        if (_masteryLifecycleUnsubscribes.length || !fb || typeof fb.on !== 'function') return;
+        ['song:pause', 'song:stop', 'song:ended'].forEach(function (eventName) {
+            var unsubscribe = fb.on(eventName, resetMasteryStreak);
+            _masteryLifecycleUnsubscribes.push(typeof unsubscribe === 'function'
+                ? unsubscribe
+                : (typeof fb.off === 'function'
+                    ? function () { fb.off(eventName, resetMasteryStreak); }
+                    : function () {}));
+        });
+    }
+
+    function stopMasteryLifecycleSubscriptions() {
+        _masteryLifecycleUnsubscribes.splice(0).forEach(function (unsubscribe) { unsubscribe(); });
     }
 
     function commitSplitPhraseResult(state, hw, ratio) {
@@ -1030,12 +1088,18 @@
 
         var start = Math.max(0, curIdx - 1);
         var list = phrases.slice(start, start + LOOKAHEAD);
-        var maxDiff = 1;
-        for (var i = 0; i < phrases.length; i++) maxDiff = Math.max(maxDiff, phrases[i].max_difficulty);
+        if (_hudMaxDifficulty == null) {
+            _hudMaxDifficulty = 1;
+            phrases.forEach(function (phrase) {
+                _hudMaxDifficulty = Math.max(_hudMaxDifficulty, phrase.max_difficulty);
+            });
+        }
+        var maxDiff = _hudMaxDifficulty;
         var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : 0;
 
         var w = Math.max(1, list.length * (GLASS_W + GLASS_GAP) - GLASS_GAP);
-        var h = GLASS_MAX_H + 12;
+        // Reserve badge space before activation so the glass row does not jump.
+        var h = GLASS_MAX_H + 30;
         var dpr = window.devicePixelRatio || 1;
         var wantW = Math.round(w * dpr), wantH = Math.round(h * dpr);
         if (canvas.width !== wantW || canvas.height !== wantH) {
@@ -1047,6 +1111,30 @@
         var ctx = canvas.getContext('2d');
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, w, h);
+
+        if (_masteryStreak >= MASTERY_STREAK_PHRASES) {
+            var badgeText = (w >= 90 ? '\u2605 Mastery ' : '\u2605 ') + _masteryStreak;
+            ctx.font = '600 11px system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            var measureKey = badgeText + '|' + w;
+            if (_hudBadgeMeasureKey !== measureKey) {
+                _hudBadgeMeasureKey = measureKey;
+                _hudBadgeWidth = Math.min(w, Math.ceil(ctx.measureText(badgeText).width) + 14);
+            }
+            var badgeW = _hudBadgeWidth;
+            var badgeX = (w - badgeW) / 2;
+            ctx.fillStyle = 'rgba(34, 28, 8, 0.9)';
+            ctx.strokeStyle = 'rgba(232, 192, 64, 0.9)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') ctx.roundRect(badgeX, 1, badgeW, 16, 8);
+            else ctx.rect(badgeX, 1, badgeW, 16);
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = '#f4d35e';
+            ctx.fillText(badgeText, w / 2, 9);
+        }
 
         list.forEach(function (p, i2) {
             var sizeFrac = Math.max(0.3, p.max_difficulty / maxDiff);
@@ -1265,6 +1353,7 @@
 
     // ---- Lifecycle ----
     function startRafLoops() {
+        startMasteryLifecycleSubscriptions();
         if (!_scoreRafHandle) tickScoring();
         if (!_hudRafHandle) drawHud();
     }
@@ -1318,7 +1407,9 @@
                 installSplitScreenDetectorHook();
                 startRafLoops();
             } else {
+                resetMasteryStreak();
                 flushPhraseAttempts();
+                stopMasteryLifecycleSubscriptions();
                 stopSplitScreenHookSubscription();
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
                 if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
@@ -1336,6 +1427,7 @@
     // returns to the foreground while the player is active.
     document.addEventListener('visibilitychange', function () {
         if (document.visibilityState === 'visible') startRafLoops();
+        else resetMasteryStreak();
     });
 
     // Settings panel writes localStorage directly (see settings.html) and
@@ -1392,6 +1484,9 @@
             _presentedDifficultyLevel, _tierFillFrac,
             calculateAndEmitSectionDifficulties,
             commitPhraseResult, resetPerSongState,
+            updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,
+            startMasteryLifecycleSubscriptions, stopMasteryLifecycleSubscriptions,
+            MASTERY_STREAK_PHRASES, MASTERY_STREAK_ACCURACY,
             rampStep, WARMUP_PHRASES, RAMP_PHRASES,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick,
