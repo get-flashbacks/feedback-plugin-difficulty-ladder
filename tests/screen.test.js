@@ -280,6 +280,17 @@ test('progress v2 keeps current difficulty distinct from best mastery', () => {
     assert.equal(mod.readProgress(ctx).bestMastery, 48, 'best mastery is monotonic');
 });
 
+test('an explicit null currentDifficulty is not coerced into a false 0%', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+
+    // Number(null) === 0, so a naive numeric coercion would persist this as
+    // a real 0% difficulty instead of leaving it unset.
+    mod.writeProgress(ctx, { currentDifficulty: null, bestMastery: 55 });
+    assert.equal(mod.readProgress(ctx).currentDifficulty, null);
+    assert.equal(mod.readProgress(ctx).bestMastery, 55);
+});
+
 test('players sharing one profile keep independent progress and phrase-attempt records', () => {
     const mod = freshPlugin();
     const playerA = playerContext({ player_id: 'player-a' });
@@ -536,6 +547,16 @@ test('explicit concurrent contexts cannot claim unscoped legacy data', () => {
     assert.equal(mod.readProgress(ctx), null);
 });
 
+test('_dominantSongMastery does not show a false 0% badge for an arrangement with only bestMastery set', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'main', song_id: 'song.feedpak', arrangement_id: '0' });
+    mod.upsertPlayerContext(ctx);
+    // Only bestMastery is set — currentDifficulty stays at its unset null.
+    mod.writeProgress(ctx, { bestMastery: 70 });
+
+    assert.equal(mod._dominantSongMastery({ filename: 'song.feedpak' }), null);
+});
+
 test('legacy fretted role-less difficulty matches an active lead guitar context', () => {
     const mod = freshPlugin({ stored: {
         'difficulty_ladder.songMastery': JSON.stringify({
@@ -616,6 +637,19 @@ test('older Host compatibility resolves only to the single legacy-default profil
     assert.equal(ctx.compatibility_adapter, true);
     assert.equal(mod.writeProgress(ctx, { currentDifficulty: 44 }), true);
     assert.equal(mod.readProgress(ctx).currentDifficulty, 44);
+});
+
+test('compatibility context classifies instrument from arrangement_type, not just instrument/type', () => {
+    const mod = freshPlugin();
+    // The Host's getSongInfo() shape carries the classifier as
+    // arrangement_type (the same field _instrumentKind() reads in
+    // onSongEvent) — si.type is the WebSocket message discriminator, not
+    // the instrument kind, and currentSong may not duplicate it.
+    const ctx = mod.resolveCompatibilityPlayerContext({
+        filename: 'song.feedpak', arrangement_index: 0, arrangement_type: 'lead',
+    });
+    assert.equal(ctx.instrument, 'guitar');
+    assert.equal(ctx.role, 'lead');
 });
 
 test('profile API failures are surfaced, keep writes gated, and can recover later', () => {
@@ -872,6 +906,21 @@ test('phrase attempts are isolated and capped by the complete persistence path',
     assert.equal(mod.loadPhraseAttempts(overallGuitar)[0].phrase_id, 'g-1');
     assert.deepEqual(mod.loadPhraseAttempts(pinchGuitar).map(x => x.phrase_id), ['pinch-only']);
     assert.deepEqual(mod.loadPhraseAttempts(bass).map(x => x.phrase_id), ['bass-only']);
+});
+
+test('upsertPlayerContext never registers the main player as a split scorer', () => {
+    const mod = freshPlugin();
+    const highway = { hasPhraseData: () => false };
+    // A Host is free to include a highway reference on the main player's
+    // context payload too — this must not double-register it as a split
+    // scorer, since tickScoring()'s own window.highway path already scores
+    // the main player every frame.
+    const ctx = playerContext({ player_id: 'main', highway: highway });
+
+    mod.upsertPlayerContext(ctx);
+
+    assert.equal(mod._splitScoreStateForHighway(highway), undefined,
+        'the main highway must not be scored a second time via the split-scorer map');
 });
 
 test('player leave removes linked detector state using only stable context ids', () => {
@@ -1361,6 +1410,29 @@ test('renderProfileBaseline stays absent when no classified mastery exists', () 
     mod.renderProfileBaseline();
 
     assert.equal(inserted, null);
+});
+
+test('renderProfileBaseline aggregates from the active player\'s v2 progress, not just the legacy v1 map', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'main', instrument: 'guitar', role: 'lead', song_id: 'lead.feedpak' });
+    mod.upsertPlayerContext(ctx);
+    // Live difficulty changes write only to v2 now — the v1 map is empty.
+    mod.writeProgress(ctx, { currentDifficulty: 64 });
+
+    let inserted = null;
+    const anchor = { insertAdjacentElement: (_where, node) => { inserted = node; } };
+    function element(tag) {
+        return { tag, children: [], style: {}, appendChild(child) { this.children.push(child); }, remove() {} };
+    }
+    global.document = {
+        getElementById(id) { return id === 'v3-profile-bests' ? { parentElement: anchor } : null; },
+        createElement: element,
+    };
+
+    mod.renderProfileBaseline();
+
+    assert.notEqual(inserted, null, 'a v2-only profile must still produce the baseline card');
+    assert.equal(inserted.children[2].children[0].children[0].children[1].textContent, '64%');
 });
 
 // ── Auto-adjust warm-up window + ramped stepping ────────────────────────────

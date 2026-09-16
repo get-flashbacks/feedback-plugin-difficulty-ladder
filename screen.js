@@ -101,6 +101,11 @@
     }
 
     function _pct(value) {
+        // Number(null) is 0 and Number('') is 0 — both would otherwise
+        // silently coerce an unset/blank field into a real 0% value here,
+        // which several callers rely on _pct(...) === null to distinguish
+        // from an actually-saved 0%.
+        if (value === null || value === undefined || value === '') return null;
         var parsed = typeof value === 'number' ? value : Number(value);
         return isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : null;
     }
@@ -509,6 +514,58 @@
         });
     }
 
+    // Live difficulty changes since this PR write only to the v2 progress
+    // store — loadSongMasteryMap() (the v1 map) is legacy/read-only. Reading
+    // v1 alone here would leave the Profile baseline card frozen for
+    // existing users and permanently empty for anyone who only ever played
+    // under v2. Walks the active player's own v2 tree across every
+    // song/arrangement/instrument/role/skill and projects it into the same
+    // { [key]: { mastery, instrument: 'fretted'|'keys' } } shape
+    // aggregateMasteryByInstrument() already expects from the v1 map, so
+    // both sources can feed the same aggregator.
+    /* eslint-disable security/detect-object-injection --
+       every key walked below is from Object.keys() of an already-enumerated
+       store node — a read of a just-discovered own property, not an
+       externally-chosen key. */
+    function _v2MasteryMapForBaseline(context) {
+        var ctx = normalizePlayerContext(context);
+        var out = {};
+        if (!ctx) return out;
+        var store = loadProgressStore();
+        var profile = store.profiles[_profileKey(ctx)];
+        var player = _profilePlayerNode(profile, ctx, false);
+        var songs = player && player.songs;
+        if (!_plainObject(songs)) return out;
+        var n = 0;
+        Object.keys(songs).forEach(function (songKey) {
+            var arrangements = songs[songKey] && songs[songKey].arrangements;
+            if (!_plainObject(arrangements)) return;
+            Object.keys(arrangements).forEach(function (arrKey) {
+                var instruments = arrangements[arrKey] && arrangements[arrKey].instruments;
+                if (!_plainObject(instruments)) return;
+                Object.keys(instruments).forEach(function (instrKey) {
+                    var instrumentNode = instruments[instrKey];
+                    var mapped = instrumentNode && instrumentNode.instrument === 'guitar' ? 'fretted'
+                        : instrumentNode && instrumentNode.instrument === 'keys' ? 'keys' : null;
+                    if (!mapped) return;
+                    var roles = instrumentNode.roles;
+                    if (!_plainObject(roles)) return;
+                    Object.keys(roles).forEach(function (roleKey) {
+                        var skills = roles[roleKey] && roles[roleKey].skills;
+                        if (!_plainObject(skills)) return;
+                        Object.keys(skills).forEach(function (skillKey) {
+                            var value = _pct(skills[skillKey] && skills[skillKey].currentDifficulty);
+                            if (value === null) return;
+                            out['v2:' + (n++)] = { mastery: value, instrument: mapped };
+                        });
+                    });
+                });
+            });
+        });
+        return out;
+    }
+    /* eslint-enable security/detect-object-injection */
+
     // ---- Profile instrument baseline (issue #23) ----
     // The persisted classifier intentionally uses the generator's vocabulary
     // (`fretted` / `keys`). Keep the Profile aggregation on that authoritative
@@ -545,7 +602,9 @@
     }
 
     function renderProfileBaseline() {
-        var groups = aggregateMasteryByInstrument(loadSongMasteryMap());
+        var v2Map = _mainPlayerContext ? _v2MasteryMapForBaseline(_mainPlayerContext) : {};
+        var source = Object.keys(v2Map).length ? v2Map : loadSongMasteryMap();
+        var groups = aggregateMasteryByInstrument(source);
         var previous = document.getElementById('difficulty-ladder-profile-baseline');
         if (previous) previous.remove();
         if (!groups.length) return; // Profile's absent-not-empty convention
@@ -750,8 +809,14 @@
     function _songContextFields(si) {
         si = _plainObject(si) || {};
         var currentSong = _plainObject(window.feedBack && window.feedBack.currentSong) || {};
-        var rawType = _id(si.instrument_id ?? si.instrument ?? si.type
-            ?? currentSong.instrument_id ?? currentSong.instrument ?? currentSong.type, '');
+        // arrangement_type is the field name the Host's getSongInfo() (and
+        // _instrumentKind()'s caller in onSongEvent) actually uses for the
+        // arrangement classifier — si.type is the WebSocket message
+        // discriminator, not the instrument/arrangement kind. Without this,
+        // a currentSong that doesn't duplicate the classifier under
+        // instrument/instrument_id/type falls through to 'legacy-unknown'.
+        var rawType = _id(si.instrument_id ?? si.instrument ?? si.arrangement_type ?? si.type
+            ?? currentSong.instrument_id ?? currentSong.instrument ?? currentSong.arrangement_type ?? currentSong.type, '');
         var rawRole = _id(si.role ?? si.role_id ?? currentSong.role ?? currentSong.role_id, '');
         var arrangementName = _id(si.arrangement ?? si.arrangement_name
             ?? currentSong.arrangement ?? currentSong.arrangementName, '');
@@ -896,7 +961,14 @@
                 scheduleSectionDifficultiesEmit(context, hw);
             }
         });
-        if (context.highway) registerSplitHighway(context.highway, context);
+        // The main player is scored by tickScoring()'s own window.highway
+        // path (and persisted through _mainPlayerContext), not through the
+        // split-scorer map. Registering it here too — a Host's
+        // player-context payload for "main" can legitimately carry a
+        // highway reference — would score every note twice per frame
+        // (tickSplitScoring() AND the main path) and let the two scorers
+        // fight over which one's mastery change was a "manual override".
+        if (context.highway && context.player_id !== 'main') registerSplitHighway(context.highway, context);
 
         if (context.player_id === 'main') {
             var mainChanged = persistenceContextKey(_mainPlayerContext) !== persistenceContextKey(context);
