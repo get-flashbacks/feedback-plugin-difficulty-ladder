@@ -82,6 +82,8 @@ the case that's now rejected explicitly instead of guessed at.
   harder section (scaled by that section's peak authored difficulty), fill
   level = how much of that section's difficulty range the current
   master-difficulty setting reaches.
+- At the configured maximum mastery, three consecutive phrases at 95%
+  accuracy or better light a gold Mastery streak badge. Pausing resets it.
 - Purely a visualization; can be toggled independently of auto-adjust.
 
 ## Requirements
@@ -182,9 +184,6 @@ user turns it on.
   logic) — closer in scope to the per-technique skill profile ruled out
   below, but aimed at adapting difficulty rather than only displaying it.
 - Direction-asymmetric step size (larger downward steps than upward).
-- A passive "mastery streak" indicator on the glass HUD when accuracy
-  stays high at max difficulty for several consecutive phrases — visual
-  only.
 
 **Not planned:**
 

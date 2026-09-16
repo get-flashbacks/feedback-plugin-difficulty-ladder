@@ -287,6 +287,8 @@
     const WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
     const RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
     const DOWN_CONFIRM_PHRASES = 2;
+    const MASTERY_STREAK_PHRASES = 3;
+    const MASTERY_STREAK_ACCURACY = 0.95;
 
     // ---- Per-song scoring state ----
     let _songKey = null;
@@ -307,6 +309,7 @@
     let _rampDirection = null;
     let _rampProgress = 0;
     let _downStreak = 0;
+    let _masteryStreak = 0;     // consecutive high-accuracy phrases at configured max mastery
     // Forward-advancing cursors into the time-sorted notes/chords arrays —
     // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
     // performance doctrine). Reset only on a backward seek (loop/rewind).
@@ -340,6 +343,7 @@
         _rampDirection = null;
         _rampProgress = 0;
         _downStreak = 0;
+        _masteryStreak = 0;
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
@@ -459,6 +463,9 @@
         // autoAdjust — a warm-up satisfied while paused should still count
         // once the user flips auto-adjust back on, rather than resetting.
         _phrasesScored++;
+        hw = window.highway;
+        updateMasteryStreak(ratio, hw && typeof hw.getMastery === 'function'
+            ? Math.round(hw.getMastery() * 100) : null);
         if (!settings.autoAdjust) {
             _rampDirection = null;
             _rampProgress = 0;
@@ -466,7 +473,6 @@
             contributeDiagnostics();
             return;
         }
-        hw = window.highway;
         if (!hw || typeof hw.getMastery !== 'function') {
             _rampDirection = null;
             _rampProgress = 0;
@@ -533,6 +539,27 @@
             };
         }
         contributeDiagnostics();
+    }
+
+    function updateMasteryStreak(ratio, masteryPct) {
+        var maxPct = Number(settings.maxMastery);
+        if (!isFinite(maxPct)) maxPct = 100;
+        maxPct = Math.max(0, Math.min(100, maxPct));
+        if (typeof masteryPct === 'number' && isFinite(masteryPct)
+            && masteryPct >= maxPct && ratio >= MASTERY_STREAK_ACCURACY) {
+            _masteryStreak++;
+        } else {
+            _masteryStreak = 0;
+        }
+        return _masteryStreak;
+    }
+
+    function resetMasteryStreak() {
+        _masteryStreak = 0;
+    }
+
+    function masteryStreakStatus() {
+        return { count: _masteryStreak, active: _masteryStreak >= MASTERY_STREAK_PHRASES };
     }
 
     function contributeDiagnostics() {
@@ -672,6 +699,7 @@
     var _scoreRafHandle = null;
     function tickScoring() {
         if (!isPlayerActive()) {
+            resetMasteryStreak();
             _scoreRafHandle = null;
             return;
         }
@@ -1025,7 +1053,8 @@
         var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : 0;
 
         var w = Math.max(1, list.length * (GLASS_W + GLASS_GAP) - GLASS_GAP);
-        var h = GLASS_MAX_H + 12;
+        // Reserve badge space before activation so the glass row does not jump.
+        var h = GLASS_MAX_H + 30;
         var dpr = window.devicePixelRatio || 1;
         var wantW = Math.round(w * dpr), wantH = Math.round(h * dpr);
         if (canvas.width !== wantW || canvas.height !== wantH) {
@@ -1037,6 +1066,25 @@
         var ctx = canvas.getContext('2d');
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, w, h);
+
+        if (_masteryStreak >= MASTERY_STREAK_PHRASES) {
+            var badgeText = (w >= 90 ? '\u2605 Mastery ' : '\u2605 ') + _masteryStreak;
+            ctx.font = '600 11px system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            var badgeW = Math.min(w, Math.ceil(ctx.measureText(badgeText).width) + 14);
+            var badgeX = (w - badgeW) / 2;
+            ctx.fillStyle = 'rgba(34, 28, 8, 0.9)';
+            ctx.strokeStyle = 'rgba(232, 192, 64, 0.9)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') ctx.roundRect(badgeX, 1, badgeW, 16, 8);
+            else ctx.rect(badgeX, 1, badgeW, 16);
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = '#f4d35e';
+            ctx.fillText(badgeText, w / 2, 9);
+        }
 
         list.forEach(function (p, i2) {
             var sizeFrac = Math.max(0.3, p.max_difficulty / maxDiff);
@@ -1293,6 +1341,9 @@
 
     if (window.feedBack && typeof window.feedBack.on === 'function') {
         window.feedBack.on('song:ready', onSongEvent);
+        window.feedBack.on('song:pause', resetMasteryStreak);
+        window.feedBack.on('song:stop', resetMasteryStreak);
+        window.feedBack.on('song:ended', resetMasteryStreak);
         // Split Screen emits this after its panel highways are created and
         // again after a canvas/highway replacement.  By then Note Detect is
         // normally loaded; wrapping its public factory lets Ladder observe
@@ -1308,6 +1359,7 @@
                 installSplitScreenDetectorHook();
                 startRafLoops();
             } else {
+                resetMasteryStreak();
                 flushPhraseAttempts();
                 stopSplitScreenHookSubscription();
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
@@ -1326,6 +1378,7 @@
     // returns to the foreground while the player is active.
     document.addEventListener('visibilitychange', function () {
         if (document.visibilityState === 'visible') startRafLoops();
+        else resetMasteryStreak();
     });
 
     // Settings panel writes localStorage directly (see settings.html) and
@@ -1382,6 +1435,8 @@
             _presentedDifficultyLevel, _tierFillFrac,
             calculateAndEmitSectionDifficulties,
             commitPhraseResult, resetPerSongState,
+            updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,
+            MASTERY_STREAK_PHRASES, MASTERY_STREAK_ACCURACY,
             rampStep, WARMUP_PHRASES, RAMP_PHRASES,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick,
