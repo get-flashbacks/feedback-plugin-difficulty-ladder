@@ -1080,8 +1080,9 @@
         var list = phrases.slice(start, start + LOOKAHEAD);
         if (_hudMaxDifficulty == null) {
             _hudMaxDifficulty = 1;
-            for (var i = 0; i < phrases.length; i++)
-                _hudMaxDifficulty = Math.max(_hudMaxDifficulty, phrases[i].max_difficulty);
+            phrases.forEach(function (phrase) {
+                _hudMaxDifficulty = Math.max(_hudMaxDifficulty, phrase.max_difficulty);
+            });
         }
         var maxDiff = _hudMaxDifficulty;
         var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : 0;
