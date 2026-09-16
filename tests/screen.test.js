@@ -371,6 +371,25 @@ test('rampStep() never returns less than 1', () => {
     assert.equal(mod.rampStep({ step: 0 }), 1);
 });
 
+test('down-step ratio scales only the final downward target and preserves the ramp', () => {
+    const mod = freshPlugin();
+    mod.settings.downStepRatio = 1.5;
+    const th = { step: 15 };
+    const up = [0, 1, 2].map(i => mod.rampStep(th, i, 'up'));
+    const down = [0, 1, 2].map(i => mod.rampStep(th, i, 'down'));
+    assert.deepEqual(up, [5, 5, 5]);
+    assert.equal(down.reduce((sum, step) => sum + step, 0), 23);
+    assert.ok(Math.max(...down) - Math.min(...down) <= 1);
+});
+
+test('down-step ratio clamps malformed and out-of-range settings', () => {
+    const mod = freshPlugin();
+    mod.settings.downStepRatio = 99;
+    assert.equal(mod.downStepRatio(), 2);
+    mod.settings.downStepRatio = 'bad';
+    assert.equal(mod.downStepRatio(), 1);
+});
+
 test('commitPhraseResult() does not act before WARMUP_PHRASES phrases have been scored', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
@@ -429,6 +448,16 @@ test('qualifying streaks total the configured step for every sensitivity and dir
                 `sensitivity ${sensitivity}, direction ${sign > 0 ? 'up' : 'down'}`);
         }
     }
+});
+
+test('qualifying downward streak uses the configured asymmetric target', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    mod.settings.downStepRatio = 1.5;
+    const calls = attachHighwayStub(75);
+    for (let i = 0; i < mod.WARMUP_PHRASES + mod.RAMP_PHRASES - 1; i++) mod.commitPhraseResult(0);
+    assert.equal(calls[calls.length - 1], 52);
 });
 
 test('dropResistance loads true only from persisted boolean true', () => {
