@@ -99,6 +99,20 @@
         saveSongMasteryMap(map);
     }
 
+    // Mirrors routes.py's _instrument_kind() for authoritative song_info
+    // metadata. The WebSocket calls the field arrangement_type because its
+    // top-level `type` is the message discriminator.
+    function _instrumentKind(arrType, arrName) {
+        var type = typeof arrType === 'string' ? arrType.trim().toLowerCase() : '';
+        var name = typeof arrName === 'string' ? arrName.trim() : '';
+        if (type === 'drums' || type === 'drum') return 'drums';
+        if (type === 'piano' || type === 'keys'
+            || /^(keys|piano|keyboard|synth)/i.test(name)) return 'keys';
+        if (!type || ['lead', 'rhythm', 'bass', 'combo', 'chord', 'humstrum'].indexOf(type) !== -1)
+            return 'fretted';
+        return 'unsupported';
+    }
+
     // ---- Library card badge (issue #4) ----
     // Surfaces the songMastery map above as a library-card decoration via the
     // Host's registration API (window.feedBack.libraryCardActions) — never a
@@ -165,20 +179,23 @@
     function aggregateMasteryByInstrument(map) {
         var values = { fretted: [], keys: [] };
         var source = map && typeof map === 'object' && !Array.isArray(map) ? map : {};
-        Object.keys(source).forEach(function (key) {
-            var record = source[key];
+        Object.entries(source).forEach(function (entry) {
+            var record = entry[1];
             if (!record || typeof record !== 'object') return;
             var instrument = record.instrument;
-            if (!Object.prototype.hasOwnProperty.call(values, instrument)) return;
+            if (instrument !== 'fretted' && instrument !== 'keys') return;
             var mastery = _masteryPct(record);
             if (mastery === null) return;
-            values[instrument].push(Math.max(0, Math.min(100, mastery)));
+            (instrument === 'keys' ? values.keys : values.fretted)
+                .push(Math.max(0, Math.min(100, mastery)));
         });
         return ['fretted', 'keys'].reduce(function (groups, instrument) {
-            var rows = values[instrument].sort(function (a, b) { return a - b; });
+            var rows = (instrument === 'keys' ? values.keys : values.fretted)
+                .sort(function (a, b) { return a - b; });
             if (!rows.length) return groups;
             var mid = Math.floor(rows.length / 2);
-            var median = rows.length % 2 ? rows[mid] : (rows[mid - 1] + rows[mid]) / 2;
+            var middle = rows.slice(rows.length % 2 ? mid : mid - 1, mid + 1);
+            var median = middle.reduce(function (sum, value) { return sum + value; }, 0) / middle.length;
             groups.push({
                 instrument: instrument,
                 label: instrument === 'keys' ? 'Keys' : 'Fretted',
@@ -197,8 +214,10 @@
         if (!groups.length) return; // Profile's absent-not-empty convention
 
         var bests = document.getElementById('v3-profile-bests');
-        var anchor = bests && bests.parentElement;
-        if (!anchor || typeof anchor.insertAdjacentElement !== 'function') return;
+        // v3-profile-bests is the content node inside the complete core card;
+        // insert after that parent so this becomes a sibling in .space-y-6.
+        var bestsCard = bests && bests.parentElement;
+        if (!bestsCard || typeof bestsCard.insertAdjacentElement !== 'function') return;
 
         var card = document.createElement('section');
         card.id = 'difficulty-ladder-profile-baseline';
@@ -242,7 +261,7 @@
             grid.appendChild(panel);
         });
         card.appendChild(grid);
-        anchor.insertAdjacentElement('afterend', card);
+        bestsCard.insertAdjacentElement('afterend', card);
     }
 
     // Wraps the single global entry point every mastery change already flows
@@ -1330,6 +1349,22 @@
         }
     }
 
+    function rememberGeneratedInstruments(filename, currentArrangement, data) {
+        if (!filename || !data) return;
+        var rows = Array.isArray(data.arrangements) ? data.arrangements : [];
+        // Backward compatibility with the older single-arrangement response.
+        if (!rows.length && data.instrument) {
+            rows = [{ arrangement_index: currentArrangement, instrument: data.instrument }];
+        }
+        rows.forEach(function (row) {
+            if (!row || (row.instrument !== 'fretted' && row.instrument !== 'keys')) return;
+            var index = Number(row.arrangement_index);
+            if (!Number.isInteger(index) || index < 0) return;
+            _rememberSongInstrument(songKeyOf({ filename: filename, arrangement_index: index }), row.instrument);
+            if (index === currentArrangement) _songInstrument = row.instrument;
+        });
+    }
+
     async function onGenerateClick() {
         if (_generating) return; // guard: one in-flight generate at a time
         var status = currentTargetStatus();
@@ -1360,6 +1395,10 @@
                 setGenerateLabel('Generate failed', 2500);
                 return;
             }
+            // /generate is song-wide and returns one authoritative classifier
+            // per arrangement, including already-authored ladders. Persist all
+            // supported rows before any generated/skipped early return.
+            rememberGeneratedInstruments(target.filename, target.arrangement_index, data);
             // /generate processes the full song.  A pack can mix guitar,
             // bass and keys arrangements; routes.py classifies each one and
             // intentionally skips drums.  Do not treat a partial skip as a
@@ -1449,13 +1488,25 @@
         ensureMasterySaveHook();
         var hw = window.highway;
         var si = (hw && typeof hw.getSongInfo === 'function') ? hw.getSongInfo() : null;
-        var key = songKeyOf(si);
+        var currentSong = (window.feedBack && window.feedBack.currentSong) || {};
+        var key = songKeyOf({
+            filename: currentSong.filename || (si && si.filename) || '',
+            arrangement_index: si && si.arrangement_index,
+            arrangement: si && si.arrangement,
+        });
         if (key !== _songKey) {
             flushPhraseAttempts();
             _songKey = key;
             _songInstrument = null;
             resetPerSongState();
             _maybeRestoreSongMastery(key);
+        }
+        if (key && si) {
+            var instrument = _instrumentKind(si.arrangement_type, si.arrangement);
+            if (instrument === 'fretted' || instrument === 'keys') {
+                _songInstrument = instrument;
+                _rememberSongInstrument(key, instrument);
+            }
         }
         mountControls();
         updateGenerateButtonVisibility();
@@ -1569,7 +1620,7 @@
             _normalizeMasteryBounds,
             _dominantSongMastery,
             aggregateMasteryByInstrument, renderProfileBaseline,
-            _masteryPct, _rememberSongInstrument,
+            _masteryPct, _rememberSongInstrument, _instrumentKind,
             loadSongMasteryMap, saveSongMasteryMap,
             loadPhraseAttempts, savePhraseAttempts,
             recordPhraseAttempt, _phraseIdOf,
@@ -1581,7 +1632,7 @@
             MASTERY_STREAK_PHRASES, MASTERY_STREAK_ACCURACY,
             rampStep, WARMUP_PHRASES, RAMP_PHRASES,
             currentTarget, currentTargetStatus,
-            mountControls, onGenerateClick,
+            mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
             tickOneSplitHighway: tickOneSplitHighway,
         };

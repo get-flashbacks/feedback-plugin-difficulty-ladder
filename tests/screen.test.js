@@ -333,6 +333,45 @@ test('_rememberSongInstrument persists classification before the first mastery v
     assert.equal(mod._dominantSongMastery({ filename: 'new.feedpak' }), null);
 });
 
+test('_instrumentKind mirrors the generator classifier for song_info metadata', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._instrumentKind('bass', 'Bass'), 'fretted');
+    assert.equal(mod._instrumentKind('', 'Synth Pad'), 'keys');
+    assert.equal(mod._instrumentKind('piano', 'Grand'), 'keys');
+    assert.equal(mod._instrumentKind('drums', 'Kit'), 'drums');
+    assert.equal(mod._instrumentKind('vocals', 'Lead Vox'), 'unsupported');
+});
+
+test('song ready upgrades numeric mastery with authoritative instrument metadata', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::2': 68 });
+    global.window.feedBack = { currentSong: { filename: 'song.feedpak' } };
+    global.window.highway = {
+        getSongInfo: () => ({ arrangement_index: 2, arrangement_type: 'bass', arrangement: 'Bass' }),
+        hasPhraseData: () => false,
+    };
+    mod.onSongEvent();
+    assert.deepEqual(mod.loadSongMasteryMap()['song.feedpak::2'], {
+        mastery: 68,
+        instrument: 'fretted',
+    });
+});
+
+test('song-wide generation remembers every supported arrangement classifier', () => {
+    const mod = freshPlugin();
+    mod.rememberGeneratedInstruments('mixed.feedpak', 1, {
+        arrangements: [
+            { arrangement_index: 0, instrument: 'fretted' },
+            { arrangement_index: 1, instrument: 'keys' },
+            { arrangement_index: 2, instrument: 'drums' },
+        ],
+    });
+    assert.deepEqual(mod.loadSongMasteryMap(), {
+        'mixed.feedpak::0': { mastery: null, instrument: 'fretted' },
+        'mixed.feedpak::1': { mastery: null, instrument: 'keys' },
+    });
+});
+
 test('aggregateMasteryByInstrument computes averages and medians by authoritative classifier', () => {
     const mod = freshPlugin();
     assert.deepEqual(mod.aggregateMasteryByInstrument({
