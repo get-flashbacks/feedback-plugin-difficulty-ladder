@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   three-phrase ramp shape and leaving upward adjustments unchanged (#24).
 
 ### Fixed
+- Mastery-streak lifecycle subscriptions now detach while the player is hidden,
+  preventing inactive instances from retaining pause/stop/end handlers (#25).
 - The per-section difficulty "glass fill" emitted for feedBack-plugin-sectionmap
   (`difficulty:sections-updated`) now uses the same discrete difficulty-tier
   formula this plugin's own player HUD uses, instead of a different continuous
