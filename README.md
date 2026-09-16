@@ -109,6 +109,9 @@ claim marker prevents another player sharing that profile from reading it.
   harder section (scaled by that section's peak authored difficulty), fill
   level = how much of that section's difficulty range the current
   master-difficulty setting reaches.
+- At the configured maximum mastery, three consecutive phrases at 95%
+  accuracy or better light a gold Mastery streak badge. Pausing or entering
+  or leaving a split-screen session resets it.
 - Purely a visualization; can be toggled independently of auto-adjust.
 
 ## Requirements
@@ -135,6 +138,7 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 | Glass-filling section HUD | Show/hide the in-player glass row. |
 | Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. |
 | Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
+| Difficulty drop speed (1×-2×) | Multiplies only the downward auto-adjust target so difficulty can ease off faster than it climbs. The default 1× preserves symmetric behavior. |
 | Min / Max % | Hard bounds auto-adjust will never cross. |
 | Generate ladder depth cap (2-8) | Maximum difficulty tiers "⚙️ Generate Difficulties" can give a phrase when building a ladder for a song that doesn't have one yet — threaded into `/generate`'s existing `levels` parameter. |
 
@@ -145,6 +149,11 @@ result/title rather than as on-card text — see this repo's `COMPLIANCE.md`-adj
 `screen.js` (`registerLibraryCardBadge`) for why: the card-actions capability's `label`/`icon` are
 static per registration, not computed per song, so a literal "shows N%" on-card text isn't
 expressible through it as it exists today.
+
+**Profile baseline card** — the v3 Profile screen shows the average and median
+remembered difficulty for fretted and keys arrangements. The card is read-only,
+appears only after at least one classified arrangement has a saved mastery, and
+does not change the starting difficulty for new songs.
 
 All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 
@@ -173,14 +182,6 @@ user turns it on.
   windows, added for songs with no authored sections, make this more
   practical than it used to be — those songs previously only had blind
   30s chunks to hang a per-section override on.)
-- Adaptive baseline per instrument, shown on the Profile screen — a card
-  computed from this plugin's own per-song mastery memory, grouped by
-  instrument, using the v3 Profile screen's plugin extension point
-  (`v3:profile-rendered`). Informational only to start — no change to how
-  a brand-new song's starting difficulty is chosen. (A generated ladder's
-  difficulty % is now calibrated against a much fuller technique
-  vocabulary — see Instrument coverage above — so it's a more consistent
-  cross-song signal for this to aggregate than it used to be.)
 - Per-technique player profile driving adaptive difficulty — go beyond a
   passive per-instrument baseline (above) to a persisted, per-technique
   proficiency profile (bends, pinch harmonics, slap/pop, vibrato, etc. —

@@ -5,12 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.0] - 2026-09-10
+## [0.12.0] - 2026-09-16
 
 ### Changed
 - Promoted the player-context persistence foundation to a minor feature release.
 - Normalized legacy fretted records to guitar and documented the
   `difficulty_ladder.sections.v2` Section Map payload contract.
+- Merged the player-context persistence foundation with the mastery streak
+  indicator and instrument baseline profile card work landed on `main`
+  (0.11.0), consolidating onto `0.12.0`.
 
 ## [0.9.13] - 2026-09-10
 
@@ -35,7 +38,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added a read-only v3 Profile card showing average and median remembered
+  difficulty for fretted and keys arrangements (#23).
+- Added a passive gold Mastery streak badge to the glass HUD after three
+  consecutive phrases at the configured maximum mastery and at least 95%
+  accuracy. Pausing, transitioning through Split Screen, or missing the
+  threshold resets the streak (#25).
+- Added an opt-in Difficulty drop speed setting (1×-2×). It scales only the
+  total downward auto-adjust step while retaining the existing symmetric
+  three-phrase ramp shape and leaving upward adjustments unchanged (#24).
+
 ### Fixed
+- Mastery-streak lifecycle subscriptions now detach while the player is hidden,
+  preventing inactive instances from retaining pause/stop/end handlers (#25).
 - The per-section difficulty "glass fill" emitted for feedBack-plugin-sectionmap
   (`difficulty:sections-updated`) now uses the same discrete difficulty-tier
   formula this plugin's own player HUD uses, instead of a different continuous

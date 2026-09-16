@@ -1162,6 +1162,123 @@ test('_rememberSongInstrument persists classification before the first mastery v
     assert.equal(mod._dominantSongMastery({ filename: 'new.feedpak' }), null);
 });
 
+test('_instrumentKind mirrors the generator classifier for song_info metadata', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._instrumentKind('bass', 'Bass'), 'fretted');
+    assert.equal(mod._instrumentKind('', 'Synth Pad'), 'keys');
+    assert.equal(mod._instrumentKind('piano', 'Grand'), 'keys');
+    assert.equal(mod._instrumentKind('drums', 'Kit'), 'drums');
+    assert.equal(mod._instrumentKind('vocals', 'Lead Vox'), 'unsupported');
+});
+
+test('song ready upgrades numeric mastery with authoritative instrument metadata', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::2': 68 });
+    global.window.feedBack = { currentSong: { filename: 'song.feedpak' } };
+    global.window.highway = {
+        getSongInfo: () => ({ arrangement_index: 2, arrangement_type: 'bass', arrangement: 'Bass' }),
+        hasPhraseData: () => false,
+    };
+    mod.onSongEvent();
+    assert.deepEqual(mod.loadSongMasteryMap()['song.feedpak::2'], {
+        mastery: 68,
+        instrument: 'fretted',
+    });
+});
+
+test('song-wide generation remembers every supported arrangement classifier', () => {
+    const mod = freshPlugin();
+    mod.rememberGeneratedInstruments('mixed.feedpak', 1, {
+        arrangements: [
+            { arrangement_index: 0, instrument: 'fretted' },
+            { arrangement_index: 1, instrument: 'keys' },
+            { arrangement_index: 2, instrument: 'drums' },
+        ],
+    });
+    assert.deepEqual(mod.loadSongMasteryMap(), {
+        'mixed.feedpak::0': { mastery: null, instrument: 'fretted' },
+        'mixed.feedpak::1': { mastery: null, instrument: 'keys' },
+    });
+});
+
+test('aggregateMasteryByInstrument computes averages and medians by authoritative classifier', () => {
+    const mod = freshPlugin();
+    assert.deepEqual(mod.aggregateMasteryByInstrument({
+        'a.feedpak::0': { mastery: 40, instrument: 'fretted' },
+        'b.feedpak::0': { mastery: 80, instrument: 'fretted' },
+        'c.feedpak::0': { mastery: 75, instrument: 'keys' },
+    }), [
+        { instrument: 'fretted', label: 'Fretted', count: 2, average: 60, median: 60 },
+        { instrument: 'keys', label: 'Keys', count: 1, average: 75, median: 75 },
+    ]);
+});
+
+test('aggregateMasteryByInstrument excludes null, legacy, and unsupported records', () => {
+    const mod = freshPlugin();
+    assert.deepEqual(mod.aggregateMasteryByInstrument({
+        'pending.feedpak::0': { mastery: null, instrument: 'keys' },
+        'legacy.feedpak::0': 70,
+        'drums.feedpak::0': { mastery: 90, instrument: 'drums' },
+        'keys.feedpak::0': { mastery: 120, instrument: 'keys' },
+    }), [
+        { instrument: 'keys', label: 'Keys', count: 1, average: 100, median: 100 },
+    ]);
+});
+
+test('aggregateMasteryByInstrument returns no groups for malformed or empty maps', () => {
+    const mod = freshPlugin();
+    assert.deepEqual(mod.aggregateMasteryByInstrument(null), []);
+    assert.deepEqual(mod.aggregateMasteryByInstrument([]), []);
+    assert.deepEqual(mod.aggregateMasteryByInstrument({}), []);
+});
+
+test('renderProfileBaseline injects a read-only card after the core best-scores card', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({
+        'lead.feedpak::0': { mastery: 64, instrument: 'fretted' },
+        'keys.feedpak::0': { mastery: 82, instrument: 'keys' },
+    });
+    let inserted = null;
+    const anchor = { insertAdjacentElement: (where, node) => { assert.equal(where, 'afterend'); inserted = node; } };
+    function element(tag) {
+        return {
+            tag, children: [], style: {},
+            appendChild(child) { this.children.push(child); },
+            remove() {},
+        };
+    }
+    global.document = {
+        getElementById(id) {
+            if (id === 'v3-profile-bests') return { parentElement: anchor };
+            return null;
+        },
+        createElement: element,
+    };
+
+    mod.renderProfileBaseline();
+    assert.equal(inserted.id, 'difficulty-ladder-profile-baseline');
+    assert.equal(inserted.children[0].textContent, 'Adaptive difficulty baseline');
+    assert.equal(inserted.children[2].children.length, 2);
+    assert.equal(inserted.children[2].children[0].children[0].children[1].textContent, '64%');
+    assert.equal(inserted.children[2].children[1].children[0].children[1].textContent, '82%');
+});
+
+test('renderProfileBaseline stays absent when no classified mastery exists', () => {
+    const mod = freshPlugin();
+    let inserted = null;
+    const anchor = { insertAdjacentElement: (_where, node) => { inserted = node; } };
+    global.document = {
+        getElementById(id) {
+            if (id === 'v3-profile-bests') return { parentElement: anchor };
+            return null;
+        },
+    };
+
+    mod.renderProfileBaseline();
+
+    assert.equal(inserted, null);
+});
+
 // ── Auto-adjust warm-up window + ramped stepping ────────────────────────────
 // (Rocksmith-comparison audit follow-up: a fresh song no longer acts before
 // WARMUP_PHRASES phrases are scored, and a qualifying streak now ramps
@@ -1200,6 +1317,25 @@ test('rampStep() never returns less than 1', () => {
     assert.equal(mod.rampStep({ step: 0 }), 1);
 });
 
+test('down-step ratio scales only the final downward target and preserves the ramp', () => {
+    const mod = freshPlugin();
+    mod.settings.downStepRatio = 1.5;
+    const th = { step: 15 };
+    const up = [0, 1, 2].map(i => mod.rampStep(th, i, 'up'));
+    const down = [0, 1, 2].map(i => mod.rampStep(th, i, 'down'));
+    assert.deepEqual(up, [5, 5, 5]);
+    assert.equal(down.reduce((sum, step) => sum + step, 0), 23);
+    assert.ok(Math.max(...down) - Math.min(...down) <= 1);
+});
+
+test('down-step ratio clamps malformed and out-of-range settings', () => {
+    const mod = freshPlugin();
+    mod.settings.downStepRatio = 99;
+    assert.equal(mod.downStepRatio(), 2);
+    mod.settings.downStepRatio = 'bad';
+    assert.equal(mod.downStepRatio(), 1);
+});
+
 test('commitPhraseResult() does not act before WARMUP_PHRASES phrases have been scored', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
@@ -1221,6 +1357,56 @@ test('warm-up phrases scored while autoAdjust is off still count toward WARMUP_P
     mod.settings.autoAdjust = true;
     mod.commitPhraseResult(1.0);
     assert.equal(calls.length, 1, 'warm-up was already satisfied while paused');
+});
+
+test('mastery streak activates after three accurate phrases at configured max', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = false;
+    mod.settings.maxMastery = 80;
+    attachHighwayStub(80);
+    for (let i = 1; i <= mod.MASTERY_STREAK_PHRASES; i++) {
+        mod.commitPhraseResult(mod.MASTERY_STREAK_ACCURACY);
+        assert.deepEqual(mod.masteryStreakStatus(), {
+            count: i,
+            active: i >= mod.MASTERY_STREAK_PHRASES,
+        });
+    }
+});
+
+test('mastery streak resets below the accuracy floor or configured max', () => {
+    const mod = freshPlugin();
+    mod.settings.maxMastery = 100;
+    assert.equal(mod.updateMasteryStreak(1, 100), 1);
+    assert.equal(mod.updateMasteryStreak(mod.MASTERY_STREAK_ACCURACY - 0.01, 100), 0);
+    assert.equal(mod.updateMasteryStreak(1, 99), 0);
+});
+
+test('mastery streak reset helper models a pause without changing scoring state', () => {
+    const mod = freshPlugin();
+    mod.updateMasteryStreak(1, 100);
+    mod.updateMasteryStreak(1, 100);
+    mod.resetMasteryStreak();
+    assert.deepEqual(mod.masteryStreakStatus(), { count: 0, active: false });
+});
+
+test('mastery lifecycle subscriptions reset while active and detach while hidden', () => {
+    const mod = freshPlugin();
+    const handlers = new Map();
+    global.window.feedBack = {
+        on(eventName, handler) {
+            handlers.set(eventName, handler);
+            return () => handlers.delete(eventName);
+        },
+    };
+    mod.startMasteryLifecycleSubscriptions();
+    assert.deepEqual([...handlers.keys()], ['song:pause', 'song:stop', 'song:ended']);
+
+    mod.updateMasteryStreak(1, 100);
+    handlers.get('song:pause')();
+    assert.deepEqual(mod.masteryStreakStatus(), { count: 0, active: false });
+
+    mod.stopMasteryLifecycleSubscriptions();
+    assert.equal(handlers.size, 0);
 });
 
 test('Split Screen scoring state is isolated and changes only its own panel highway', () => {
@@ -1258,6 +1444,32 @@ test('qualifying streaks total the configured step for every sensitivity and dir
                 `sensitivity ${sensitivity}, direction ${sign > 0 ? 'up' : 'down'}`);
         }
     }
+});
+
+test('qualifying downward streak uses the configured asymmetric target', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    mod.settings.downStepRatio = 1.5;
+    const calls = attachHighwayStub(75);
+    for (let i = 0; i < mod.WARMUP_PHRASES + mod.RAMP_PHRASES - 1; i++) mod.commitPhraseResult(0);
+    assert.equal(calls[calls.length - 1], 52);
+});
+
+test('Split Screen downward streak uses the configured asymmetric target', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    mod.settings.downStepRatio = 1.5;
+    const state = mod.newSplitScoreState();
+    let mastery = 0.75;
+    const highway = {
+        getMastery: () => mastery,
+        setMastery: value => { mastery = value; },
+    };
+    for (let i = 0; i < mod.WARMUP_PHRASES + mod.RAMP_PHRASES - 1; i++)
+        mod.commitSplitPhraseResult(state, highway, 0);
+    assert.equal(mastery, 0.52);
 });
 
 test('dropResistance loads true only from persisted boolean true', () => {

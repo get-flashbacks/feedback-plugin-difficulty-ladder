@@ -334,6 +334,20 @@
         saveSongMasteryMap(map);
     }
 
+    // Mirrors routes.py's _instrument_kind() for authoritative song_info
+    // metadata. The WebSocket calls the field arrangement_type because its
+    // top-level `type` is the message discriminator.
+    function _instrumentKind(arrType, arrName) {
+        var type = typeof arrType === 'string' ? arrType.trim().toLowerCase() : '';
+        var name = typeof arrName === 'string' ? arrName.trim() : '';
+        if (type === 'drums' || type === 'drum') return 'drums';
+        if (type === 'piano' || type === 'keys'
+            || /^(keys|piano|keyboard|synth)/i.test(name)) return 'keys';
+        if (!type || ['lead', 'rhythm', 'bass', 'combo', 'chord', 'humstrum'].indexOf(type) !== -1)
+            return 'fretted';
+        return 'unsupported';
+    }
+
     // ---- Library card badge (issue #4) ----
     // Surfaces the songMastery map above as a library-card decoration via the
     // Host's registration API (window.feedBack.libraryCardActions) — never a
@@ -422,6 +436,98 @@
         });
     }
 
+    // ---- Profile instrument baseline (issue #23) ----
+    // The persisted classifier intentionally uses the generator's vocabulary
+    // (`fretted` / `keys`). Keep the Profile aggregation on that authoritative
+    // value rather than guessing guitar vs bass from filenames.
+    function aggregateMasteryByInstrument(map) {
+        var values = { fretted: [], keys: [] };
+        var source = map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+        Object.entries(source).forEach(function (entry) {
+            var record = entry[1];
+            if (!record || typeof record !== 'object') return;
+            var instrument = record.instrument;
+            if (instrument !== 'fretted' && instrument !== 'keys') return;
+            var mastery = _masteryPct(record);
+            if (mastery === null) return;
+            (instrument === 'keys' ? values.keys : values.fretted)
+                .push(Math.max(0, Math.min(100, mastery)));
+        });
+        return ['fretted', 'keys'].reduce(function (groups, instrument) {
+            var rows = (instrument === 'keys' ? values.keys : values.fretted)
+                .sort(function (a, b) { return a - b; });
+            if (!rows.length) return groups;
+            var mid = Math.floor(rows.length / 2);
+            var middle = rows.slice(rows.length % 2 ? mid : mid - 1, mid + 1);
+            var median = middle.reduce(function (sum, value) { return sum + value; }, 0) / middle.length;
+            groups.push({
+                instrument: instrument,
+                label: instrument === 'keys' ? 'Keys' : 'Fretted',
+                count: rows.length,
+                average: rows.reduce(function (sum, value) { return sum + value; }, 0) / rows.length,
+                median: median,
+            });
+            return groups;
+        }, []);
+    }
+
+    function renderProfileBaseline() {
+        var groups = aggregateMasteryByInstrument(loadSongMasteryMap());
+        var previous = document.getElementById('difficulty-ladder-profile-baseline');
+        if (previous) previous.remove();
+        if (!groups.length) return; // Profile's absent-not-empty convention
+
+        var bests = document.getElementById('v3-profile-bests');
+        // v3-profile-bests is the content node inside the complete core card;
+        // insert after that parent so this becomes a sibling in .space-y-6.
+        var bestsCard = bests && bests.parentElement;
+        if (!bestsCard || typeof bestsCard.insertAdjacentElement !== 'function') return;
+
+        var card = document.createElement('section');
+        card.id = 'difficulty-ladder-profile-baseline';
+        card.className = 'bg-fb-card/80 backdrop-blur rounded-xl p-6 border border-fb-border/50';
+        var heading = document.createElement('h3');
+        heading.className = 'text-lg font-bold text-fb-text mb-1';
+        heading.textContent = 'Adaptive difficulty baseline';
+        card.appendChild(heading);
+        var intro = document.createElement('p');
+        intro.className = 'text-sm text-fb-textDim mb-4';
+        intro.textContent = 'Your remembered difficulty across played arrangements. Informational only.';
+        card.appendChild(intro);
+        var grid = document.createElement('div');
+        grid.className = 'grid grid-cols-1 sm:grid-cols-2 gap-3';
+        groups.forEach(function (group) {
+            var panel = document.createElement('div');
+            panel.className = 'rounded-lg border border-fb-border/50 bg-fb-bg/30 p-4';
+            var title = document.createElement('div');
+            title.className = 'flex items-baseline justify-between gap-3';
+            var label = document.createElement('span');
+            label.className = 'font-semibold text-fb-text';
+            label.textContent = group.label;
+            var average = document.createElement('span');
+            average.className = 'text-xl font-bold text-fb-primary';
+            average.textContent = Math.round(group.average) + '%';
+            title.appendChild(label);
+            title.appendChild(average);
+            panel.appendChild(title);
+            var track = document.createElement('div');
+            track.className = 'mt-3 h-2 rounded-full bg-fb-bg overflow-hidden';
+            var fill = document.createElement('div');
+            fill.className = 'h-full rounded-full bg-fb-primary';
+            fill.style.width = Math.round(group.average) + '%';
+            track.appendChild(fill);
+            panel.appendChild(track);
+            var detail = document.createElement('p');
+            detail.className = 'mt-2 text-xs text-fb-textDim';
+            detail.textContent = group.count + (group.count === 1 ? ' arrangement' : ' arrangements')
+                + ' · median ' + Math.round(group.median) + '%';
+            panel.appendChild(detail);
+            grid.appendChild(panel);
+        });
+        card.appendChild(grid);
+        bestsCard.insertAdjacentElement('afterend', card);
+    }
+
     // Wraps the single global entry point every mastery change already flows
     // through — the manual player slider's oninput, the Gameplay-tab speed
     // slider, and this plugin's own auto-adjust all call window.setMastery()
@@ -497,6 +603,7 @@
         dropResistance: lsGet('dropResistance', false) === true,
         showGlasses: lsGet('showGlasses', true),
         sensitivity: lsGet('sensitivity', 2),     // 1 (lenient) .. 3 (strict) — confidence thresholds + step size
+        downStepRatio: lsGet('downStepRatio', 1), // 1..2 — downward target multiplier; upward target is unchanged
         reactionSpeed: lsGet('reactionSpeed', 2), // 1 (slow) .. 3 (fast) — EMA_ALPHA, how much one phrase's result moves the rolling average
         minMastery: lsGet('minMastery', 0),     // percent
         maxMastery: lsGet('maxMastery', 100),   // percent
@@ -553,6 +660,8 @@
     const WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
     const RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
     const DOWN_CONFIRM_PHRASES = 2;
+    const MASTERY_STREAK_PHRASES = 3;
+    const MASTERY_STREAK_ACCURACY = 0.95;
 
     // ---- Player-context compatibility and registry ----------------------
     var _playerContexts = new Map();
@@ -825,17 +934,30 @@
     let _rampDirection = null;
     let _rampProgress = 0;
     let _downStreak = 0;
+    let _masteryStreak = 0;     // consecutive high-accuracy phrases at configured max mastery
     // Forward-advancing cursors into the time-sorted notes/chords arrays —
     // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
     // performance doctrine). Reset only on a backward seek (loop/rewind).
     let _noteCursor = 0;
     let _chordCursor = 0;
     let _lastScoredT = -1;
+    let _hudMaxDifficulty = null;
+    let _hudBadgeMeasureKey = null;
+    let _hudBadgeWidth = 0;
 
-    function rampStep(th, progress) {
+    function downStepRatio() {
+        var ratio = Number(settings.downStepRatio);
+        return isFinite(ratio) ? Math.max(1, Math.min(2, ratio)) : 1;
+    }
+
+    function rampStep(th, progress, direction) {
         const index = Math.max(0, Math.min(RAMP_PHRASES - 1, Number(progress) || 0));
-        const before = Math.round(th.step * index / RAMP_PHRASES);
-        const after = Math.round(th.step * (index + 1) / RAMP_PHRASES);
+        // Keep the ramp curve symmetric; only its final target differs by
+        // direction. Rounding the target once guarantees the three increments
+        // still total an integer mastery percentage.
+        const target = Math.round(th.step * (direction === 'down' ? downStepRatio() : 1));
+        const before = Math.round(target * index / RAMP_PHRASES);
+        const after = Math.round(target * (index + 1) / RAMP_PHRASES);
         return Math.max(1, after - before);
     }
 
@@ -858,9 +980,13 @@
         _rampDirection = null;
         _rampProgress = 0;
         _downStreak = 0;
+        _masteryStreak = 0;
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
+        _hudMaxDifficulty = null;
+        _hudBadgeMeasureKey = null;
+        _hudBadgeWidth = 0;
         _hudPhraseIdx = -1;
     }
     resetPerSongState();
@@ -1225,6 +1351,9 @@
         // autoAdjust — a warm-up satisfied while paused should still count
         // once the user flips auto-adjust back on, rather than resetting.
         _phrasesScored++;
+        hw = window.highway;
+        updateMasteryStreak(ratio, hw && typeof hw.getMastery === 'function'
+            ? Math.round(hw.getMastery() * 100) : null);
         if (!settings.autoAdjust) {
             _rampDirection = null;
             _rampProgress = 0;
@@ -1281,7 +1410,7 @@
             _rampDirection = direction;
             _rampProgress = 0;
         }
-        var step = rampStep(th, _rampProgress);
+        var step = rampStep(th, _rampProgress, direction);
         var next = direction === 'up' ? curPct + step : curPct - step;
         next = Math.max(settings.minMastery, Math.min(settings.maxMastery, next));
 
@@ -1298,6 +1427,27 @@
             };
         }
         contributeDiagnostics();
+    }
+
+    function updateMasteryStreak(ratio, masteryPct) {
+        var maxPct = Number(settings.maxMastery);
+        if (!isFinite(maxPct)) maxPct = 100;
+        maxPct = Math.max(0, Math.min(100, maxPct));
+        if (typeof masteryPct === 'number' && isFinite(masteryPct)
+            && masteryPct >= maxPct && ratio >= MASTERY_STREAK_ACCURACY) {
+            _masteryStreak++;
+        } else {
+            _masteryStreak = 0;
+        }
+        return _masteryStreak;
+    }
+
+    function resetMasteryStreak() {
+        _masteryStreak = 0;
+    }
+
+    function masteryStreakStatus() {
+        return { count: _masteryStreak, active: _masteryStreak >= MASTERY_STREAK_PHRASES };
     }
 
     function contributeDiagnostics() {
@@ -1454,6 +1604,7 @@
     var _scoreRafHandle = null;
     function tickScoring() {
         if (!isPlayerActive()) {
+            resetMasteryStreak();
             _scoreRafHandle = null;
             return;
         }
@@ -1567,6 +1718,7 @@
     var _playerContextUnsubscribers = [];
     var _untaggedSplitKeys = new WeakMap();
     var _untaggedSplitSequence = 0;
+    var _masteryLifecycleUnsubscribes = [];
 
     function _splitRegistrationKey(hw, context) {
         var scoped = playerContextKey(context);
@@ -1676,7 +1828,13 @@
     function startSplitScreenHookSubscription() {
         var fb = window.feedBack;
         if (_splitPanelsUnsubscribe || !fb || typeof fb.on !== 'function') return;
-        var handler = installSplitScreenDetectorHook;
+        var handler = function () {
+            // The single-player HUD is hidden throughout Split Screen. Clear
+            // its streak at either panel transition so it cannot resume with
+            // a count that predates an unrelated multiplayer session.
+            resetMasteryStreak();
+            installSplitScreenDetectorHook();
+        };
         var unsubscribe = fb.on('splitscreen:panels-changed', handler);
         _splitPanelsUnsubscribe = typeof unsubscribe === 'function'
             ? unsubscribe
@@ -1707,6 +1865,23 @@
 
     function stopPlayerContextSubscriptions() {
         _playerContextUnsubscribers.splice(0).forEach(function (unsubscribe) { unsubscribe(); });
+    }
+
+    function startMasteryLifecycleSubscriptions() {
+        var fb = window.feedBack;
+        if (_masteryLifecycleUnsubscribes.length || !fb || typeof fb.on !== 'function') return;
+        ['song:pause', 'song:stop', 'song:ended'].forEach(function (eventName) {
+            var unsubscribe = fb.on(eventName, resetMasteryStreak);
+            _masteryLifecycleUnsubscribes.push(typeof unsubscribe === 'function'
+                ? unsubscribe
+                : (typeof fb.off === 'function'
+                    ? function () { fb.off(eventName, resetMasteryStreak); }
+                    : function () {}));
+        });
+    }
+
+    function stopMasteryLifecycleSubscriptions() {
+        _masteryLifecycleUnsubscribes.splice(0).forEach(function (unsubscribe) { unsubscribe(); });
     }
 
     function commitSplitPhraseResult(state, hw, ratio) {
@@ -1745,7 +1920,7 @@
             state.rampDirection = direction;
             state.rampProgress = 0;
         }
-        var step = rampStep(th, state.rampProgress);
+        var step = rampStep(th, state.rampProgress, direction);
         var next = Math.max(settings.minMastery, Math.min(settings.maxMastery,
             direction === 'up' ? curPct + step : curPct - step));
         if (next !== curPct && typeof hw.setMastery === 'function') {
@@ -1909,12 +2084,18 @@
 
         var start = Math.max(0, curIdx - 1);
         var list = phrases.slice(start, start + LOOKAHEAD);
-        var maxDiff = 1;
-        for (var i = 0; i < phrases.length; i++) maxDiff = Math.max(maxDiff, phrases[i].max_difficulty);
+        if (_hudMaxDifficulty == null) {
+            _hudMaxDifficulty = 1;
+            phrases.forEach(function (phrase) {
+                _hudMaxDifficulty = Math.max(_hudMaxDifficulty, phrase.max_difficulty);
+            });
+        }
+        var maxDiff = _hudMaxDifficulty;
         var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : 0;
 
         var w = Math.max(1, list.length * (GLASS_W + GLASS_GAP) - GLASS_GAP);
-        var h = GLASS_MAX_H + 12;
+        // Reserve badge space before activation so the glass row does not jump.
+        var h = GLASS_MAX_H + 30;
         var dpr = window.devicePixelRatio || 1;
         var wantW = Math.round(w * dpr), wantH = Math.round(h * dpr);
         if (canvas.width !== wantW || canvas.height !== wantH) {
@@ -1926,6 +2107,30 @@
         var ctx = canvas.getContext('2d');
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, w, h);
+
+        if (_masteryStreak >= MASTERY_STREAK_PHRASES) {
+            var badgeText = (w >= 90 ? '\u2605 Mastery ' : '\u2605 ') + _masteryStreak;
+            ctx.font = '600 11px system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            var measureKey = badgeText + '|' + w;
+            if (_hudBadgeMeasureKey !== measureKey) {
+                _hudBadgeMeasureKey = measureKey;
+                _hudBadgeWidth = Math.min(w, Math.ceil(ctx.measureText(badgeText).width) + 14);
+            }
+            var badgeW = _hudBadgeWidth;
+            var badgeX = (w - badgeW) / 2;
+            ctx.fillStyle = 'rgba(34, 28, 8, 0.9)';
+            ctx.strokeStyle = 'rgba(232, 192, 64, 0.9)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') ctx.roundRect(badgeX, 1, badgeW, 16, 8);
+            else ctx.rect(badgeX, 1, badgeW, 16);
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = '#f4d35e';
+            ctx.fillText(badgeText, w / 2, 9);
+        }
 
         list.forEach(function (p, i2) {
             var sizeFrac = Math.max(0.3, p.max_difficulty / maxDiff);
@@ -2034,6 +2239,22 @@
         }
     }
 
+    function rememberGeneratedInstruments(filename, currentArrangement, data) {
+        if (!filename || !data) return;
+        var rows = Array.isArray(data.arrangements) ? data.arrangements : [];
+        // Backward compatibility with the older single-arrangement response.
+        if (!rows.length && data.instrument) {
+            rows = [{ arrangement_index: currentArrangement, instrument: data.instrument }];
+        }
+        rows.forEach(function (row) {
+            if (!row || (row.instrument !== 'fretted' && row.instrument !== 'keys')) return;
+            var index = Number(row.arrangement_index);
+            if (!Number.isInteger(index) || index < 0) return;
+            _rememberSongInstrument(songKeyOf({ filename: filename, arrangement_index: index }), row.instrument);
+            if (index === currentArrangement) _songInstrument = row.instrument;
+        });
+    }
+
     async function onGenerateClick() {
         if (_generating) return; // guard: one in-flight generate at a time
         var status = currentTargetStatus();
@@ -2064,6 +2285,10 @@
                 setGenerateLabel('Generate failed', 2500);
                 return;
             }
+            // /generate is song-wide and returns one authoritative classifier
+            // per arrangement, including already-authored ladders. Persist all
+            // supported rows before any generated/skipped early return.
+            rememberGeneratedInstruments(target.filename, target.arrangement_index, data);
             // /generate processes the full song.  A pack can mix guitar,
             // bass and keys arrangements; routes.py classifies each one and
             // intentionally skips drums.  Do not treat a partial skip as a
@@ -2145,6 +2370,7 @@
 
     // ---- Lifecycle ----
     function startRafLoops() {
+        startMasteryLifecycleSubscriptions();
         if (!_scoreRafHandle) tickScoring();
         if (!_hudRafHandle) drawHud();
     }
@@ -2168,6 +2394,13 @@
         // v3Profile/playerContexts exists. Writes remain gated until it wins
         // the resolution token and supplies a concrete profile identity.
         activateCompatibilityPlayerContext(si);
+        if (key && si) {
+            var instrument = _instrumentKind(si.arrangement_type, si.arrangement);
+            if (instrument === 'fretted' || instrument === 'keys') {
+                _songInstrument = instrument;
+                _rememberSongInstrument(key, instrument);
+            }
+        }
         mountControls();
         updateGenerateButtonVisibility();
         startRafLoops();
@@ -2221,7 +2454,9 @@
                 installSplitScreenDetectorHook();
                 startRafLoops();
             } else {
+                resetMasteryStreak();
                 flushPhraseAttempts();
+                stopMasteryLifecycleSubscriptions();
                 stopSplitScreenHookSubscription();
                 stopPlayerContextSubscriptions();
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
@@ -2240,7 +2475,12 @@
     // returns to the foreground while the player is active.
     document.addEventListener('visibilitychange', function () {
         if (document.visibilityState === 'visible') startRafLoops();
+        else resetMasteryStreak();
     });
+    // Core rebuilds the Profile shell with innerHTML on every entry, so this
+    // event is the stable extension seam and must remain subscribed while the
+    // player itself is hidden.
+    document.addEventListener('v3:profile-rendered', renderProfileBaseline);
 
     // Settings panel writes localStorage directly (see settings.html) and
     // notifies us to re-read rather than us polling localStorage per frame.
@@ -2248,6 +2488,13 @@
         if (!e.key || e.key.indexOf(LS_PREFIX) !== 0) return;
         if (e.key === PROGRESS_LS_KEY) _progressStoreCache = null;
         if (e.key === PHRASE_ATTEMPTS_V2_LS_KEY) {
+            // A foreign tab just wrote this key. If we have our own pending
+            // (debounced) mutation sitting only in _phraseAttemptStoreCache,
+            // discarding the cache here would silently drop it — nothing else
+            // holds a reference to those unflushed attempts. Flush our own
+            // pending write first so it isn't lost, then drop the cache so the
+            // next read picks up the merged-by-last-write-wins reality.
+            if (_phraseAttemptsDirty) flushPhraseAttempts();
             _phraseAttemptStoreCache = null;
             _phraseAttemptsDirty = false;
         }
@@ -2297,11 +2544,12 @@
     // behavior is unchanged.
     if (typeof module !== 'undefined' && module.exports) {
         module.exports = {
-            thresholds, emaAlpha, songKeyOf,
+            thresholds, emaAlpha, downStepRatio, songKeyOf,
             judgmentKey, settings,
             _normalizeMasteryBounds,
             _dominantSongMastery,
-            _masteryPct, _rememberSongInstrument,
+            aggregateMasteryByInstrument, renderProfileBaseline,
+            _masteryPct, _rememberSongInstrument, _instrumentKind,
             loadSongMasteryMap, saveSongMasteryMap,
             normalizePlayerContext, playerContextKey, persistenceContextKey,
             loadProgressStore, saveProgressStore, readProgress, writeProgress,
@@ -2313,9 +2561,12 @@
             _presentedDifficultyLevel, _tierFillFrac,
             calculateAndEmitSectionDifficulties,
             commitPhraseResult, resetPerSongState,
+            updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,
+            startMasteryLifecycleSubscriptions, stopMasteryLifecycleSubscriptions,
+            MASTERY_STREAK_PHRASES, MASTERY_STREAK_ACCURACY,
             rampStep, WARMUP_PHRASES, RAMP_PHRASES,
             currentTarget, currentTargetStatus,
-            mountControls, onGenerateClick,
+            mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
             registerSplitHighway, tickOneSplitHighway: tickOneSplitHighway,
             _splitScoreStateForHighway,

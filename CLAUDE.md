@@ -34,6 +34,15 @@ not backend logic.
 - **Folder name must equal `plugin.json`'s `id` exactly** (case-sensitive)
   — a mismatch is a silent skip at plugin discovery.
 
+## Plugin dependencies
+
+`screen.js` reaches directly into two other plugins' globals — `window.createNoteDetector` and `window.feedBackSplitscreen`/`window.slopsmithSplitscreen` — despite the event-bus best practice stated above; this is a real, pre-existing exception, not a hypothetical one, worth being explicit about since there's no manifest-level version enforcement for either:
+
+- **`feedback-plugin-notedetect`** (`window.createNoteDetector`) — verified present as of notedetect **v1.32.0**. Wrapped to register per-panel highways and inspect their state for adaptive difficulty.
+- **`feedback-plugin-splitscreen`** (`window.feedBackSplitscreen`, preferred, falling back to the legacy `window.slopsmithSplitscreen` — same `||` pattern used everywhere else in this codebase for the slopsmith→feedBack rename) — verified present as of splitscreen **v1.14.5**. Globals are used to detect and gate whether splitscreen is active before registering per-panel highways; difficulty-ladder maintains the per-panel score state itself, keyed by each highway.
+
+Both are feature-detected and optional — difficulty-ladder works standalone without either installed. See [feedback-plugin-splitscreen#47](https://github.com/get-flashbacks/feedback-plugin-splitscreen/issues/47) for why a `typeof` check alone doesn't catch a downstream contract change (that issue documents two other plugins' integrations going silently dead this way).
+
 ## Versioning
 
 Bump `version` in `plugin.json` whenever a change is user-visible — new
