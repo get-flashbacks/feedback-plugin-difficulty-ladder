@@ -61,6 +61,17 @@
     </div>
 
     <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
+        <div class="flex items-center justify-between mb-2">
+            <h3 id="dd-down-step-ratio-heading" class="text-sm font-medium text-gray-200">Difficulty drop speed</h3>
+            <span id="dd-down-step-ratio-label" class="text-[11px] text-gray-500 font-mono">1×</span>
+        </div>
+        <input type="range" id="dd-down-step-ratio" min="1" max="2" step="0.25" value="1"
+               class="w-full accent-accent" aria-labelledby="dd-down-step-ratio-heading"
+               oninput="window._ddSet('downStepRatio', parseFloat(this.value))">
+        <p class="text-[11px] text-gray-500 mt-2">How much faster Adaptive mode lowers difficulty than it raises it. 1× keeps both directions equal; up to 2× helps a suddenly frustrating section ease off faster. The normal ramp and drop resistance still apply.</p>
+    </div>
+
+    <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
         <h3 class="text-sm font-medium text-gray-200 mb-2">Difficulty bounds</h3>
         <div class="flex items-center gap-3">
             <div class="flex-1">
@@ -168,6 +179,10 @@
                 var rlbl = document.getElementById('dd-reaction-speed-label');
                 if (rlbl) rlbl.textContent = String(val);
             }
+            if (key === 'downStepRatio') {
+                var dlbl = document.getElementById('dd-down-step-ratio-label');
+                if (dlbl) dlbl.textContent = Number(val).toFixed(Number(val) % 1 ? 2 : 0).replace(/0+$/, '').replace(/\.$/, '') + '×';
+            }
             if (key === 'generateLevels') {
                 var glbl = document.getElementById('dd-generate-levels-label');
                 if (glbl) glbl.textContent = String(val);
@@ -200,6 +215,13 @@
             if (rspeedEl) rspeedEl.value = String(rspeed);
             var rspeedLbl = document.getElementById('dd-reaction-speed-label');
             if (rspeedLbl) rspeedLbl.textContent = String(rspeed);
+
+            var downRatioRaw = Number(lsGet('downStepRatio', 1));
+            var downRatio = isFinite(downRatioRaw) ? Math.max(1, Math.min(2, downRatioRaw)) : 1;
+            var downRatioEl = document.getElementById('dd-down-step-ratio');
+            if (downRatioEl) downRatioEl.value = String(downRatio);
+            var downRatioLbl = document.getElementById('dd-down-step-ratio-label');
+            if (downRatioLbl) downRatioLbl.textContent = String(downRatio).replace(/\.0+$/, '') + '×';
 
             // Self-heal a persisted inverted pair (e.g. from before this
             // fix) rather than just displaying it: swap so both configured
