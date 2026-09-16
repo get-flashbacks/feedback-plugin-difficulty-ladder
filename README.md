@@ -83,7 +83,8 @@ the case that's now rejected explicitly instead of guessed at.
   level = how much of that section's difficulty range the current
   master-difficulty setting reaches.
 - At the configured maximum mastery, three consecutive phrases at 95%
-  accuracy or better light a gold Mastery streak badge. Pausing resets it.
+  accuracy or better light a gold Mastery streak badge. Pausing or entering
+  or leaving a split-screen session resets it.
 - Purely a visualization; can be toggled independently of auto-adjust.
 
 ## Requirements

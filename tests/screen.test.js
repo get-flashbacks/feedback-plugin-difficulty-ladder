@@ -424,6 +424,26 @@ test('mastery streak reset helper models a pause without changing scoring state'
     assert.deepEqual(mod.masteryStreakStatus(), { count: 0, active: false });
 });
 
+test('mastery lifecycle subscriptions reset while active and detach while hidden', () => {
+    const mod = freshPlugin();
+    const handlers = new Map();
+    global.window.feedBack = {
+        on(eventName, handler) {
+            handlers.set(eventName, handler);
+            return () => handlers.delete(eventName);
+        },
+    };
+    mod.startMasteryLifecycleSubscriptions();
+    assert.deepEqual([...handlers.keys()], ['song:pause', 'song:stop', 'song:ended']);
+
+    mod.updateMasteryStreak(1, 100);
+    handlers.get('song:pause')();
+    assert.deepEqual(mod.masteryStreakStatus(), { count: 0, active: false });
+
+    mod.stopMasteryLifecycleSubscriptions();
+    assert.equal(handlers.size, 0);
+});
+
 test('Split Screen scoring state is isolated and changes only its own panel highway', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;

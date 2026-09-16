@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Added a passive gold Mastery streak badge to the glass HUD after three
   consecutive phrases at the configured maximum mastery and at least 95%
-  accuracy. Pausing or missing the threshold resets the streak (#25).
+  accuracy. Pausing, transitioning through Split Screen, or missing the
+  threshold resets the streak (#25).
 
 ### Fixed
 - The per-section difficulty "glass fill" emitted for feedBack-plugin-sectionmap

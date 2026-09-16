@@ -316,6 +316,9 @@
     let _noteCursor = 0;
     let _chordCursor = 0;
     let _lastScoredT = -1;
+    let _hudMaxDifficulty = null;
+    let _hudBadgeMeasureKey = null;
+    let _hudBadgeWidth = 0;
 
     function rampStep(th, progress) {
         const index = Math.max(0, Math.min(RAMP_PHRASES - 1, Number(progress) || 0));
@@ -347,6 +350,9 @@
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
+        _hudMaxDifficulty = null;
+        _hudBadgeMeasureKey = null;
+        _hudBadgeWidth = 0;
         _hudPhraseIdx = -1;
     }
     resetPerSongState();
@@ -810,6 +816,7 @@
     // exact highway that owns the note-state provider.
     var _splitScoreStates = new Map();
     var _splitPanelsUnsubscribe = null;
+    var _masteryLifecycleUnsubscribes = [];
 
     function newSplitScoreState() {
         return {
@@ -859,7 +866,13 @@
     function startSplitScreenHookSubscription() {
         var fb = window.feedBack;
         if (_splitPanelsUnsubscribe || !fb || typeof fb.on !== 'function') return;
-        var handler = installSplitScreenDetectorHook;
+        var handler = function () {
+            // The single-player HUD is hidden throughout Split Screen. Clear
+            // its streak at either panel transition so it cannot resume with
+            // a count that predates an unrelated multiplayer session.
+            resetMasteryStreak();
+            installSplitScreenDetectorHook();
+        };
         var unsubscribe = fb.on('splitscreen:panels-changed', handler);
         _splitPanelsUnsubscribe = typeof unsubscribe === 'function'
             ? unsubscribe
@@ -870,6 +883,23 @@
         if (!_splitPanelsUnsubscribe) return;
         _splitPanelsUnsubscribe();
         _splitPanelsUnsubscribe = null;
+    }
+
+    function startMasteryLifecycleSubscriptions() {
+        var fb = window.feedBack;
+        if (_masteryLifecycleUnsubscribes.length || !fb || typeof fb.on !== 'function') return;
+        ['song:pause', 'song:stop', 'song:ended'].forEach(function (eventName) {
+            var unsubscribe = fb.on(eventName, resetMasteryStreak);
+            _masteryLifecycleUnsubscribes.push(typeof unsubscribe === 'function'
+                ? unsubscribe
+                : (typeof fb.off === 'function'
+                    ? function () { fb.off(eventName, resetMasteryStreak); }
+                    : function () {}));
+        });
+    }
+
+    function stopMasteryLifecycleSubscriptions() {
+        _masteryLifecycleUnsubscribes.splice(0).forEach(function (unsubscribe) { unsubscribe(); });
     }
 
     function commitSplitPhraseResult(state, hw, ratio) {
@@ -1048,8 +1078,12 @@
 
         var start = Math.max(0, curIdx - 1);
         var list = phrases.slice(start, start + LOOKAHEAD);
-        var maxDiff = 1;
-        for (var i = 0; i < phrases.length; i++) maxDiff = Math.max(maxDiff, phrases[i].max_difficulty);
+        if (_hudMaxDifficulty == null) {
+            _hudMaxDifficulty = 1;
+            for (var i = 0; i < phrases.length; i++)
+                _hudMaxDifficulty = Math.max(_hudMaxDifficulty, phrases[i].max_difficulty);
+        }
+        var maxDiff = _hudMaxDifficulty;
         var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : 0;
 
         var w = Math.max(1, list.length * (GLASS_W + GLASS_GAP) - GLASS_GAP);
@@ -1072,7 +1106,12 @@
             ctx.font = '600 11px system-ui, sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            var badgeW = Math.min(w, Math.ceil(ctx.measureText(badgeText).width) + 14);
+            var measureKey = badgeText + '|' + w;
+            if (_hudBadgeMeasureKey !== measureKey) {
+                _hudBadgeMeasureKey = measureKey;
+                _hudBadgeWidth = Math.min(w, Math.ceil(ctx.measureText(badgeText).width) + 14);
+            }
+            var badgeW = _hudBadgeWidth;
             var badgeX = (w - badgeW) / 2;
             ctx.fillStyle = 'rgba(34, 28, 8, 0.9)';
             ctx.strokeStyle = 'rgba(232, 192, 64, 0.9)';
@@ -1303,6 +1342,7 @@
 
     // ---- Lifecycle ----
     function startRafLoops() {
+        startMasteryLifecycleSubscriptions();
         if (!_scoreRafHandle) tickScoring();
         if (!_hudRafHandle) drawHud();
     }
@@ -1341,9 +1381,6 @@
 
     if (window.feedBack && typeof window.feedBack.on === 'function') {
         window.feedBack.on('song:ready', onSongEvent);
-        window.feedBack.on('song:pause', resetMasteryStreak);
-        window.feedBack.on('song:stop', resetMasteryStreak);
-        window.feedBack.on('song:ended', resetMasteryStreak);
         // Split Screen emits this after its panel highways are created and
         // again after a canvas/highway replacement.  By then Note Detect is
         // normally loaded; wrapping its public factory lets Ladder observe
@@ -1361,6 +1398,7 @@
             } else {
                 resetMasteryStreak();
                 flushPhraseAttempts();
+                stopMasteryLifecycleSubscriptions();
                 stopSplitScreenHookSubscription();
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
                 if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
@@ -1436,6 +1474,7 @@
             calculateAndEmitSectionDifficulties,
             commitPhraseResult, resetPerSongState,
             updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,
+            startMasteryLifecycleSubscriptions, stopMasteryLifecycleSubscriptions,
             MASTERY_STREAK_PHRASES, MASTERY_STREAK_ACCURACY,
             rampStep, WARMUP_PHRASES, RAMP_PHRASES,
             currentTarget, currentTargetStatus,
