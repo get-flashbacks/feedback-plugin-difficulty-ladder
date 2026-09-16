@@ -434,6 +434,22 @@ test('renderProfileBaseline injects a read-only card after the core best-scores 
     assert.equal(inserted.children[2].children[1].children[0].children[1].textContent, '82%');
 });
 
+test('renderProfileBaseline stays absent when no classified mastery exists', () => {
+    const mod = freshPlugin();
+    let inserted = null;
+    const anchor = { insertAdjacentElement: (_where, node) => { inserted = node; } };
+    global.document = {
+        getElementById(id) {
+            if (id === 'v3-profile-bests') return { parentElement: anchor };
+            return null;
+        },
+    };
+
+    mod.renderProfileBaseline();
+
+    assert.equal(inserted, null);
+});
+
 // ── Auto-adjust warm-up window + ramped stepping ────────────────────────────
 // (Rocksmith-comparison audit follow-up: a fresh song no longer acts before
 // WARMUP_PHRASES phrases are scored, and a qualifying streak now ramps
