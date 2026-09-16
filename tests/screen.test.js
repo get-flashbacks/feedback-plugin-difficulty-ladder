@@ -460,6 +460,43 @@ test('split phrase finalization records the completed phrase under its own playe
     assert.equal(attempts[0].skill, 'overall');
 });
 
+test('a backward seek within the same phrase re-judges notes instead of reusing stale judgments', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ session_id: 'split-seek', player_id: 'player-seek' });
+    // Notes are only judged once they've fallen 0.6s behind the lookback
+    // window (see tickOneSplitHighway's `cutoff = t - 0.6`), matching the
+    // 0.8s starting time the existing split-phrase-finalization test above
+    // uses for the same reason.
+    let time = 0.8;
+    let judgment = 'hit';
+    const highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [{ start_time: 0, end_time: 1, max_difficulty: 2 }],
+        getTime: () => time,
+        getNoteStateProvider: () => () => judgment,
+        getFilteredNotes: () => [{ t: 0.1, s: 1, f: 2 }],
+        getFilteredChords: () => [],
+        getMastery: () => 0.5,
+    };
+    const state = mod.newSplitScoreState(ctx);
+
+    mod.tickOneSplitHighway(highway, state);
+    assert.equal(state.phraseHits, 1);
+    assert.equal(state.phraseTotal, 1);
+
+    // Seek backward within the same phrase (loop/rewind), then replay the
+    // same note but this time it's missed. Without resetting judgedKeys on
+    // the seek, the note's key is still marked judged from the first pass
+    // and this replay is silently skipped, leaving the stale hit in place.
+    time = 0.05;
+    judgment = 'miss';
+    mod.tickOneSplitHighway(highway, state);
+    time = 0.8;
+    mod.tickOneSplitHighway(highway, state);
+    assert.equal(state.phraseTotal, 1, 'the replay must be judged fresh, not merged with the first pass');
+    assert.equal(state.phraseHits, 0, 'the replay missed — the stale hit must not survive the seek');
+});
+
 test('legacy song difficulty and phrase attempts migrate once into overall for a ready profile', () => {
     const legacyDifficultyKey = 'difficulty_ladder.songMastery';
     const legacyAttemptsKey = 'difficulty_ladder.phraseAttempts.v1';
@@ -510,6 +547,25 @@ test('legacy fretted role-less difficulty matches an active lead guitar context'
     assert.equal(migrated.currentDifficulty, 68);
     assert.equal(migrated.legacyUnscoped, true);
     assert.equal(migrated.legacy_claim_player_id, 'main');
+});
+
+test('a role-less legacy record with a known instrument does not leak into a different instrument', () => {
+    const mod = freshPlugin({ stored: {
+        'difficulty_ladder.songMastery': JSON.stringify({
+            'song.feedpak::lead': { mastery: 68, instrument: 'fretted' },
+        }),
+    } });
+    const claimant = playerContext({ compatibility_adapter: true, player_id: 'main' });
+    mod.migrateLegacyData(claimant);
+
+    // Same profile/song/arrangement/player as the migrated guitar record,
+    // but a different instrument (keys) — must not inherit the guitar
+    // player's migrated progress just because both are legacyUnscoped.
+    const keys = playerContext({ player_id: 'main', instrument: 'keys', role: 'instrumental', skill: 'overall' });
+    assert.equal(mod.readProgress(keys), null);
+
+    const lead = playerContext({ player_id: 'main', instrument: 'guitar', role: 'lead', skill: 'overall' });
+    assert.equal(mod.readProgress(lead).currentDifficulty, 68);
 });
 
 test('malformed v2 and legacy stores fail closed to valid empty shapes', () => {
@@ -645,6 +701,29 @@ test('main-player phrase finalization updates best mastery through the compatibi
 
     assert.equal(mod.readProgress(ctx).bestMastery, 56);
     assert.equal(mod.readProgress(ctx).currentDifficulty, null);
+});
+
+test('a compatibility profile switch on the same song resets main scoring state', () => {
+    const mod = freshPlugin();
+    global.window.highway = { getMastery: () => 0.8, hasPhraseData: () => false };
+    let activeProfile = { id: 'alice', player_hash: 'alice-hash' };
+    global.window.v3Profile = { get: () => activeProfile };
+    const si = { filename: 'song.feedpak', arrangement_index: 0, type: 'lead' };
+
+    mod.activateCompatibilityPlayerContext(si);
+    mod.settings.autoAdjust = false;
+    mod.settings.maxMastery = 80;
+    for (let i = 1; i <= mod.MASTERY_STREAK_PHRASES; i++) mod.commitPhraseResult(mod.MASTERY_STREAK_ACCURACY);
+    assert.deepEqual(mod.masteryStreakStatus(), { count: mod.MASTERY_STREAK_PHRASES, active: true },
+        'streak built up under alice');
+
+    // song:ready can re-fire for the same song (reconnect/restart) without
+    // _songKey changing. A different active profile must not let the new
+    // player inherit alice's in-progress streak/EMA/warm-up state.
+    activeProfile = { id: 'bob', player_hash: 'bob-hash' };
+    mod.activateCompatibilityPlayerContext(si);
+    assert.deepEqual(mod.masteryStreakStatus(), { count: 0, active: false },
+        'bob must not inherit alice\'s streak just because the song stayed the same');
 });
 
 test('recordPhraseAttempt fails closed when a malformed scoped node cannot be created', () => {

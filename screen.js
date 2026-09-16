@@ -70,6 +70,8 @@
     // rejected until an explicit profile identity is ready.
     let _songMasteryMapCache = null;
     let _progressStoreCache = null;
+    let _progressDirty = false;
+    let _progressFlushTimer = null;
     let _phraseAttemptStoreCache = null;
     let _phraseAttemptsDirty = false;
     let _phraseAttemptsFlushTimer = null;
@@ -192,10 +194,35 @@
         return parsed;
     }
 
+    function flushProgressStore() {
+        if (_progressFlushTimer) {
+            clearTimeout(_progressFlushTimer);
+            _progressFlushTimer = null;
+        }
+        if (!_progressStoreCache || !_progressDirty) return;
+        try {
+            localStorage.setItem(PROGRESS_LS_KEY, JSON.stringify(_progressStoreCache));
+            _progressDirty = false;
+        } catch (_) { /* retry on the next scheduled/visibility flush */ }
+    }
+
+    function scheduleProgressFlush() {
+        if (_progressFlushTimer) clearTimeout(_progressFlushTimer);
+        _progressFlushTimer = setTimeout(flushProgressStore, 150);
+    }
+
+    // Called from writeProgress(), which itself runs from the scoring/rAF
+    // path on every phrase result (currentDifficulty and bestMastery
+    // updates alike) — a synchronous localStorage.setItem here would block
+    // the gameplay loop. Keep the in-memory cache authoritative immediately
+    // and coalesce the actual write behind the same debounce/flush
+    // lifecycle already used for phrase attempts.
     function saveProgressStore(store) {
         if (!_plainObject(store) || store.schema !== PROGRESS_SCHEMA || !_plainObject(store.profiles)) return false;
         _progressStoreCache = store;
-        try { localStorage.setItem(PROGRESS_LS_KEY, JSON.stringify(store)); return true; } catch (_) { return false; }
+        _progressDirty = true;
+        scheduleProgressFlush();
+        return true;
     }
 
     function _progressSkillNode(store, context, create) {
@@ -289,7 +316,18 @@
         var matches = [];
         var instruments = arrangementNode && arrangementNode.instruments;
         if (_plainObject(instruments)) Object.keys(instruments).forEach(function (ik) {
-            var roles = instruments[ik] && instruments[ik].roles;
+            var instrumentNode = instruments[ik];
+            // A migrated legacy record with a known source instrument (e.g.
+            // "keys") is scoped to that instrument's own node here, even
+            // though it's marked legacyUnscoped for its missing role — only
+            // a record whose instrument itself was unknown at migration
+            // time (the 'legacy-unknown' sentinel) should be eligible to
+            // seed an arbitrary instrument's context, otherwise e.g. a
+            // guitar context could inherit another player's keys progress.
+            var instrumentMatches = ik === _nodeKey(ctx.instrument)
+                || (instrumentNode && instrumentNode.instrument === 'legacy-unknown');
+            if (!instrumentMatches) return;
+            var roles = instrumentNode && instrumentNode.roles;
             if (!_plainObject(roles)) return;
             Object.keys(roles).forEach(function (rk) {
                 var skills = roles[rk] && roles[rk].skills;
@@ -752,12 +790,20 @@
         return null;
     }
 
-    function _acceptMainPlayerContext(context, token) {
+    function _acceptMainPlayerContext(context, token, previousPersistenceKey) {
         if (token !== _mainContextResolution) return null;
         var ctx = normalizePlayerContext(context);
         if (!ctx) return null;
         _mainPlayerContext = ctx;
         _songInstrument = ctx.instrument;
+        // The song/arrangement can stay the same across a compatibility
+        // profile switch (song:ready re-fires on a reconnect/restart without
+        // _songKey changing), so onSongEvent()'s key-change check alone
+        // won't reset the scorer. Compare the resolved identity's own
+        // persistence key against the one in effect before this resolution
+        // started and reset here whenever it differs, so a new profile never
+        // inherits the outgoing profile's EMA/warm-up/judgment state.
+        if (persistenceContextKey(ctx) !== previousPersistenceKey) resetPerSongState();
         migrateLegacyData(ctx);
         _restoreOrScheduleSections(ctx, window.highway);
         return ctx;
@@ -765,6 +811,7 @@
 
     function activateCompatibilityPlayerContext(si) {
         var token = ++_mainContextResolution;
+        var previousPersistenceKey = persistenceContextKey(_mainPlayerContext);
         _mainPlayerContext = null; // gate writes while a new identity resolves
         var resolved;
         try {
@@ -774,11 +821,11 @@
         }
         if (resolved && typeof resolved.then === 'function') {
             return resolved.then(
-                function (context) { return _acceptMainPlayerContext(context, token); },
+                function (context) { return _acceptMainPlayerContext(context, token, previousPersistenceKey); },
                 function (error) { return _reportCompatibilityProfileError(error, token); }
             );
         }
-        return _acceptMainPlayerContext(resolved, token);
+        return _acceptMainPlayerContext(resolved, token, previousPersistenceKey);
     }
 
     function upsertPlayerContext(raw) {
@@ -1109,7 +1156,14 @@
         var matches = [];
         if (!_plainObject(instruments)) return matches;
         Object.keys(instruments).forEach(function (instrumentKey) {
-            var roles = instruments[instrumentKey] && instruments[instrumentKey].roles;
+            var instrumentNode = instruments[instrumentKey];
+            // Same instrument scoping as readProgress's fallback scan: only
+            // a record whose source instrument was itself unknown at
+            // migration time may seed an arbitrary instrument's context.
+            var instrumentMatches = instrumentKey === _nodeKey(ctx.instrument)
+                || (instrumentNode && instrumentNode.instrument === 'legacy-unknown');
+            if (!instrumentMatches) return;
+            var roles = instrumentNode && instrumentNode.roles;
             if (!_plainObject(roles)) return;
             Object.keys(roles).forEach(function (roleKey) {
                 var skills = roles[roleKey] && roles[roleKey].skills;
@@ -1269,6 +1323,7 @@
                 completed_at: new Date().toISOString(),
             };
             saveProgressStore(progress);
+            flushProgressStore(); // one-time migration, not a hot gameplay path — persist immediately
         }
 
         var phraseStore = loadPhraseAttemptStore();
@@ -1632,6 +1687,14 @@
         if (t < _lastScoredT - 0.05) {
             _noteCursor = 0;
             _chordCursor = 0;
+            // A seek within the same phrase leaves judgedKeys/phraseHits/etc
+            // stale — without this, replayed notes are skipped as already
+            // judged (their keys are still in _judgedKeys) and multiple
+            // passes over the same phrase silently merge into one attempt.
+            _phraseHits = 0;
+            _phraseTotal = 0;
+            _phraseJudgments = [];
+            _judgedKeys = new Set();
         }
         _lastScoredT = t;
 
@@ -1938,7 +2001,17 @@
         var phrases = hw.getPhrases();
         if (!phrases || !phrases.length) return;
         var t = hw.getTime();
-        if (t < state.lastScoredT - 0.05) { state.noteCursor = 0; state.chordCursor = 0; }
+        if (t < state.lastScoredT - 0.05) {
+            state.noteCursor = 0;
+            state.chordCursor = 0;
+            // Same rationale as the main tickScoring path: a seek within the
+            // same phrase must not leave stale judgedKeys/phraseHits/etc, or
+            // replayed notes are skipped as already-judged.
+            state.phraseHits = 0;
+            state.phraseTotal = 0;
+            state.phraseJudgments = [];
+            state.judgedKeys = new Set();
+        }
         state.lastScoredT = t;
         var idx = state.curPhraseIdx;
         if (idx < 0 || t < phrases[idx].start_time || t >= phrases[idx].end_time)
@@ -2386,6 +2459,7 @@
         var key = songKeyOf(identity);
         if (key !== _songKey) {
             flushPhraseAttempts();
+            flushProgressStore();
             _songKey = key;
             _songInstrument = null;
             resetPerSongState();
@@ -2456,6 +2530,7 @@
             } else {
                 resetMasteryStreak();
                 flushPhraseAttempts();
+                flushProgressStore();
                 stopMasteryLifecycleSubscriptions();
                 stopSplitScreenHookSubscription();
                 stopPlayerContextSubscriptions();
@@ -2486,7 +2561,14 @@
     // notifies us to re-read rather than us polling localStorage per frame.
     window.addEventListener('storage', function (e) {
         if (!e.key || e.key.indexOf(LS_PREFIX) !== 0) return;
-        if (e.key === PROGRESS_LS_KEY) _progressStoreCache = null;
+        if (e.key === PROGRESS_LS_KEY) {
+            // Same race as the phrase-attempts key below: don't discard our
+            // own pending (debounced) progress write when a foreign tab's
+            // write shows up first.
+            if (_progressDirty) flushProgressStore();
+            _progressStoreCache = null;
+            _progressDirty = false;
+        }
         if (e.key === PHRASE_ATTEMPTS_V2_LS_KEY) {
             // A foreign tab just wrote this key. If we have our own pending
             // (debounced) mutation sitting only in _phraseAttemptStoreCache,
@@ -2553,6 +2635,7 @@
             loadSongMasteryMap, saveSongMasteryMap,
             normalizePlayerContext, playerContextKey, persistenceContextKey,
             loadProgressStore, saveProgressStore, readProgress, writeProgress,
+            flushProgressStore,
             migrateLegacyData, resolveCompatibilityPlayerContext,
             activateCompatibilityPlayerContext,
             upsertPlayerContext, removePlayerContext, listPlayerContexts,
