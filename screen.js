@@ -158,6 +158,93 @@
         });
     }
 
+    // ---- Profile instrument baseline (issue #23) ----
+    // The persisted classifier intentionally uses the generator's vocabulary
+    // (`fretted` / `keys`). Keep the Profile aggregation on that authoritative
+    // value rather than guessing guitar vs bass from filenames.
+    function aggregateMasteryByInstrument(map) {
+        var values = { fretted: [], keys: [] };
+        var source = map && typeof map === 'object' && !Array.isArray(map) ? map : {};
+        Object.keys(source).forEach(function (key) {
+            var record = source[key];
+            if (!record || typeof record !== 'object') return;
+            var instrument = record.instrument;
+            if (!Object.prototype.hasOwnProperty.call(values, instrument)) return;
+            var mastery = _masteryPct(record);
+            if (mastery === null) return;
+            values[instrument].push(Math.max(0, Math.min(100, mastery)));
+        });
+        return ['fretted', 'keys'].reduce(function (groups, instrument) {
+            var rows = values[instrument].sort(function (a, b) { return a - b; });
+            if (!rows.length) return groups;
+            var mid = Math.floor(rows.length / 2);
+            var median = rows.length % 2 ? rows[mid] : (rows[mid - 1] + rows[mid]) / 2;
+            groups.push({
+                instrument: instrument,
+                label: instrument === 'keys' ? 'Keys' : 'Fretted',
+                count: rows.length,
+                average: rows.reduce(function (sum, value) { return sum + value; }, 0) / rows.length,
+                median: median,
+            });
+            return groups;
+        }, []);
+    }
+
+    function renderProfileBaseline() {
+        var groups = aggregateMasteryByInstrument(loadSongMasteryMap());
+        var previous = document.getElementById('difficulty-ladder-profile-baseline');
+        if (previous) previous.remove();
+        if (!groups.length) return; // Profile's absent-not-empty convention
+
+        var bests = document.getElementById('v3-profile-bests');
+        var anchor = bests && bests.parentElement;
+        if (!anchor || typeof anchor.insertAdjacentElement !== 'function') return;
+
+        var card = document.createElement('section');
+        card.id = 'difficulty-ladder-profile-baseline';
+        card.className = 'bg-fb-card/80 backdrop-blur rounded-xl p-6 border border-fb-border/50';
+        var heading = document.createElement('h3');
+        heading.className = 'text-lg font-bold text-fb-text mb-1';
+        heading.textContent = 'Adaptive difficulty baseline';
+        card.appendChild(heading);
+        var intro = document.createElement('p');
+        intro.className = 'text-sm text-fb-textDim mb-4';
+        intro.textContent = 'Your remembered difficulty across played arrangements. Informational only.';
+        card.appendChild(intro);
+        var grid = document.createElement('div');
+        grid.className = 'grid grid-cols-1 sm:grid-cols-2 gap-3';
+        groups.forEach(function (group) {
+            var panel = document.createElement('div');
+            panel.className = 'rounded-lg border border-fb-border/50 bg-fb-bg/30 p-4';
+            var title = document.createElement('div');
+            title.className = 'flex items-baseline justify-between gap-3';
+            var label = document.createElement('span');
+            label.className = 'font-semibold text-fb-text';
+            label.textContent = group.label;
+            var average = document.createElement('span');
+            average.className = 'text-xl font-bold text-fb-primary';
+            average.textContent = Math.round(group.average) + '%';
+            title.appendChild(label);
+            title.appendChild(average);
+            panel.appendChild(title);
+            var track = document.createElement('div');
+            track.className = 'mt-3 h-2 rounded-full bg-fb-bg overflow-hidden';
+            var fill = document.createElement('div');
+            fill.className = 'h-full rounded-full bg-fb-primary';
+            fill.style.width = Math.round(group.average) + '%';
+            track.appendChild(fill);
+            panel.appendChild(track);
+            var detail = document.createElement('p');
+            detail.className = 'mt-2 text-xs text-fb-textDim';
+            detail.textContent = group.count + (group.count === 1 ? ' arrangement' : ' arrangements')
+                + ' · median ' + Math.round(group.median) + '%';
+            panel.appendChild(detail);
+            grid.appendChild(panel);
+        });
+        card.appendChild(grid);
+        anchor.insertAdjacentElement('afterend', card);
+    }
+
     // Wraps the single global entry point every mastery change already flows
     // through — the manual player slider's oninput, the Gameplay-tab speed
     // slider, and this plugin's own auto-adjust all call window.setMastery()
@@ -1429,6 +1516,10 @@
         if (document.visibilityState === 'visible') startRafLoops();
         else resetMasteryStreak();
     });
+    // Core rebuilds the Profile shell with innerHTML on every entry, so this
+    // event is the stable extension seam and must remain subscribed while the
+    // player itself is hidden.
+    document.addEventListener('v3:profile-rendered', renderProfileBaseline);
 
     // Settings panel writes localStorage directly (see settings.html) and
     // notifies us to re-read rather than us polling localStorage per frame.
@@ -1477,6 +1568,7 @@
             judgmentKey, settings,
             _normalizeMasteryBounds,
             _dominantSongMastery,
+            aggregateMasteryByInstrument, renderProfileBaseline,
             _masteryPct, _rememberSongInstrument,
             loadSongMasteryMap, saveSongMasteryMap,
             loadPhraseAttempts, savePhraseAttempts,
