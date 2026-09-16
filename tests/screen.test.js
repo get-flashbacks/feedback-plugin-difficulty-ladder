@@ -460,6 +460,22 @@ test('qualifying downward streak uses the configured asymmetric target', () => {
     assert.equal(calls[calls.length - 1], 52);
 });
 
+test('Split Screen downward streak uses the configured asymmetric target', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    mod.settings.downStepRatio = 1.5;
+    const state = mod.newSplitScoreState();
+    let mastery = 0.75;
+    const highway = {
+        getMastery: () => mastery,
+        setMastery: value => { mastery = value; },
+    };
+    for (let i = 0; i < mod.WARMUP_PHRASES + mod.RAMP_PHRASES - 1; i++)
+        mod.commitSplitPhraseResult(state, highway, 0);
+    assert.equal(mastery, 0.52);
+});
+
 test('dropResistance loads true only from persisted boolean true', () => {
     const key = 'difficulty_ladder.dropResistance';
     assert.equal(freshPlugin({ stored: { [key]: JSON.stringify('false') } }).settings.dropResistance, false);
