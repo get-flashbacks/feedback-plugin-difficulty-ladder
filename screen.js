@@ -2573,7 +2573,6 @@
             _applyDifficultyForContext,
             _contextEventPayload,
             _onMasteryApplied,
-            onSongEvent,
          };
         return;
     }
