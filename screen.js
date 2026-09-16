@@ -1269,6 +1269,10 @@
         var hw = explicitHighway || (context && context.highway)
             || (!context ? window.highway : null);
         if (!context || phraseIdx < 0 || phraseTotal <= 0 || !hw) return false;
+        // phraseIdx is a numeric array index (curPhraseIdx), not a property
+        // name — plain array indexing, immune to the prototype-pollution
+        // class detect-object-injection otherwise guards against.
+        // eslint-disable-next-line security/detect-object-injection
         const phrase = hw.getPhrases?.()?.[phraseIdx];
         const scopedSongKey = context.song_id + '::' + context.arrangement_id;
         const phraseId = _phraseIdOf(scopedSongKey, phraseIdx, phrase);
