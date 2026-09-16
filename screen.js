@@ -825,7 +825,7 @@
         return null;
     }
 
-    function _acceptMainPlayerContext(context, resolutionId, previousPersistenceKey) {
+    function _acceptMainPlayerContext(context, resolutionId, previousIdentitySignature) {
         if (resolutionId !== _mainContextResolution) return null;
         var ctx = normalizePlayerContext(context);
         if (!ctx) return null;
@@ -838,7 +838,7 @@
         // persistence key against the one in effect before this resolution
         // started and reset here whenever it differs, so a new profile never
         // inherits the outgoing profile's EMA/warm-up/judgment state.
-        if (persistenceContextKey(ctx) !== previousPersistenceKey) resetPerSongState();
+        if (persistenceContextKey(ctx) !== previousIdentitySignature) resetPerSongState();
         migrateLegacyData(ctx);
         _restoreOrScheduleSections(ctx, window.highway);
         return ctx;
@@ -846,7 +846,7 @@
 
     function activateCompatibilityPlayerContext(si) {
         var resolutionId = ++_mainContextResolution;
-        var previousPersistenceKey = persistenceContextKey(_mainPlayerContext);
+        var previousIdentitySignature = persistenceContextKey(_mainPlayerContext);
         _mainPlayerContext = null; // gate writes while a new identity resolves
         var resolved;
         try {
@@ -856,11 +856,11 @@
         }
         if (resolved && typeof resolved.then === 'function') {
             return resolved.then(
-                function (context) { return _acceptMainPlayerContext(context, resolutionId, previousPersistenceKey); },
+                function (context) { return _acceptMainPlayerContext(context, resolutionId, previousIdentitySignature); },
                 function (error) { return _reportCompatibilityProfileError(error, resolutionId); }
             );
         }
-        return _acceptMainPlayerContext(resolved, resolutionId, previousPersistenceKey);
+        return _acceptMainPlayerContext(resolved, resolutionId, previousIdentitySignature);
     }
 
     function upsertPlayerContext(raw) {
