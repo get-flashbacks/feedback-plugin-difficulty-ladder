@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-09-17
+
+### Fixed
+- Retained pending note judgments through phrase finalization so delayed
+  verdicts and sustains no longer age out of the rolling scoring window.
+- Documented the terminal judgment deadline and the legacy conservative
+  mastery-origin heuristic instead of presenting every unexpected change as a
+  confirmed manual action.
+
 ## [0.12.0] - 2026-09-16
 
 ### Changed
