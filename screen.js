@@ -1096,6 +1096,7 @@
     let _noteCursor = 0;
     let _chordCursor = 0;
     let _lastScoredT = -1;
+    let _lastScoredWallT = -1;
     let _hudMaxDifficulty = null;
     let _hudBadgeMeasureKey = null;
     let _hudBadgeWidth = 0;
@@ -1140,6 +1141,7 @@
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
+        _lastScoredWallT = -1;
         _hudMaxDifficulty = null;
         _hudBadgeMeasureKey = null;
         _hudBadgeWidth = 0;
@@ -1784,12 +1786,24 @@
     var PENDING_POLL_INTERVAL_SECONDS = 0.1;
     var FORWARD_DISCONTINUITY_SECONDS = 1;
 
-    function _isForwardScoringDiscontinuity(previousT, currentT) {
-        return previousT >= 0 && currentT > previousT + FORWARD_DISCONTINUITY_SECONDS;
+    function _scoringWallTimeSeconds() {
+        return typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now() / 1000
+            : Date.now() / 1000;
+    }
+
+    function _isForwardScoringDiscontinuity(previousT, currentT, previousWallT, currentWallT) {
+        if (previousT < 0 || previousWallT < 0) return false;
+        var playbackAdvance = currentT - previousT;
+        var wallAdvance = Math.max(0, currentWallT - previousWallT);
+        // A stalled/throttled frame advances playback and wall time together.
+        // Only excess playback movement indicates a seek without an explicit
+        // Host seek-origin event.
+        return playbackAdvance > wallAdvance + FORWARD_DISCONTINUITY_SECONDS;
     }
 
     function _advanceCursorToTime(items, cursor, playbackTime) {
-        while (cursor < items.length && items[cursor].t < playbackTime) cursor++;
+        while (cursor < items.length && items.at(cursor).t < playbackTime) cursor++;
         return cursor;
     }
 
@@ -1806,7 +1820,7 @@
     // as necessary without rescanning the song arrays.
     function _enqueuePhraseJudgments(items, cursor, phrase, cutoff, notesOf, pending, judged) {
         while (cursor < items.length) {
-            var item = items[cursor];
+            var item = items.at(cursor);
             if (item.t < phrase.start_time) {
                 cursor++;
                 continue;
@@ -1814,7 +1828,7 @@
             if (item.t >= phrase.end_time || item.t > cutoff) break;
             var itemNotes = notesOf(item);
             for (var ni = 0; ni < itemNotes.length; ni++) {
-                var note = itemNotes[ni];
+                var note = itemNotes.at(ni);
                 var key = judgmentKey(item.t, note.s, note.f);
                 if (!judged.has(key) && !pending.has(key)) {
                     pending.set(key, {
@@ -1894,11 +1908,12 @@
         if (!phrases || phrases.length === 0) return;
         var t = hw.getTime();
         var previousT = _lastScoredT;
+        var wallT = _scoringWallTimeSeconds();
         var rewound = false;
         // With no seek-origin metadata, a large playback-time gap is treated
         // conservatively as a forward seek. Abandon the in-flight phrase so
         // boundary collection cannot fabricate judgments for its unplayed tail.
-        var jumpedForward = _isForwardScoringDiscontinuity(previousT, t);
+        var jumpedForward = _isForwardScoringDiscontinuity(previousT, t, _lastScoredWallT, wallT);
 
         // A backward jump (loop restart, user seek, section-practice rewind)
         // invalidates the forward-only cursors below — resync from scratch.
@@ -1929,6 +1944,7 @@
             _pendingJudgments = new Map();
         }
         _lastScoredT = t;
+        _lastScoredWallT = wallT;
 
         var idx = _curPhraseIdx;
         if (idx < 0 || t < phrases[idx].start_time || t >= phrases[idx].end_time) {
@@ -1940,7 +1956,7 @@
             // discard unresolved entries so they cannot leak into the next
             // phrase.
             if (!rewound && !jumpedForward && _curPhraseIdx >= 0) {
-                _enqueueMainPhraseEvents(hw, phrases[_curPhraseIdx], Infinity);
+                _enqueueMainPhraseEvents(hw, phrases.at(_curPhraseIdx), Infinity);
                 _pollMainPending(provider, t, true);
                 _pendingJudgments.clear();
             }
@@ -1996,6 +2012,7 @@
         state.phrasesScored = 0;
         state.curPhraseIdx = -1;
         state.lastScoredT = -1;
+        state.lastScoredWallT = -1;
         state.noteCursor = 0;
         state.chordCursor = 0;
         state.emaHitRate = null;
@@ -2229,8 +2246,11 @@
         if (!phrases || !phrases.length) return;
         var t = hw.getTime();
         var previousT = state.lastScoredT;
+        var wallT = _scoringWallTimeSeconds();
         var rewound = false;
-        var jumpedForward = _isForwardScoringDiscontinuity(previousT, t);
+        var jumpedForward = _isForwardScoringDiscontinuity(
+            previousT, t, state.lastScoredWallT, wallT
+        );
         if (t < state.lastScoredT - 0.05) {
             rewound = true;
             state.noteCursor = 0;
@@ -2253,12 +2273,13 @@
             state.pendingJudgments = new Map();
         }
         state.lastScoredT = t;
+        state.lastScoredWallT = wallT;
         var idx = state.curPhraseIdx;
         if (idx < 0 || t < phrases[idx].start_time || t >= phrases[idx].end_time)
             idx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
         if (idx !== state.curPhraseIdx) {
             if (!rewound && !jumpedForward && state.curPhraseIdx >= 0) {
-                _enqueueSplitPhraseEvents(hw, state, phrases[state.curPhraseIdx], Infinity);
+                _enqueueSplitPhraseEvents(hw, state, phrases.at(state.curPhraseIdx), Infinity);
                 _pollSplitPending(state, provider, t, true);
                 // A phrase boundary is the terminal ownership edge. Results
                 // still active/null after the final poll are intentionally
@@ -2880,6 +2901,7 @@
             _applyDifficultyForContext,
             _contextEventPayload,
             _onMasteryApplied,
+            _isForwardScoringDiscontinuity,
          };
         return;
     }

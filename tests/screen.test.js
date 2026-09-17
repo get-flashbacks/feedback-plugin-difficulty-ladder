@@ -685,6 +685,17 @@ test('a forward seek abandons prior work and skips crossed events across or with
     assert.equal(samePhraseState.phraseJudgments[0].time, 3.2);
 });
 
+test('forward discontinuity detection distinguishes a stalled frame from a seek', () => {
+    const mod = freshPlugin();
+
+    assert.equal(mod._isForwardScoringDiscontinuity(2, 4.2, 10, 12.2), false,
+        'equal playback and wall-time advances are an ordinary stalled frame');
+    assert.equal(mod._isForwardScoringDiscontinuity(2, 4.2, 10, 10.1), true,
+        'playback advancing far beyond wall time is a forward seek');
+    assert.equal(mod._isForwardScoringDiscontinuity(-1, 4.2, -1, 10.1), false,
+        'the first observation cannot establish a discontinuity');
+});
+
 test('the same judgment key in notes and chords is enqueued and counted once', () => {
     const mod = freshPlugin();
     let providerPolls = 0;
