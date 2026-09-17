@@ -511,6 +511,228 @@ test('a backward seek within the same phrase re-judges notes instead of reusing 
     assert.equal(state.phraseHits, 0, 'the replay missed — the stale hit must not survive the seek');
 });
 
+test('a pending judgment can resolve after aging beyond the old two-second window', () => {
+    const mod = freshPlugin();
+    let time = 0.8;
+    let judgment = 'active';
+    let providerPolls = 0;
+    let frames = 0;
+    const highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [{ start_time: 0, end_time: 10, max_difficulty: 2 }],
+        getTime: () => time,
+        getNoteStateProvider: () => () => { providerPolls++; return judgment; },
+        getFilteredNotes: () => [{ t: 0.1, s: 1, f: 2 }],
+        getFilteredChords: () => [],
+        getMastery: () => 0.5,
+    };
+    const state = mod.newSplitScoreState();
+
+    mod.tickOneSplitHighway(highway, state);
+    frames++;
+    assert.equal(state.pendingJudgments.size, 1);
+    assert.equal(state.phraseTotal, 0);
+
+    for (let next = 0.85; next <= 3.1; next += 0.05) {
+        time = Number(next.toFixed(2));
+        mod.tickOneSplitHighway(highway, state);
+        frames++;
+    }
+    judgment = 'hit';
+    time = 3.2;
+    mod.tickOneSplitHighway(highway, state);
+    assert.equal(state.pendingJudgments.size, 0);
+    assert.equal(state.phraseTotal, 1);
+    assert.equal(state.phraseHits, 1);
+    assert.ok(providerPolls < frames, 'pending provider calls are throttled below rAF frequency');
+});
+
+test('a sustain resolving active to hit is counted exactly once', () => {
+    const mod = freshPlugin();
+    let time = 0.8;
+    let judgment = 'active';
+    const highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [{ start_time: 0, end_time: 10, max_difficulty: 2 }],
+        getTime: () => time,
+        getNoteStateProvider: () => () => judgment,
+        getFilteredNotes: () => [{ t: 0.1, s: 2, f: 4 }],
+        getFilteredChords: () => [],
+        getMastery: () => 0.5,
+    };
+    const state = mod.newSplitScoreState();
+
+    mod.tickOneSplitHighway(highway, state);
+    judgment = 'hit';
+    time = 1;
+    mod.tickOneSplitHighway(highway, state);
+    time = 1.2;
+    mod.tickOneSplitHighway(highway, state);
+
+    assert.equal(state.phraseTotal, 1);
+    assert.equal(state.phraseHits, 1);
+    assert.equal(state.phraseJudgments.length, 1);
+});
+
+test('phrase finalization discards judgments still unresolved after the final poll', () => {
+    const mod = freshPlugin();
+    let time = 0.95;
+    let judgment = 'active';
+    const highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [
+            { start_time: 0, end_time: 1, max_difficulty: 2 },
+            { start_time: 1, end_time: 2, max_difficulty: 2 },
+        ],
+        getTime: () => time,
+        getNoteStateProvider: () => () => judgment,
+        getFilteredNotes: () => [{ t: 0.9, s: 3, f: 5 }],
+        getFilteredChords: () => [],
+        getMastery: () => 0.5,
+    };
+    const state = mod.newSplitScoreState();
+
+    mod.tickOneSplitHighway(highway, state);
+    time = 1.05;
+    mod.tickOneSplitHighway(highway, state);
+    assert.equal(state.pendingJudgments.size, 0);
+    assert.equal(state.phrasesScored, 0, 'an unresolved-only phrase has no scored result');
+
+    judgment = 'hit';
+    time = 1.8;
+    mod.tickOneSplitHighway(highway, state);
+    assert.equal(state.phraseTotal, 0, 'discarded prior-phrase work cannot leak forward');
+});
+
+test('phrase finalization forces a pending poll before its throttle expires', () => {
+    const mod = freshPlugin();
+    let time = 0.75;
+    let judgment = 'active';
+    let providerPolls = 0;
+    const highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [
+            { start_time: 0, end_time: 0.8, max_difficulty: 2 },
+            { start_time: 0.8, end_time: 2, max_difficulty: 2 },
+        ],
+        getTime: () => time,
+        getNoteStateProvider: () => () => { providerPolls++; return judgment; },
+        getFilteredNotes: () => [{ t: 0.1, s: 1, f: 2 }],
+        getFilteredChords: () => [],
+        getMastery: () => 0.5,
+    };
+    const state = mod.newSplitScoreState();
+
+    mod.tickOneSplitHighway(highway, state);
+    judgment = 'hit';
+    time = 0.81;
+    mod.tickOneSplitHighway(highway, state);
+
+    assert.equal(providerPolls, 2);
+    assert.equal(state.phrasesScored, 1);
+});
+
+test('a forward seek abandons prior work and skips crossed events across or within a phrase', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ session_id: 'split-seek-forward', player_id: 'forward-player' });
+    let time = 0.2;
+    const highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [
+            { start_time: 0, end_time: 1, max_difficulty: 2 },
+            { start_time: 4, end_time: 5, max_difficulty: 2 },
+        ],
+        getTime: () => time,
+        getNoteStateProvider: () => () => 'hit',
+        getFilteredNotes: () => [
+            { t: 0.9, s: 1, f: 2 },
+            { t: 4.1, s: 2, f: 3 },
+        ],
+        getFilteredChords: () => [],
+        getMastery: () => 0.5,
+    };
+    const state = mod.newSplitScoreState(ctx);
+
+    mod.tickOneSplitHighway(highway, state);
+    time = 4.2;
+    mod.tickOneSplitHighway(highway, state);
+
+    assert.equal(state.phrasesScored, 0);
+    assert.deepEqual(mod.loadPhraseAttempts(ctx), []);
+
+    let samePhraseTime = 0.2;
+    const samePhraseHighway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [{ start_time: 0, end_time: 10, max_difficulty: 2 }],
+        getTime: () => samePhraseTime,
+        getNoteStateProvider: () => () => 'hit',
+        getFilteredNotes: () => [
+            { t: 0.9, s: 1, f: 2 }, // crossed by the seek
+            { t: 3.2, s: 2, f: 3 }, // played after the destination
+        ],
+        getFilteredChords: () => [],
+        getMastery: () => 0.5,
+    };
+    const samePhraseState = mod.newSplitScoreState();
+    mod.tickOneSplitHighway(samePhraseHighway, samePhraseState);
+    samePhraseTime = 3;
+    mod.tickOneSplitHighway(samePhraseHighway, samePhraseState);
+    assert.equal(samePhraseState.phraseTotal, 0, 'crossed note is not scored after the seek');
+
+    samePhraseTime = 3.9;
+    mod.tickOneSplitHighway(samePhraseHighway, samePhraseState);
+    assert.equal(samePhraseState.phraseTotal, 1);
+    assert.equal(samePhraseState.phraseJudgments[0].time, 3.2);
+});
+
+test('the same judgment key in notes and chords is enqueued and counted once', () => {
+    const mod = freshPlugin();
+    let providerPolls = 0;
+    const duplicate = { t: 0.1, s: 1, f: 2 };
+    const highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [{ start_time: 0, end_time: 2, max_difficulty: 2 }],
+        getTime: () => 0.8,
+        getNoteStateProvider: () => () => { providerPolls++; return 'hit'; },
+        getFilteredNotes: () => [duplicate],
+        getFilteredChords: () => [{ t: 0.1, notes: [{ s: 1, f: 2 }] }],
+        getMastery: () => 0.5,
+    };
+    const state = mod.newSplitScoreState();
+
+    mod.tickOneSplitHighway(highway, state);
+
+    assert.equal(providerPolls, 1);
+    assert.equal(state.phraseTotal, 1);
+    assert.equal(state.phraseHits, 1);
+});
+
+test('a rewind clears pending judgments before replay', () => {
+    const mod = freshPlugin();
+    let time = 1.8;
+    const highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [
+            { start_time: 0, end_time: 1, max_difficulty: 2 },
+            { start_time: 1, end_time: 2, max_difficulty: 2 },
+        ],
+        getTime: () => time,
+        getNoteStateProvider: () => () => 'active',
+        getFilteredNotes: () => [{ t: 1.1, s: 1, f: 2 }],
+        getFilteredChords: () => [],
+        getMastery: () => 0.5,
+    };
+    const state = mod.newSplitScoreState();
+
+    mod.tickOneSplitHighway(highway, state);
+    assert.equal(state.pendingJudgments.size, 1);
+    time = 0.05;
+    mod.tickOneSplitHighway(highway, state);
+    assert.equal(state.pendingJudgments.size, 0);
+    assert.equal(state.noteCursor, 0);
+    assert.equal(state.phrasesScored, 0, 'rewind must not finalize the abandoned phrase');
+});
+
 test('legacy song difficulty and phrase attempts migrate once into overall for a ready profile', () => {
     const legacyDifficultyKey = 'difficulty_ladder.songMastery';
     const legacyAttemptsKey = 'difficulty_ladder.phraseAttempts.v1';
@@ -820,6 +1042,7 @@ test('player context change resets split scorer state and restores only the new 
     state.phrasesScored = 9;
     state.emaHitRate = 0.8;
     state.manualOverride = true;
+    state.pendingJudgments.set('stale', { key: 'stale' });
 
     mod.upsertPlayerContext(newContext);
 
@@ -830,6 +1053,7 @@ test('player context change resets split scorer state and restores only the new 
     assert.equal(state.phrasesScored, 0);
     assert.equal(state.emaHitRate, null);
     assert.equal(state.manualOverride, false);
+    assert.equal(state.pendingJudgments.size, 0);
     assert.equal(mastery, 0.31);
 });
 
@@ -1856,7 +2080,7 @@ test('min/maxMastery still clamps a ramped next value and stops repeat calls onc
     assert.equal(calls.length, 2);
 });
 
-test('manual-override detection still disables autoAdjust after a ramped auto-apply', () => {
+test('originless programmatic mastery drift conservatively disables autoAdjust', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
     mod.settings.sensitivity = 2;
@@ -1864,10 +2088,12 @@ test('manual-override detection still disables autoAdjust after a ramped auto-ap
     for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
     assert.equal(calls.length, 1);
     assert.equal(mod.settings.autoAdjust, true);
-    global.window.highway.getMastery = () => 0.42; // simulates a manual slider move
+    // The compatibility getter exposes the changed value but no origin. Even
+    // a programmatic writer therefore triggers the conservative stand-down.
+    global.window.highway.getMastery = () => 0.42;
     mod.commitPhraseResult(1.0);
     assert.equal(mod.settings.autoAdjust, false);
-    assert.equal(calls.length, 1, 'stood down instead of fighting the manual move');
+    assert.equal(calls.length, 1, 'stood down instead of fighting originless drift');
 });
 
 // ── Generate ladder depth cap (generateLevels) ──────────────────────────────

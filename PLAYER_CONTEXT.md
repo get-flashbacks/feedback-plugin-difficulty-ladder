@@ -156,9 +156,18 @@ or reset transient state without changing another player's controller.
 ## Note detection and finalization
 
 `note_detect` owns note judgment. Its provider is attached to the player's
-highway and returns only the established `hit`, `active`, or `miss` states.
-Difficulty Ladder samples that provider on the matching highway and counts a
-note once, ignoring unresolved `active` results until they resolve.
+highway and returns `hit`, `active`, `miss`, or no result. `hit` and `miss` are
+terminal; `active` and no result are pending. Difficulty Ladder samples that
+provider on the matching highway, retains pending notes even after they leave
+the rolling scan window, and counts each terminal result once.
+
+At a phrase boundary, Difficulty Ladder performs one final provider read for
+every still-pending note in that phrase. A provider must keep its terminal
+result observable through that final read. Notes that are still `active` or
+unresolved after it are explicitly discarded rather than guessed as hits or
+misses. This bounded finalization rule prevents delayed judgments and sustains
+from silently aging out while ensuring one phrase cannot retain pending state
+indefinitely.
 
 The current implementation finalizes a phrase when playback crosses into the
 next phrase, then records a player-scoped `difficulty_ladder.phrase_attempt.v2`
@@ -167,6 +176,13 @@ If `note_detect` exposes a separate finalized-session event in the future, it
 must include the same `session_id`, `player_id`, profile, arrangement, and
 instrument/role/skill dimensions; consumers must deduplicate it against the
 phrase/session already finalized by the highway.
+
+The legacy Host `window.setMastery` function carries no source metadata.
+Consequently, an unexpected value change is treated conservatively as a manual
+override for compatibility, but this is a heuristic: restoration, Host sync,
+or another plugin can produce the same signal. New player-scoped integrations
+must include a `reason`/origin in `player-difficulty.v1`; consumers must not
+infer a human action when explicit origin metadata is available.
 
 `note_detect` must not call an unscoped `window.setMastery` for a split player.
 Difficulty changes are requested through `player-difficulty.v1` with the
