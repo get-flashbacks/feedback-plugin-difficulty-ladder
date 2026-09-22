@@ -24,8 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Normalized legacy fretted records to guitar and documented the
   `difficulty_ladder.sections.v2` Section Map payload contract.
 - Merged the player-context persistence foundation with the mastery streak
-  indicator and instrument baseline profile card work below (0.11.0),
-  consolidating onto `0.12.0`.
+  indicator (0.10.1) and instrument baseline profile card (0.11.0) work
+  below, consolidating onto `0.12.0`.
 
 ## [0.11.0] - 2026-09-15
 
@@ -55,8 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.12] - 2026-09-04
 
 ### Fixed
-- Bound `/generate-library` to a processing-time budget (`MAX_PROCESSING_SECONDS`, default 120s, caller-adjustable up to 600s via `max_processing_seconds`) to prevent runaway CPU use on large libraries (issue #40). The budget is now also checked per-arrangement (not just per-pack), so a single large multi-arrangement pack can't blow past it. The response now includes `time_limit_reached` so the frontend can surface when the sweep was truncated.
-- Replaced the O(groups) scan in `_best_bridge_candidate` with a bisect-based time-window slice, and pre-sort groups once in `_refine_lower_tier_path` instead of re-sorting on every iteration, reducing the super-linear cost on large charts.
+- Bound `/generate-library` to a processing-time budget (`MAX_PROCESSING_SECONDS`,
+  default 120s, caller-adjustable up to 600s via `max_processing_seconds`) to
+  prevent runaway CPU use on large libraries (issue #40). The budget is now also
+  checked per-arrangement (not just per-pack), so a single large multi-arrangement
+  pack can't blow past it. The response now includes `time_limit_reached` so the
+  frontend can surface when the sweep was truncated.
+- Replaced the O(groups) scan in `_best_bridge_candidate` with a bisect-based
+  time-window slice, and pre-sort groups once in `_refine_lower_tier_path` instead
+  of re-sorting on every iteration, reducing the super-linear cost on large charts.
 
 ## [0.9.11] - 2026-08-31
 
