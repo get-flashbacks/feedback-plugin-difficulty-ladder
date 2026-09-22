@@ -79,32 +79,30 @@ spec is intentionally non-normative about exact mechanics.
 
 ## Gaps found and how they were handled
 
-1. **v2 player chrome is not supported.** `mountControls()` bails out entirely unless
-   `window.feedBack.uiVersion === 'v3'`. Best-practices rule 33 explicitly requires: *"A plugin that
-   injects controls into the player MUST work in both [v2 and v3]... verify your plugin in both UIs
-   before shipping."* This plugin only ever mounts its Auto-Difficulty / Generate-Difficulties
-   controls in v3; on a v2 Host they silently never appear (no console warning, no fallback). The
-   HUD canvas itself doesn't depend on `uiVersion` (it looks up `#player` directly) so the
-   glass-filling overlay still renders on v2 — only the two control buttons are v3-only.
-
-   This isn't confidently fixable without access to a running v2 Host to verify a mount point (v2's
-   control-slot equivalent isn't documented in the spec, which explicitly calls the exact mount API
-   Host-versioned, not spec-frozen) — guessing at a v2 DOM selector would itself violate rule 10
-   (no injecting into unversioned app-shell markup). **Filed as a follow-up issue** rather than
-   guessing: see below.
+1. ~~**v2 player chrome is not supported.**~~ **Resolved by upstream removal, not by this plugin.**
+   As of feedBack core v0.3.0, the v3 UI is the *only* UI — the classic v2 shell and its
+   `FEEDBACK_UI`/`/v2` opt-outs are gone entirely (see feedBack core's own `CLAUDE.md`, "v3 UI"
+   section). `mountControls()`'s `window.feedBack.uiVersion !== 'v3'` guard is therefore no longer
+   a compliance gap against best-practices rule 33 — there is no second shell left to support, so
+   the rule's "MUST work in both" condition is vacuously satisfied. The guard itself is harmless
+   dead code against any Host running the only UI that exists; left in place rather than stripped
+   since removing it wouldn't change behavior on any real Host. No follow-up issue needed.
 
 2. **No `README.md` "target Host version"** callout of the kind the spec's own `full-plugin`
    example carries (rule 54 asks for "which Host version it targets"). Low-risk, mechanical —
    **fixed directly** by adding a short line to `README.md`.
 
-3. **No formal `capabilities` declaration.** The plugin doesn't declare a capability domain, which
-   is *correct*, not a gap: it doesn't participate in the capability control plane
-   (claim/dispatch/release) today, and best-practices rule 52 is explicit that declaring a
-   capability you don't service is worse than declaring none. The actual cross-plugin data surface
-   for section-level difficulty is the Host's own `window.highway.getPhrases()` /
-   `hasPhraseData()` / `getMastery()` — a Host-mediated read, not something this plugin produces or
-   owns. This is the operative fact for `feedBack-plugin-sectionmap#1` / this repo's `#8`: see
-   "Section-map integration assumptions" below.
+3. **No formal `capabilities` declaration for section-level difficulty.** The plugin doesn't
+   declare a capability domain for this surface, which is *correct*, not a gap: best-practices rule
+   52 is explicit that declaring a capability you don't service is worse than declaring none. The
+   actual cross-plugin surface for section-level difficulty is the plugin's own
+   `difficulty:sections-updated` event — see "Section-map integration assumptions" below for the
+   current (post-#63) contract; this bullet's original text described a since-superseded
+   getters-only architecture. (Separately, unrelated to section difficulty: the plugin *does* now
+   participate in the Host's capability dispatch pipeline for player-scoped difficulty commands —
+   `fb.capabilities.dispatch('player-difficulty.v1', ...)` — as part of the multi-player work; that
+   capability is intentionally narrower than a full section-difficulty domain and doesn't change
+   this bullet's conclusion.)
 
 ## Best-practices alignment — intentional deviations
 
@@ -129,24 +127,26 @@ spec is intentionally non-normative about exact mechanics.
 
 ## Section-map integration assumptions (for `feedBack-plugin-sectionmap#1` / this repo's `#8`)
 
-Documented explicitly per issue #9's acceptance criteria:
+**Superseded by issue #63 (shipped 0.9.11) — the getters-only architecture described below is no
+longer how this integration works.** This section originally documented issue #9's acceptance
+criteria against the state of the plugins at the time (both reading `window.highway` getters
+independently, no dedicated event). That's since changed: `difficulty_ladder` now emits a bespoke
+`difficulty:sections-updated` event on `window.feedBack` (fired from
+`calculateAndEmitSectionDifficulties()`, debounced), and `section_map` no longer calls
+`highway.getPhrases()` / `hasPhraseData()` / `getMastery()` for section-difficulty data at all — it
+renders whatever `fillPercentage`/`glassSize` the event payload carries per section, and nothing
+else. See [`INTEGRATION.md`](INTEGRATION.md) for the authoritative, current contract (event shape,
+fallback/timing behavior, and why the fill formula was unified with `drawHud()`'s own discrete
+tiers in the same pass). Kept below for historical context only; do not treat the bullets as
+current:
 
-- This plugin does **not** expose a bespoke API or event for section difficulty. All section-level
-  difficulty data (`start_time`/`end_time`/`max_difficulty` per phrase) and the live
-  master-difficulty value flow through the Host's own `window.highway` object —
-  `getPhrases()`, `hasPhraseData()`, `getMastery()` — exactly the same surface this plugin's own
-  glass-filling HUD (`screen.js`'s `drawHud()`) consumes.
-- `feedBack-plugin-sectionmap` should therefore read `window.highway.getPhrases()` /
-  `hasPhraseData()` / `getMastery()` directly, the same way this plugin does, rather than expecting
-  `difficulty_ladder` to forward or re-emit that data itself. There is no ordering dependency
-  between the two plugins at runtime — both are independent consumers of Host state — except that
-  phrase data must actually exist for a song (via this plugin's `/generate` route, or hand-authored)
-  before either plugin's glass HUD has anything non-trivial to show.
+- ~~This plugin does **not** expose a bespoke API or event for section difficulty.~~ It does now
+  (`difficulty:sections-updated`).
+- ~~`feedBack-plugin-sectionmap` should therefore read `window.highway.getPhrases()` /
+  `hasPhraseData()` / `getMastery()` directly...~~ It doesn't anymore; it's a pure event consumer.
 - No "difficulty maker" screen exists anywhere in the current feedBack codebase (checked
-  `feedBack/plugins/` and `feedBack/static/` for any "maker" screen) — the only place phrase
-  difficulty currently surfaces is the player. If sectionmap's maker-UI acceptance criterion refers
-  to a screen that doesn't exist yet, that's a sectionmap-side scoping question, not a
-  dynamic-difficulty contract gap.
-- Missing/delayed phrase data must degrade to "no glass HUD," never an error — this plugin's own
-  `drawHud()` already does exactly that (`hasPhraseData()` false → canvas hidden, function returns
-  early) and sectionmap's consumer should mirror the same fail-soft check.
+  `feedBack/plugins/` and `feedBack/static/` for any "maker" screen) — still true, and unaffected
+  by the event-contract change above.
+- Missing/delayed phrase data must degrade to "no glass HUD," never an error — still the case on
+  both sides: this plugin's own `drawHud()` fail-soft path is unchanged, and `section_map` simply
+  has nothing to render when no `difficulty:sections-updated` event has fired yet.
