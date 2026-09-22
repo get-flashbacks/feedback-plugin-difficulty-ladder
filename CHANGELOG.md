@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Test coverage for the acceptance-criteria edge cases named in #82/#83:
+  0%/100% accuracy at phrase finalization, an exact-duplicate finalization
+  event, a malformed legacy mastery value during migration, and a legacy
+  key containing a Windows-style backslash path. No behavior changed —
+  the underlying formula (`_phraseMasteryPct`) and migration logic
+  (`migrateLegacyData`) were already correct on inspection; this closes
+  out the two issues' stated test-coverage gaps rather than fixing a bug.
+
 ## [0.12.0] - 2026-09-16
 
 ### Added
