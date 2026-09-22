@@ -819,6 +819,91 @@ test('best mastery at 100% accuracy equals the full presented difficulty', () =>
     assert.equal(mod.readProgress(ctx).bestMastery, 80, '100% hit rate at 80% difficulty is worth the full 80');
 });
 
+// #83 acceptance criteria: "difficulty bounds". _phraseMasteryPct clamps
+// both inputs to 0..1 before multiplying, independent of the 0/100 ratio
+// boundary tests above (those exercise the ratio edge; this exercises the
+// difficulty edge, and an out-of-range ratio at the same time).
+test('best mastery clamps an out-of-range ratio or difficulty instead of over/under-shooting', () => {
+    const mod = freshPlugin();
+    const overRatioCtx = playerContext({ player_id: 'player-over-ratio' });
+    mod.writeProgress(overRatioCtx, { currentDifficulty: 80 });
+    mod.commitSplitPhraseResult(mod.newSplitScoreState(overRatioCtx), { getMastery: () => 0.8 }, 1.5);
+    assert.equal(mod.readProgress(overRatioCtx).bestMastery, 80, 'a ratio above 1 clamps to 1, not an inflated >80 mastery');
+
+    const underDifficultyCtx = playerContext({ player_id: 'player-under-difficulty' });
+    mod.writeProgress(underDifficultyCtx, { currentDifficulty: 50 });
+    mod.commitSplitPhraseResult(mod.newSplitScoreState(underDifficultyCtx), { getMastery: () => -0.2 }, 1);
+    assert.equal(mod.readProgress(underDifficultyCtx).bestMastery, 0, 'a negative difficulty clamps to 0, not a negative mastery');
+});
+
+// #83 acceptance criteria: "missing accuracy". A non-finite ratio (no
+// judgment data to compute a hit rate from) must leave bestMastery
+// untouched, not write NaN or a bogus 0.
+//
+// The fresh-context case below is the load-bearing assertion: on a node
+// with no prior bestMastery, writeProgress's monotonic check short-circuits
+// on `previousBest === null` regardless of the incoming value, so a NaN
+// ratio is only actually caught by _phraseMasteryPct's/_pct's own isFinite
+// guards, not by the `mastery > previousBest` comparison. (An earlier
+// version of this test wrote a real value first and only checked NaN
+// afterward — `NaN > 30` is always false, so that ordering silently passed
+// even with both isFinite guards removed. Confirmed by mutation testing.)
+test('a non-finite (missing) accuracy ratio leaves best mastery unchanged', () => {
+    const mod = freshPlugin();
+    const freshCtx = playerContext({ player_id: 'player-missing-accuracy-fresh' });
+    mod.writeProgress(freshCtx, { currentDifficulty: 60 });
+    mod.commitSplitPhraseResult(mod.newSplitScoreState(freshCtx), { getMastery: () => 0.6 }, NaN);
+    assert.equal(mod.readProgress(freshCtx).bestMastery, null, 'a NaN ratio on a fresh node must not write anything, not even 0 or NaN itself');
+
+    const establishedCtx = playerContext({ player_id: 'player-missing-accuracy-established' });
+    const state = mod.newSplitScoreState(establishedCtx);
+    mod.writeProgress(establishedCtx, { currentDifficulty: 60 });
+    const highway = { getMastery: () => 0.6 };
+    mod.commitSplitPhraseResult(state, highway, 0.5);
+    assert.equal(mod.readProgress(establishedCtx).bestMastery, 30, 'sanity: a real ratio does record');
+    mod.commitSplitPhraseResult(state, highway, NaN);
+    assert.equal(mod.readProgress(establishedCtx).bestMastery, 30, 'a missing/non-finite ratio must not overwrite an existing best mastery either');
+});
+
+// #82 acceptance criteria: "duplicate arrangements". Two different
+// arrangements of the same song, both present in the legacy map, must
+// migrate independently — same song_id, different arrangement_id in the
+// compound progress key, no collision or cross-write.
+test('two arrangements of the same song migrate independently without colliding', () => {
+    const legacyDifficultyKey = 'difficulty_ladder.songMastery';
+    const stored = {
+        [legacyDifficultyKey]: JSON.stringify({
+            'shared.feedpak::lead': { mastery: 40, instrument: 'guitar' },
+            'shared.feedpak::rhythm': { mastery: 65, instrument: 'guitar' },
+        }),
+    };
+    const mod = freshPlugin({ stored });
+    const ctx = playerContext({ compatibility_adapter: true, role: 'instrumental' });
+
+    assert.equal(mod.migrateLegacyData(ctx), true);
+
+    const lead = { ...ctx, song_id: 'shared.feedpak', arrangement_id: 'lead', instrument: 'guitar', role: 'instrumental', skill: 'overall' };
+    const rhythm = { ...ctx, song_id: 'shared.feedpak', arrangement_id: 'rhythm', instrument: 'guitar', role: 'instrumental', skill: 'overall' };
+    assert.equal(mod.readProgress(lead).currentDifficulty, 40, 'the lead arrangement keeps its own value');
+    assert.equal(mod.readProgress(rhythm).currentDifficulty, 65, 'the rhythm arrangement keeps its own, independent value');
+});
+
+// #83 acceptance criteria: "arrangement switches". The live scoring path
+// (not just migration) must key bestMastery by arrangement_id too — a
+// phrase finalized while playing one arrangement must not affect another
+// arrangement of the same song.
+test('a live phrase finalization does not affect a different arrangement of the same song', () => {
+    const mod = freshPlugin();
+    const lead = playerContext({ player_id: 'player-switch', song_id: 'switch.feedpak', arrangement_id: 'lead' });
+    const rhythm = { ...lead, arrangement_id: 'rhythm' };
+    mod.writeProgress(lead, { currentDifficulty: 70 });
+    mod.writeProgress(rhythm, { currentDifficulty: 30 });
+
+    mod.commitSplitPhraseResult(mod.newSplitScoreState(lead), { getMastery: () => 0.7 }, 1);
+    assert.equal(mod.readProgress(lead).bestMastery, 70);
+    assert.equal(mod.readProgress(rhythm).bestMastery, null, 'switching arrangements must not leak a best-mastery write across arrangement_id');
+});
+
 // Scoped to the persisted best-mastery write only, with auto-adjust off
 // (the plugin's own default — see lsGet('autoAdjust', false) — pinned
 // explicitly here rather than left implicit). With auto-adjust ON, a
