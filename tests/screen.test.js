@@ -549,12 +549,20 @@ test('malformed legacy mastery values are skipped without blocking valid entries
             'good.feedpak::lead': { mastery: 55, instrument: 'guitar' },
             'string-value.feedpak::lead': 'not-a-number',
             'null-value.feedpak::lead': null,
-            'nan-value.feedpak::lead': { mastery: NaN, instrument: 'guitar' },
             'no-mastery-field.feedpak::lead': { instrument: 'guitar' },
         }),
     };
     const mod = freshPlugin({ stored });
     const ctx = playerContext({ compatibility_adapter: true, role: 'instrumental' });
+
+    // NaN has no JSON representation (JSON.stringify silently turns it into
+    // `null`), so a real NaN can only reach _masteryPct via the in-memory
+    // cache, not a localStorage round-trip — saveSongMasteryMap() sets that
+    // cache directly, merged over what freshPlugin() already parsed from
+    // `stored` above.
+    mod.saveSongMasteryMap(Object.assign(mod.loadSongMasteryMap(), {
+        'nan-value.feedpak::lead': { mastery: NaN, instrument: 'guitar' },
+    }));
 
     assert.doesNotThrow(() => mod.migrateLegacyData(ctx));
 
