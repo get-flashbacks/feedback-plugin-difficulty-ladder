@@ -819,8 +819,18 @@ test('best mastery at 100% accuracy equals the full presented difficulty', () =>
     assert.equal(mod.readProgress(ctx).bestMastery, 80, '100% hit rate at 80% difficulty is worth the full 80');
 });
 
-test('an exact-duplicate finalization is idempotent and does not error', () => {
-    const mod = freshPlugin();
+// Scoped to the persisted best-mastery write only, with auto-adjust off
+// (the plugin's own default — see lsGet('autoAdjust', false) — pinned
+// explicitly here rather than left implicit). With auto-adjust ON, a
+// second identical call is NOT fully idempotent: commitSplitPhraseResult
+// still increments state.phrasesScored, can cross WARMUP_PHRASES, and can
+// advance the ramp / call setMastery a second time for what should be one
+// phrase's worth of evidence. That's a property of whether the caller
+// de-duplicates the underlying event before invoking this function at all
+// (PR #95's territory, same as the seek/loop carve-out above), not of the
+// best-mastery formula this test targets — so it isn't asserted here.
+test('an exact-duplicate finalization does not change the persisted best-mastery record', () => {
+    const mod = freshPlugin({ stored: { 'difficulty_ladder.autoAdjust': 'false' } });
     const ctx = playerContext({ player_id: 'player-dup' });
     const state = mod.newSplitScoreState(ctx);
     mod.writeProgress(ctx, { currentDifficulty: 70 });
