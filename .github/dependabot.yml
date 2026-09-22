@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Keep GitHub Actions up to date, including SHA-pinned actions —
+  # Dependabot resolves the SHA to the tag it corresponds to and opens
+  # a PR bumping to the new release's SHA, keeping the pin fresh
+  # without giving up commit-pinning.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    # Only patch/minor bumps land automatically; major version bumps
+    # (which can change an action's inputs/outputs) still need a human
+    # to review and update the workflow.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
