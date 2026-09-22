@@ -313,14 +313,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Prevent prototype chain pollution attacks in storage event listener by using `Object.prototype.hasOwnProperty.call()` instead of the `in` operator when checking settings keys (issue #39). While exploitation requires pre-existing XSS, this closes an unnecessary attack surface.
 
-## [0.1.0] – [0.8.1] - 2026-07-29 – 2026-08-14
+## [0.1.0] – [0.8.1] - 2026-07-22 – 2026-08-14
 
-_Consolidated range: per-release changelog entries did not exist yet for this
-span (confirmed against `plugin.json`'s version history) — everything below
-was written up in one batch and only later frozen against a real release
-header (0.8.2, above) once granular entries began. Left as a single range
-rather than split by exact commit to avoid re-attributing content with false
-precision._
+_Consolidated range, corrected: an earlier draft of this note dated the start
+of this span 2026-07-29 and described the content as written in one batch —
+both wrong. `plugin.json`'s `version` field was already `0.1.0` at the
+project's actual first commit, `06c2fe2` (2026-07-22), and `git blame` shows
+this range was built up incrementally across a dozen-plus commits from that
+date through 0.8.1 (2026-08-14), each adding a few bullets under a
+perpetually-reopened `[Unreleased]` header without ever giving its own work
+a version number — the same pattern documented elsewhere in this file, just
+further back than an earlier (shallow-clone) pass into this repository's
+history could see. Left as a single range rather than split by exact commit
+to avoid re-attributing content with false precision._
 
 ### Added
 - Whole-song generation now covers **every** arrangement in a pack rather than the first
