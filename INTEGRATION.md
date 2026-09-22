@@ -19,7 +19,10 @@
 
 `difficulty_ladder` **is** the API `section_map` depends on: it emits a
 `difficulty:sections-updated` event on `window.feedBack` (fired from
-`calculateAndEmitSectionDifficulties()`, debounced — see `screen.js`), and
+`calculateAndEmitSectionDifficulties()`, throttled at approximately 150 ms via
+`scheduleSectionDifficultiesEmit()` — a trailing-edge throttle, not a debounce:
+it fires periodically during a continuous change rather than only once at the
+end; see `screen.js`), and
 `section_map`'s current `screen.js` (`_smUpdateDifficultyFills` /
 `_smGetSectionDifficulty`) does nothing but render whatever
 `fillPercentage` / `glassSize` that event's payload carries per section. It
@@ -104,7 +107,7 @@ there is exactly one place this arithmetic is written. See
   `section_map`'s `_smStartRealtimeHooks()` runs its one-time availability
   check. This ordering is load-bearing but undocumented in either repo
   before this pass — noted here and in `section_map`'s `CLAUDE.md`.
-- **Stale events:** the event is debounced but can still fire repeatedly
+- **Stale events:** the event is throttled but can still fire repeatedly
   over a song (mastery changes, phrase generation, song load). `section_map`
   applies whatever the *latest* event says, in place (`_smUpdateDifficultyFills`),
   without diffing against a previous value — a strictly-newer event always
