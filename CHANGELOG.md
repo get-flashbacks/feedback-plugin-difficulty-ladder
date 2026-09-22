@@ -5,17 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
 ## [0.12.0] - 2026-09-16
-
-### Changed
-- Promoted the player-context persistence foundation to a minor feature release.
-- Normalized legacy fretted records to guitar and documented the
-  `difficulty_ladder.sections.v2` Section Map payload contract.
-- Merged the player-context persistence foundation with the mastery streak
-  indicator and instrument baseline profile card work landed on `main`
-  (0.11.0), consolidating onto `0.12.0`.
-
-## [0.9.13] - 2026-09-10
 
 ### Added
 - Documented the v1 player-context contract in [`PLAYER_CONTEXT.md`](PLAYER_CONTEXT.md)
@@ -28,30 +20,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatch, and player-scoped phrase finalization.
 
 ### Changed
-- Bumped the plugin patch version to `0.9.13`.
+- Promoted the player-context persistence foundation to a minor feature release.
+- Normalized legacy fretted records to guitar and documented the
+  `difficulty_ladder.sections.v2` Section Map payload contract.
+- Merged the player-context persistence foundation with the mastery streak
+  indicator and instrument baseline profile card work below (0.11.0),
+  consolidating onto `0.12.0`.
 
-## [0.9.12] - 2026-08-19
+## [0.11.0] - 2026-09-15
+
+### Added
+- Added a read-only v3 Profile card showing average and median remembered
+  difficulty for fretted and keys arrangements (#23).
+
+## [0.10.1] - 2026-09-15
+
+### Added
+- Added a passive gold Mastery streak badge to the glass HUD after three
+  consecutive phrases at the configured maximum mastery and at least 95%
+  accuracy. Pausing, transitioning through Split Screen, or missing the
+  threshold resets the streak (#25).
+
+### Fixed
+- Mastery-streak lifecycle subscriptions now detach while the player is hidden,
+  preventing inactive instances from retaining pause/stop/end handlers (#25).
+
+## [0.10.0] - 2026-09-15
+
+### Added
+- Added an opt-in Difficulty drop speed setting (1×-2×). It scales only the
+  total downward auto-adjust step while retaining the existing symmetric
+  three-phrase ramp shape and leaving upward adjustments unchanged (#24).
+
+## [0.9.12] - 2026-09-04
 
 ### Fixed
 - Bound `/generate-library` to a processing-time budget (`MAX_PROCESSING_SECONDS`, default 120s, caller-adjustable up to 600s via `max_processing_seconds`) to prevent runaway CPU use on large libraries (issue #40). The budget is now also checked per-arrangement (not just per-pack), so a single large multi-arrangement pack can't blow past it. The response now includes `time_limit_reached` so the frontend can surface when the sweep was truncated.
 - Replaced the O(groups) scan in `_best_bridge_candidate` with a bisect-based time-window slice, and pre-sort groups once in `_refine_lower_tier_path` instead of re-sorting on every iteration, reducing the super-linear cost on large charts.
 
-## [Unreleased]
-
-### Added
-- Added a read-only v3 Profile card showing average and median remembered
-  difficulty for fretted and keys arrangements (#23).
-- Added a passive gold Mastery streak badge to the glass HUD after three
-  consecutive phrases at the configured maximum mastery and at least 95%
-  accuracy. Pausing, transitioning through Split Screen, or missing the
-  threshold resets the streak (#25).
-- Added an opt-in Difficulty drop speed setting (1×-2×). It scales only the
-  total downward auto-adjust step while retaining the existing symmetric
-  three-phrase ramp shape and leaving upward adjustments unchanged (#24).
+## [0.9.11] - 2026-08-31
 
 ### Fixed
-- Mastery-streak lifecycle subscriptions now detach while the player is hidden,
-  preventing inactive instances from retaining pause/stop/end handlers (#25).
 - The per-section difficulty "glass fill" emitted for feedBack-plugin-sectionmap
   (`difficulty:sections-updated`) now uses the same discrete difficulty-tier
   formula this plugin's own player HUD uses, instead of a different continuous
@@ -60,6 +69,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewritten to describe the real, current contract (an event `section_map`
   consumes — not the Host-getters-only architecture both plugins' docs still
   described after `section_map` moved off it) (#63).
+
+## [0.9.10] - 2026-08-28
+
+### Fixed
 - Generation now uses an explicit allowlist for the arrangement types it
   supports (fretted: lead/rhythm/bass/combo/chord/humstrum; keys:
   piano/keys, or name-sniffed) instead of treating "non-drum" as
@@ -80,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read, changed via the settings panel, or synced across tabs, and the two
   settings-panel inputs now constrain each other in real time so an
   inverted pair can no longer be saved in the first place (#64).
+
+## [0.9.8] - 2026-08-18
+
+### Fixed
 - `/generate-library` now computes canonical song-level section boundaries
   the same way `/generate` does, so a song's phrase boundaries no longer
   depend on which entry point generated it (#67).
@@ -120,6 +137,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   simultaneous polyphony (a wide chord) no longer inflates density, and
   the same rhythmic pattern now scores equivalently across different
   tempos (#71).
+
+## [0.9.7] - 2026-08-18
 
 ### Security
 - `/generate` and `/generate-library` now validate their request bodies with
@@ -287,7 +306,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Prevent prototype chain pollution attacks in storage event listener by using `Object.prototype.hasOwnProperty.call()` instead of the `in` operator when checking settings keys (issue #39). While exploitation requires pre-existing XSS, this closes an unnecessary attack surface.
 
-## [Unreleased]
+## [0.1.0] – [0.8.1] - 2026-07-29 – 2026-08-14
+
+_Consolidated range: per-release changelog entries did not exist yet for this
+span (confirmed against `plugin.json`'s version history) — everything below
+was written up in one batch and only later frozen against a real release
+header (0.8.2, above) once granular entries began. Left as a single range
+rather than split by exact commit to avoid re-attributing content with false
+precision._
 
 ### Added
 - Whole-song generation now covers **every** arrangement in a pack rather than the first

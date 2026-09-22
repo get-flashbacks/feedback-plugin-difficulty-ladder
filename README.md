@@ -209,10 +209,6 @@ user turns it on.
   store beyond the existing `songMastery` map, plus new live-scoring
   logic) — closer in scope to the per-technique skill profile ruled out
   below, but aimed at adapting difficulty rather than only displaying it.
-- Direction-asymmetric step size (larger downward steps than upward).
-- A passive "mastery streak" indicator on the glass HUD when accuracy
-  stays high at max difficulty for several consecutive phrases — visual
-  only.
 
 **Not planned:**
 
