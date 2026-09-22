@@ -132,7 +132,9 @@ longer how this integration works.** This section originally documented issue #9
 criteria against the state of the plugins at the time (both reading `window.highway` getters
 independently, no dedicated event). That's since changed: `difficulty_ladder` now emits a bespoke
 `difficulty:sections-updated` event on `window.feedBack` (fired from
-`calculateAndEmitSectionDifficulties()`, debounced), and `section_map` no longer calls
+`calculateAndEmitSectionDifficulties()`, throttled at approximately 150 ms — a trailing-edge
+throttle via `scheduleSectionDifficultiesEmit()`, not a debounce: it fires periodically during a
+continuous drag rather than only once at the end), and `section_map` no longer calls
 `highway.getPhrases()` / `hasPhraseData()` / `getMastery()` for section-difficulty data at all — it
 renders whatever `fillPercentage`/`glassSize` the event payload carries per section, and nothing
 else. See [`INTEGRATION.md`](INTEGRATION.md) for the authoritative, current contract (event shape,
