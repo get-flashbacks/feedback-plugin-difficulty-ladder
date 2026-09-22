@@ -538,6 +538,62 @@ test('legacy song difficulty and phrase attempts migrate once into overall for a
     assert.equal(global.localStorage.getItem(legacyAttemptsKey), stored[legacyAttemptsKey], 'legacy recovery source retained');
 });
 
+// #82 acceptance criteria: "Add unit tests for ... malformed values". A
+// malformed entry must be skipped silently (no throw, no bogus progress
+// record) without blocking migration of the other, valid entries in the
+// same legacy map.
+test('malformed legacy mastery values are skipped without blocking valid entries', () => {
+    const legacyDifficultyKey = 'difficulty_ladder.songMastery';
+    const stored = {
+        [legacyDifficultyKey]: JSON.stringify({
+            'good.feedpak::lead': { mastery: 55, instrument: 'guitar' },
+            'string-value.feedpak::lead': 'not-a-number',
+            'null-value.feedpak::lead': null,
+            'nan-value.feedpak::lead': { mastery: NaN, instrument: 'guitar' },
+            'no-mastery-field.feedpak::lead': { instrument: 'guitar' },
+        }),
+    };
+    const mod = freshPlugin({ stored });
+    const ctx = playerContext({ compatibility_adapter: true, role: 'instrumental' });
+
+    assert.doesNotThrow(() => mod.migrateLegacyData(ctx));
+
+    const good = { ...ctx, song_id: 'good.feedpak', arrangement_id: 'lead', instrument: 'guitar', role: 'instrumental', skill: 'overall' };
+    assert.equal(mod.readProgress(good).currentDifficulty, 55, 'the one well-formed entry still migrates');
+
+    for (const songId of ['string-value.feedpak', 'null-value.feedpak', 'nan-value.feedpak', 'no-mastery-field.feedpak']) {
+        const malformed = { ...ctx, song_id: songId, arrangement_id: 'lead', instrument: 'guitar', role: 'instrumental', skill: 'overall' };
+        assert.equal(mod.readProgress(malformed), null, `malformed entry ${songId} must not produce a progress record`);
+    }
+});
+
+// #82 acceptance criteria: "Add unit tests for ... Windows/path-normalized
+// filenames". A legacy key containing a raw backslash (as a pre-rename
+// client might have stored, before filenames were consistently
+// percent-encoded) must round-trip through the split/trim in
+// _legacySongIdentity unchanged — no separator normalization is applied
+// anywhere in this path, so the migrated song_id must match the legacy key
+// substring byte-for-byte, not a silently mangled or re-encoded variant.
+test('a legacy key containing a Windows-style path round-trips its song_id exactly', () => {
+    const legacyDifficultyKey = 'difficulty_ladder.songMastery';
+    const windowsKey = 'C:\\Music\\song.feedpak::lead';
+    const stored = {
+        [legacyDifficultyKey]: JSON.stringify({
+            [windowsKey]: { mastery: 63, instrument: 'guitar' },
+        }),
+    };
+    const mod = freshPlugin({ stored });
+    const ctx = playerContext({ compatibility_adapter: true, role: 'instrumental' });
+
+    assert.equal(mod.migrateLegacyData(ctx), true);
+
+    const migrated = {
+        ...ctx, song_id: 'C:\\Music\\song.feedpak', arrangement_id: 'lead',
+        instrument: 'guitar', role: 'instrumental', skill: 'overall',
+    };
+    assert.equal(mod.readProgress(migrated).currentDifficulty, 63, 'the backslash-bearing song_id must be preserved exactly, not split/escaped differently');
+});
+
 test('explicit concurrent contexts cannot claim unscoped legacy data', () => {
     const mod = freshPlugin({ stored: {
         'difficulty_ladder.songMastery': JSON.stringify({ 'song.feedpak::lead': 99 }),
@@ -725,6 +781,53 @@ test('finalized phrase results update monotonic best mastery without changing cu
     mod.commitSplitPhraseResult(state, highway, 1);
     assert.equal(mod.readProgress(ctx).bestMastery, 90);
     assert.equal(mod.readProgress(ctx).currentDifficulty, 61);
+});
+
+// #83 acceptance criteria: "Handle aborted, partial, looped, seeked, or
+// duplicate session events safely" and "0/100 accuracy". The 0%/100% floor
+// and ceiling of the ratio input, and an exact-duplicate finalization, are
+// this function's own boundary/idempotency responsibilities — whether a
+// call is actually a legitimate finalization (vs. one crossed by a seek or
+// loop) is decided upstream by the caller, covered separately by #95.
+test('best mastery records exactly 0 at 0% accuracy, not null or a skipped write', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'player-zero' });
+    const state = mod.newSplitScoreState(ctx);
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const highway = { getMastery: () => 0.8 };
+
+    mod.commitSplitPhraseResult(state, highway, 0);
+    assert.equal(mod.readProgress(ctx).bestMastery, 0, '0% accuracy must be recorded as 0, not treated as unset');
+});
+
+test('best mastery at 100% accuracy equals the full presented difficulty', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'player-full' });
+    const state = mod.newSplitScoreState(ctx);
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const highway = { getMastery: () => 0.8 };
+
+    mod.commitSplitPhraseResult(state, highway, 1);
+    assert.equal(mod.readProgress(ctx).bestMastery, 80, '100% hit rate at 80% difficulty is worth the full 80');
+});
+
+test('an exact-duplicate finalization is idempotent and does not error', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'player-dup' });
+    const state = mod.newSplitScoreState(ctx);
+    mod.writeProgress(ctx, { currentDifficulty: 70 });
+    const highway = { getMastery: () => 0.7 };
+
+    mod.commitSplitPhraseResult(state, highway, 0.5);
+    assert.equal(mod.readProgress(ctx).bestMastery, 35);
+    const firstUpdatedAt = mod.readProgress(ctx).updatedAt;
+
+    // Same context, same highway, same ratio — as if the same phrase
+    // finalization event fired twice (a plausible duplicate-event shape,
+    // independent of whatever upstream guard is meant to prevent it).
+    mod.commitSplitPhraseResult(state, highway, 0.5);
+    assert.equal(mod.readProgress(ctx).bestMastery, 35, 'a repeat of the same result must not change the best-ever value');
+    assert.equal(mod.readProgress(ctx).updatedAt, firstUpdatedAt, 'a no-op write must not touch updatedAt either');
 });
 
 test('main-player phrase finalization updates best mastery through the compatibility context', () => {
