@@ -22,6 +22,43 @@ another player's progress. See [`PLAYER_CONTEXT.md`](PLAYER_CONTEXT.md) for
 the event, capability, `note_detect`, karaoke, Split Screen, and Section Map
 contract.
 
+Each leaf node stores `currentDifficulty` (the remembered/selected difficulty
+for that arrangement) and `bestMastery` (a long-term high score, `round(current
+difficulty% × finalized accuracy% / 100)`, monotonic — a weaker session never
+lowers it) independently; a manual difficulty change never touches
+`bestMastery`, and a finalized phrase result never touches `currentDifficulty`.
+
+### Migrating from earlier storage
+
+Two older, unscoped `localStorage` keys predate the player-context model:
+`difficulty_ladder.songMastery` (a flat `song::arrangement → { mastery,
+instrument }` map) and `difficulty_ladder.phraseAttempts.v1` (a flat array of
+phrase-attempt records). `migrateLegacyData()` folds both into the current
+schema, under `skill: "overall"`, the first time a **compatibility context**
+(a single-player, non-concurrent session — the common case) is seen:
+
+- **One-time, idempotent.** A `songMasteryV1` / `phraseAttemptsV1` marker is
+  written once migration completes; re-running it (plugin reload, a second
+  song load) is a no-op rather than a duplicate import.
+- **Never overwrites better data.** An entry only migrates if the target node
+  has no `currentDifficulty` yet — a legacy value never clobbers state a
+  current-schema write already established.
+- **Legacy keys are retained, not deleted**, so a migration can be inspected
+  or manually recovered from if something looks wrong after an upgrade.
+- **Malformed entries are skipped silently** (a non-numeric value, `null`, a
+  `NaN` mastery, a record missing its `mastery` field) — one bad entry never
+  blocks the rest of the legacy map from migrating.
+- **Per-arrangement, not per-song.** Two arrangements of the same song (e.g.
+  `song.feedpak::lead` and `song.feedpak::rhythm`) migrate to independent
+  nodes, keyed by `arrangement_id` the same way live play is.
+- **Explicit concurrent player contexts never claim unscoped legacy data** —
+  only a genuine single-player compatibility session can, since the legacy
+  format has no profile/player identity to attribute it to.
+
+No migration path exists further back than this — the plugin's very first
+storage format (`dynamic_difficulty.*`, pre-rename) was never carried forward
+into `difficulty_ladder.songMastery` either; that gap predates this contract.
+
 ## What it does
 
 **Generate missing difficulty ladders**
