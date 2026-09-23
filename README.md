@@ -61,7 +61,8 @@ contract.
   release (struck already bent) is simplified to a fretted note at the bent
   pitch rather than an unbent one; a natural harmonic is only turned into a
   fretted note where that sounds the same pitch (frets 12, 19, 24). Chords
-  reduce toward their root, which is the lowest string (string 0).
+  reduce toward their bass note (the lowest string; string 0 is the lowest),
+  which in standard open and barre shapes is usually the root.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
