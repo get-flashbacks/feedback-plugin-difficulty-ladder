@@ -1681,9 +1681,9 @@
 
         // Calculate max difficulty across all phrases
         var maxDiff = 1;
-        for (var i = 0; i < phrases.length; i++) {
-            maxDiff = Math.max(maxDiff, _phraseTopDifficulty(phrases[i]));
-        }
+        phrases.forEach(function (phrase) {
+            maxDiff = Math.max(maxDiff, _phraseTopDifficulty(phrase));
+        });
 
         // Map sections to difficulty data
         var sectionDifficulties = {};

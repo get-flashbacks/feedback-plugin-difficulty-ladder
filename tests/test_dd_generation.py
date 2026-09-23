@@ -68,9 +68,9 @@ def _assert_on_tier_scale(phrase, n_levels):
     and max_difficulty is the scale's top tier -- or 0 when the phrase
     collapsed to a single level (no ladder)."""
     diffs = [lvl["difficulty"] for lvl in phrase["levels"]]
-    assert diffs[0] == 0
-    assert all(b > a for a, b in pairwise(diffs))
-    assert diffs[-1] <= n_levels - 1
+    assert diffs[0] == 0  # nosec B101 - pytest assertion
+    assert all(b > a for a, b in pairwise(diffs))  # nosec B101 - pytest assertion
+    assert diffs[-1] <= n_levels - 1  # nosec B101 - pytest assertion
     expected_max = n_levels - 1 if len(diffs) > 1 else 0
     assert phrase["max_difficulty"] == expected_max
 
@@ -85,7 +85,7 @@ def test_simple_phrase_gets_a_shorter_ladder_than_the_cap():
     arr = _arrangement(notes)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
     assert phrases, "expected at least one phrase"
-    assert len(phrases[0]["levels"]) < 6, (
+    assert len(phrases[0]["levels"]) < 6, (  # nosec B101 - pytest assertion
         "a near-constant, single-string phrase should not have a distinct level at every tier"
     )
 
@@ -124,7 +124,7 @@ def test_dense_technical_phrase_uses_more_of_the_cap_than_a_simple_one():
     technical_phrases = routes.generate_phrases_for_arrangement(technical, n_levels=6)
 
     assert simple_phrases and technical_phrases
-    assert len(technical_phrases[0]["levels"]) > len(simple_phrases[0]["levels"])
+    assert len(technical_phrases[0]["levels"]) > len(simple_phrases[0]["levels"])  # nosec B101 - pytest assertion
 
 
 def test_bottom_tier_is_sparser_than_a_flat_percentile_split():
@@ -137,7 +137,7 @@ def test_bottom_tier_is_sparser_than_a_flat_percentile_split():
     assert top_count > 0
     # a flat percentile split would put ~1/n_levels of the content at the
     # bottom tier; the convex retention curve should land well under that
-    assert bottom_count / top_count < 1.0 / 4
+    assert bottom_count / top_count < 1.0 / 4  # nosec B101 - pytest assertion
 
 
 def test_flashy_techniques_are_gated_out_of_low_tiers():
