@@ -36,12 +36,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slider reaches that tier. A section whose phrases are all single-level now reports
   100% when it has notes (a generated easy phrase, complete at the bottom
   tier) and 0% only when it is silent, matching the HUD glasses.
+- Implicit arpeggio grouping in the fretted ladder generator (`_group_notes`)
+  now requires real evidence before treating a time/fret-proximity cluster of
+  different-string notes as a broken chord (#73): an authored hand-shape
+  window covering the cluster, overlapping sustain windows, or a fret pattern
+  matching a known chord template. Absent all three, the cluster is
+  classified `"run"` (a melodic sequence, e.g. a fast cross-string scale)
+  instead of `"arpeggio"`. Previously ANY different-string notes inside the
+  grouping window became an "arpeggio" with no further evidence, so a scale
+  run could be reduced to a single note at the bottom difficulty tier the
+  same way a genuine broken chord is.
+- `_notes_for_level` no longer collapses a `"run"` group toward one
+  presumed-root note at the bottom tier — it thins proportionally to the
+  level (same ratio as a real arpeggio) and samples evenly across the run
+  (new `_evenly_sample` helper) so the surviving notes trace the run's
+  melodic contour once it's long enough for the ratio to keep more than
+  one note; a short run still keeps one note at the bottom tier, same as
+  before, just no longer forced to for every run length.
+- Corrected "root"/"harmonic root" language in the fretted grouping and
+  chord-reduction docstrings and comments (`_group_anchor_note`,
+  `_notes_for_level`, `_pick_partial_voicing`) to describe what these
+  functions actually pick: the note on the numerically **highest string
+  index** (`max(s)`) in a group. This is a position anchor, not a proven
+  harmonic root — an inversion's/slash-chord's bass note can be on any
+  string, and no authored chord identity is threaded through to tell the
+  difference. A first pass at this fix mislabeled it "bass"; per feedpak's
+  own wire convention (§6.2/§6.6: string index 0 = lowest-pitched string,
+  mirrored in `song.py`'s `_TUNING_BASE_MIDI`), `max(s)` actually lands on
+  the highest-*pitched* string (treble-most, e.g. high e on a standard
+  6-string tuning) — the reverse of "bass." No runtime behavior changed;
+  only the documentation's claim about note direction did (PR #100 review).
+  PR #101 then did change the behavior, to the lowest string index — see
+  Fixed below.
+- Tightened `_cluster_matches_chord_shape`'s chord-template evidence
+  (PR #100 review): a match now also requires the cluster to cover a
+  meaningful share of the template's own used strings (at least 3, or at
+  least half — whichever is fewer), not any coincidental subset. Without
+  this, a 2-note passing interval that happened to land on 2 of a 6-string
+  open chord's 5 used strings would read as chord-identity evidence — the
+  exact false-arpeggio class issue #73 set out to eliminate. A cluster
+  that fully matches a small template (e.g. a 2-string power-chord shape)
+  still counts, since a complete match of a small shape is real evidence
+  regardless of the shape's size.
 
 ### Fixed
-- **Chord root / hand anchor used the top string.** String 0 is the lowest
-  string (feedpak-v1 §6.2, gp2rs), but chord reduction and the hand-position
-  anchor treated the highest index as the root — reduced chords kept the
-  melody-side note. They now use the lowest string.
+- **Chord reduction kept the top string's note.** String 0 is the lowest
+  string (feedpak-v1 §6.2, gp2rs), and chord reduction and the hand-position
+  anchor took the highest index, so a reduced chord kept its treble-most
+  (melody-side) note. They now take the lowest string — the bass note, which
+  in standard open and barre shapes is usually the root. Still a positional
+  heuristic, not a proven root (inversions and slash chords differ).
 - **Root-only chords never happened at the default 4 levels.** The threshold
   (`< 0.20`) was below the bottom tier's 0.25, so it needed 6+ levels; the
   bottom tier now reduces chords to their root at 4+ levels.
@@ -52,6 +96,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so identical tiers were written to the pack; `false` now equals absent.
 
 ### Added
+- Test coverage for the new evidence-gated arpeggio classification: no
+  evidence, sustain overlap, authored hand-shape linkage, chord-template
+  shape match (with a realistic open-C fixture), a mismatched near-miss
+  shape, a regression test for the coincidental-partial-match false
+  positive above, unusual (7-string) tunings (including the same
+  partial-match rejection at that string count), melodic-run preservation
+  at the bottom tier vs. prefix-vs-contour thinning, and confirmation that
+  a genuinely authored arpeggio still gets the existing highest-string-
+  index reduction (#73).
 - Test coverage for the acceptance-criteria edge cases named in #82/#83:
   0%/100% accuracy at phrase finalization, an out-of-range ratio/difficulty
   clamp, a non-finite (missing) accuracy ratio, an exact-duplicate
