@@ -383,8 +383,7 @@ def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4,
     Simplified relative to a full chart editor's grouping (no link_next
     chain) — explicit chords, then time-proximity clusters of otherwise-solo
     notes, then leftover individual notes. A multi-note cluster is only ever
-    labeled
-    `"arpeggio"` when `_classify_cluster` finds real evidence for it
+    labeled `"arpeggio"` when `_classify_cluster` finds real evidence for it
     (issue #73); otherwise it's labeled `"run"` — a fast scale or other
     melodic sequence that time/fret proximity alone doesn't prove is a
     broken chord. `hand_shapes`/`chord_templates` (the arrangement's

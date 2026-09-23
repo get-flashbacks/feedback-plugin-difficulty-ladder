@@ -1901,13 +1901,12 @@ def test_classify_cluster_partial_chord_template_mismatch_stays_a_run():
 
 
 def test_classify_cluster_rejects_a_coincidental_partial_chord_template_match():
-    # Regression (PR #100 review): a 2-note passing interval that happens
-    # to coincidentally match 2 of a 6-string open-C's 5 used strings must
+    # Regression (PR #100 review): a 2-note cluster that happens to
+    # coincidentally match 2 of a 6-string open-C's 5 used strings must
     # NOT read as chord identity -- that's exactly the false-arpeggio class
     # issue #73 set out to eliminate. A real open-C is x-3-2-0-1-0
     # (low-string-first); this cluster is just the A-string/D-string notes
-    # of a passing A4->E4 fifth that happen to land on the template's
-    # fret 3 / fret 2 positions.
+    # (fret 3 / fret 2) landing on 2 of that template's 5 positions.
     cluster = [
         {"t": 0.0, "s": 1, "f": 3, "sus": 0},
         {"t": 0.02, "s": 2, "f": 2, "sus": 0},
