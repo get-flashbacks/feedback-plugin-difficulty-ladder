@@ -267,13 +267,110 @@ def _tech_score(n):
     return min(1.0, score)
 
 
-def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4):
+def _cluster_covered_by_hand_shape(cluster, hand_shapes):
+    """True when an authored `HandShape` window (wire keys `start_time`/
+    `end_time`) covers every note's onset in `cluster` — the chart's own
+    author linked these onsets into one playable shape (block chord or
+    arpeggio; the `arp` flag doesn't change the grouping decision, only
+    real chord-editing tools would draw that distinction), not a time
+    window this generator invented after the fact. This is the strongest
+    of the three evidence signals `_classify_cluster` checks (issue #73)
+    because it comes straight from the source chart rather than being
+    inferred from onset proximity."""
+    if not hand_shapes:
+        return False
+    times = [float(n.get("t", 0)) for n in cluster]
+    lo, hi = min(times), max(times)
+    for hs in hand_shapes:
+        start = float(hs.get("start_time", 0))
+        end = float(hs.get("end_time", 0))
+        if start <= lo and hi < end:
+            return True
+    return False
+
+
+def _cluster_notes_overlap(cluster):
+    """True when any two notes in the cluster ring simultaneously — one
+    note's sustain window hasn't ended before the next note's onset. A
+    broken chord's constituent notes are typically left to ring into each
+    other; a fast melodic run's notes typically aren't (each cuts off
+    before the next begins), so overlap is real evidence the notes were
+    meant to sound together rather than an artifact of this generator's
+    own time-window clustering."""
+    ordered = sorted(cluster, key=lambda n: float(n.get("t", 0)))
+    for i in range(len(ordered) - 1):
+        end_i = float(ordered[i].get("t", 0)) + float(ordered[i].get("sus", 0))
+        if end_i > float(ordered[i + 1].get("t", 0)) + 1e-9:
+            return True
+    return False
+
+
+def _cluster_matches_chord_shape(cluster, chord_templates):
+    """True when the cluster's per-string frets are an exact subset of an
+    authored `ChordTemplate`'s fingering (wire key `frets`, indexed by
+    string — see `_notes_for_level`'s chord-reduction docstring for the
+    same indexing convention). A real chord-identity match, drawn from the
+    chart's own chord vocabulary, rather than an incidental "these notes
+    happen to be close together" coincidence."""
+    if not chord_templates:
+        return False
+    by_string = {}
+    for n in cluster:
+        by_string[n.get("s", 0)] = n.get("f", 0)
+    for ct in chord_templates:
+        frets = ct.get("frets") or []
+        if all(0 <= s < len(frets) and frets[s] == f for s, f in by_string.items()):
+            return True
+    return False
+
+
+def _classify_cluster(cluster, *, hand_shapes=None, chord_templates=None):
+    """Classify a time/fret-proximity cluster of different-string notes as
+    `"arpeggio"` (a genuine implicit broken chord, eligible for the
+    bass-anchor reduction `_notes_for_level` applies at the bottom tier)
+    or `"run"` (an unsubstantiated melodic sequence, preserved across the
+    ladder instead of collapsed toward one presumed anchor note).
+
+    Before issue #73, ANY different-string notes landing inside the
+    grouping time/fret window became an "arpeggio" with no further
+    evidence — a fast cross-string scale run read identically to a genuine
+    broken chord, and the bottom tier would reduce either one down to a
+    single note. This requires at least one of three independent evidence
+    signals — an authored hand-shape linking the notes (`_cluster_
+    covered_by_hand_shape`), overlapping sustain windows (`_cluster_
+    notes_overlap`), or a fret pattern matching a known chord template
+    (`_cluster_matches_chord_shape`) — before treating a cluster as
+    chord-like. Absent all three, the notes are a melodic sequence, not an
+    arpeggio, and are classified `"run"` so `_notes_for_level` preserves
+    their shape instead of picking a "root".
+    """
+    if len(cluster) < 2:
+        return "note"
+    if _cluster_covered_by_hand_shape(cluster, hand_shapes):
+        return "arpeggio"
+    if _cluster_notes_overlap(cluster):
+        return "arpeggio"
+    if _cluster_matches_chord_shape(cluster, chord_templates):
+        return "arpeggio"
+    return "run"
+
+
+def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4,
+                  hand_shapes=None, chord_templates=None):
     """Group flat wire notes/chords into atomic difficulty-scoring units.
 
     Simplified relative to a full chart editor's grouping (no link_next
     chain or hand-shape-window arpeggio detection) — explicit chords, then
-    time-proximity clusters of otherwise-solo notes (fast runs / implicit
-    chord-like clusters), then leftover individual notes.
+    time-proximity clusters of otherwise-solo notes, then leftover
+    individual notes. A multi-note cluster is only ever labeled
+    `"arpeggio"` when `_classify_cluster` finds real evidence for it
+    (issue #73); otherwise it's labeled `"run"` — a fast scale or other
+    melodic sequence that time/fret proximity alone doesn't prove is a
+    broken chord. `hand_shapes`/`chord_templates` (the arrangement's
+    authored `handshapes`/`templates` wire lists, optional) feed that
+    evidence check; omitting them just means the authored-linkage and
+    chord-identity signals aren't available and classification falls back
+    to the overlap check alone.
     """
     groups = []
     for ch in chords:
@@ -310,7 +407,9 @@ def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4):
             used.add(j)
         used.add(i)
         groups.append({
-            "type": "arpeggio" if len(cluster) > 1 else "note",
+            "type": _classify_cluster(
+                cluster, hand_shapes=hand_shapes, chord_templates=chord_templates,
+            ),
             "notes": cluster, "chord": None,
             "time": float(cluster[0].get("t", 0)), "score": 0.0, "level": 0,
         })
@@ -320,10 +419,18 @@ def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4):
 
 
 def _group_anchor_note(group, *, prefer_fretted=True):
-    """Return the fretted group's harmonic/hand-position anchor.
+    """Return the fretted group's bass/hand-position anchor.
 
     Rocksmith string indices run high pitch to low pitch, so the highest
-    string index is the same root convention used by chord reduction below.
+    string index is the group's bass-most note — the same bass-string
+    convention chord reduction below uses. This is a positional anchor,
+    not a proven harmonic root: without an authored chord identity (a
+    matching `ChordTemplate`/`chord_id`, or — for a solo cluster — the
+    evidence `_classify_cluster` checks, issue #73) there's no way to know
+    whether the bass-most note is actually the chord's root, an inversion,
+    or just the lowest note of an unrelated melodic shape. Callers and
+    docs should say "bass"/"position", not "root", unless that authored
+    identity is actually in hand.
 
     `prefer_fretted` (default True — used by the fret-jump scoring and
     lower-tier bridging below) picks a fretted note (f > 0) over an open
@@ -331,9 +438,9 @@ def _group_anchor_note(group, *, prefer_fretted=True):
     all, so letting it win as the anchor hides where the hand actually is,
     producing bogus fret-jump distances. `_notes_for_level`'s bottom-tier
     arpeggio note selection passes `prefer_fretted=False` — there the goal
-    is the harmonic root regardless of fretted state, since an open root
-    is a valid (indeed easier) simplification for the bottom tier, not a
-    hand-position signal.
+    is the bass-string anchor regardless of fretted state, since an open
+    bass string is a valid (indeed easier) simplification for the bottom
+    tier, not a hand-position signal.
     """
     notes = group.get("notes", []) or []
     if prefer_fretted:
@@ -689,12 +796,12 @@ def _prune_techniques(note, diff_percent):
 
 
 def _pick_partial_voicing(ranked, n):
-    """Pick `n` notes from a chord's notes (already sorted root-first — see
-    _notes_for_level's docstring on the root convention) for a reduced
-    voicing. Always keeps the root (ranked[0]), then greedily adds whichever
-    remaining note keeps the voicing's own fret span (_fret_span) smallest.
-    An open string (f=0) contributes nothing to the span, so it's always a
-    free, no-stretch add.
+    """Pick `n` notes from a chord's notes (already sorted bass-first — see
+    _notes_for_level's docstring on the bass/position convention) for a
+    reduced voicing. Always keeps the bass note (ranked[0]), then greedily
+    adds whichever remaining note keeps the voicing's own fret span
+    (_fret_span) smallest. An open string (f=0) contributes nothing to the
+    span, so it's always a free, no-stretch add.
 
     Deliberately diverges from the keys path's outer-voice selection
     (_notes_for_level_keys picks by pitch extremes, since a piano hand
@@ -797,6 +904,26 @@ def _clear_orphaned_link_next(notes, keep_ids=None):
                 n.pop("ln", None)
 
 
+def _evenly_sample(ns, keep_n):
+    """Pick `keep_n` items from time-ordered `ns`, spaced evenly across the
+    full sequence and keeping their original order — used to thin a
+    melodic "run" group (issue #73) so a lower tier still traces the run's
+    shape (its first and last notes, plus evenly spaced interior ones)
+    instead of always keeping a fixed prefix, which would bias every tier
+    toward the run's opening notes and never reach its later ones."""
+    n = len(ns)
+    if keep_n >= n:
+        return list(ns)
+    if keep_n <= 1:
+        return [ns[0]]
+    step = (n - 1) / (keep_n - 1)
+    indices = sorted({round(i * step) for i in range(keep_n)})
+    if len(indices) < keep_n:
+        remaining = [i for i in range(n) if i not in indices]
+        indices = sorted(set(indices) | set(remaining[: keep_n - len(indices)]))
+    return [ns[i] for i in indices]
+
+
 def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None):
     """Return (notes, chords) wire lists at/below `level`.
 
@@ -824,7 +951,14 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None):
             if len(ch_notes) > 1:
                 # String-index convention follows the arrangement source
                 # (Rocksmith-derived): index 0 = highest-pitched string, so
-                # the highest index among a chord's notes is its root.
+                # the highest index among a chord's notes is its bass note
+                # by position, not necessarily its harmonic root — an
+                # inversion's bass note differs from the chord's root by
+                # definition. Determining the true root would need the
+                # chord's authored identity (chord_id -> a ChordTemplate's
+                # name), which isn't threaded through here; "bass"/
+                # "position" is the honest claim this heuristic can make
+                # (issue #73).
                 ranked = sorted(ch_notes, key=lambda n: n.get("s", 0), reverse=True)
                 # root-only only very early, then a partial voicing that grows
                 # by one note at a mid-ladder threshold, mirroring the keys
@@ -847,14 +981,29 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None):
         elif g["type"] == "arpeggio" and level < max_level:
             ns = g["notes"]
             if level == 0:
-                # Root string, not hand-position: an open root is a valid,
-                # easier bottom-tier simplification, so don't skew toward a
-                # fretted note here the way the jump-scoring anchor does.
+                # Bass string, not hand-position: an open bass string is a
+                # valid, easier bottom-tier simplification, so don't skew
+                # toward a fretted note here the way the jump-scoring
+                # anchor does.
                 anchor = _group_anchor_note(g, prefer_fretted=False) or ns[0]
                 out_notes.append(_prune_note_for_level(anchor, diff_percent))
             else:
                 keep_n = max(1, (len(ns) * (level + 1)) // max_level)
                 out_notes.extend(_prune_note_for_level(n, diff_percent) for n in ns[:keep_n])
+        elif g["type"] == "run" and level < max_level:
+            # No arpeggio evidence for this cluster (issue #73) — it's an
+            # unsubstantiated melodic sequence (e.g. a fast cross-string
+            # scale run), not a proven broken chord, so it must not be
+            # collapsed toward one presumed bass/root note even at the
+            # bottom tier the way a real arpeggio is above. Thin
+            # proportionally to the level (same ratio as the arpeggio
+            # branch) and sample evenly across the run so the surviving
+            # notes still trace its melodic contour instead of always
+            # favoring the run's opening notes.
+            ns = g["notes"]
+            keep_n = max(1, (len(ns) * (level + 1)) // max_level)
+            kept = _evenly_sample(ns, keep_n)
+            out_notes.extend(_prune_note_for_level(n, diff_percent) for n in kept)
         else:
             if level < max_level:
                 out_notes.extend(_prune_note_for_level(n, diff_percent) for n in g["notes"])
@@ -1238,6 +1387,12 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     tuning = arr.get("tuning", [0] * 6) or [0] * 6
     n_strings = max(1, len(tuning))
     is_keys = (kind == "keys")
+    # Authored evidence for implicit-arpeggio classification (issue #73) —
+    # see _classify_cluster. Both are additive/optional wire keys; absent
+    # on GP imports and pre-#73 sloppaks, which just means clustering falls
+    # back to the sustain-overlap check alone.
+    hand_shapes = arr.get("handshapes", []) or []
+    chord_templates = arr.get("templates", []) or []
 
     total_events = len(notes) + sum(len(c.get("notes", []) or []) for c in chords)
     if total_events < MIN_EVENTS_FOR_GENERATION:
@@ -1305,7 +1460,10 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         groups_all = _group_notes_keys(notes, chords)
         _score_groups_keys(groups_all, tempo=tempo)
     else:
-        groups_all = _group_notes(notes, chords, time_window_ms=tempo.time_window_ms)
+        groups_all = _group_notes(
+            notes, chords, time_window_ms=tempo.time_window_ms,
+            hand_shapes=hand_shapes, chord_templates=chord_templates,
+        )
         _score_groups(groups_all, n_strings, beat_times, tempo=tempo)
         # A phrase-local ln check alone can't tell "the target was pruned
         # away" apart from "the target is simply in the next phrase" --

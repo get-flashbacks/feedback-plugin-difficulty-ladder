@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Implicit arpeggio grouping in the fretted ladder generator (`_group_notes`)
+  now requires real evidence before treating a time/fret-proximity cluster of
+  different-string notes as a broken chord (#73): an authored hand-shape
+  window covering the cluster, overlapping sustain windows, or a fret pattern
+  matching a known chord template. Absent all three, the cluster is
+  classified `"run"` (a melodic sequence, e.g. a fast cross-string scale)
+  instead of `"arpeggio"`. Previously ANY different-string notes inside the
+  grouping window became an "arpeggio" with no further evidence, so a scale
+  run could be reduced to a single note at the bottom difficulty tier the
+  same way a genuine broken chord is.
+- `_notes_for_level` no longer collapses a `"run"` group toward one
+  presumed-root note at the bottom tier — it thins proportionally to the
+  level (same ratio as a real arpeggio) and samples evenly across the run
+  (new `_evenly_sample` helper) so the surviving notes still trace the
+  run's melodic contour.
+- Renamed "root"/"harmonic root" language to "bass"/"position" throughout
+  the fretted grouping and chord-reduction docstrings and comments
+  (`_group_anchor_note`, `_notes_for_level`, `_pick_partial_voicing`) —
+  the highest-string-index convention these functions use is a bass/
+  hand-position anchor by convention, not a proven harmonic root; an
+  inversion's bass note differs from the chord's actual root by
+  definition, and this generator has no authored chord-identity data
+  threaded through to tell the difference. No behavior change.
+
 ### Added
+- Test coverage for the new evidence-gated arpeggio classification: no
+  evidence, sustain overlap, authored hand-shape linkage, chord-template
+  shape match, a mismatched near-miss shape, unusual (7-string) tunings,
+  melodic-run preservation at the bottom tier vs. prefix-vs-contour
+  thinning, and confirmation that a genuinely authored arpeggio still gets
+  the existing bass-anchor reduction (#73).
 - Test coverage for the acceptance-criteria edge cases named in #82/#83:
   0%/100% accuracy at phrase finalization, an out-of-range ratio/difficulty
   clamp, a non-finite (missing) accuracy ratio, an exact-duplicate
