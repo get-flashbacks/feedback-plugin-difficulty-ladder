@@ -1820,12 +1820,17 @@ def test_generate_library_route_records_canonical_section_times_failure_and_cont
 # time/fret window became an "arpeggio" with no further evidence -- a fast
 # cross-string scale run read identically to a genuine broken chord, and the
 # bottom-tier reduction (_notes_for_level's arpeggio branch) collapsed either
-# one down to a single "root" (really just the highest string index -- a
-# bass/position convention, not a proven harmonic root). These tests cover
-# the acceptance criteria: stronger evidence required for "arpeggio",
-# melodic sequences preserved when evidence is absent, bass/position
+# one down to a single note (really just the note on the highest string
+# index -- a position convention, not a proven harmonic root or bass note).
+# These tests cover the acceptance criteria: stronger evidence required for
+# "arpeggio", melodic sequences preserved when evidence is absent, position
 # terminology (exercised via _group_anchor_note behavior), and inversions /
 # cross-string scales / linked arpeggios / unusual tunings.
+#
+# Fixture note: chord-template `frets` lists follow feedpak's own wire
+# convention -- index 0 = lowest-pitched string (feedpak-v1.md §6.2/§6.6,
+# mirrored in song.py's _TUNING_BASE_MIDI) -- so e.g. a real open-C voicing
+# (x-3-2-0-1-0) is `[-1, 3, 2, 0, 1, 0]`, not `[-1, 0, 1, 0, 2, 3]`.
 
 def test_classify_cluster_with_no_evidence_is_a_run_not_an_arpeggio():
     # Two different-string notes close in time, no sustain overlap, no
@@ -1870,14 +1875,17 @@ def test_classify_cluster_outside_hand_shape_window_is_unaffected():
 
 def test_classify_cluster_matching_chord_template_shape_is_an_arpeggio():
     # Chord identity: the cluster's exact per-string frets appear in an
-    # authored chord template (e.g. an open C voicing), regardless of
-    # timing evidence.
+    # authored chord template -- a real open-C voicing (x-3-2-0-1-0, low-
+    # string-first) -- covering 3 of its 5 used strings (a meaningful
+    # share, not a coincidental fragment; see
+    # test_classify_cluster_rejects_a_coincidental_partial_chord_template_match
+    # below), regardless of timing evidence.
     cluster = [
-        {"t": 0.0, "s": 5, "f": 3, "sus": 0},
-        {"t": 0.03, "s": 4, "f": 2, "sus": 0},
-        {"t": 0.06, "s": 3, "f": 0, "sus": 0},
+        {"t": 0.0, "s": 1, "f": 3, "sus": 0},
+        {"t": 0.03, "s": 2, "f": 2, "sus": 0},
+        {"t": 0.06, "s": 4, "f": 1, "sus": 0},
     ]
-    chord_templates = [{"name": "C", "frets": [-1, 0, 1, 0, 2, 3]}]
+    chord_templates = [{"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
     assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "arpeggio"
 
 
@@ -1885,10 +1893,26 @@ def test_classify_cluster_partial_chord_template_mismatch_stays_a_run():
     # Same strings, but one fret disagrees with every template -- not a
     # real chord-shape match.
     cluster = [
-        {"t": 0.0, "s": 5, "f": 3, "sus": 0},
-        {"t": 0.03, "s": 4, "f": 9, "sus": 0},  # doesn't match the template's fret 2
+        {"t": 0.0, "s": 1, "f": 3, "sus": 0},
+        {"t": 0.03, "s": 2, "f": 9, "sus": 0},  # doesn't match the template's fret 2
     ]
-    chord_templates = [{"name": "C", "frets": [-1, 0, 1, 0, 2, 3]}]
+    chord_templates = [{"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
+    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "run"
+
+
+def test_classify_cluster_rejects_a_coincidental_partial_chord_template_match():
+    # Regression (PR #100 review): a 2-note passing interval that happens
+    # to coincidentally match 2 of a 6-string open-C's 5 used strings must
+    # NOT read as chord identity -- that's exactly the false-arpeggio class
+    # issue #73 set out to eliminate. A real open-C is x-3-2-0-1-0
+    # (low-string-first); this cluster is just the A-string/D-string notes
+    # of a passing A4->E4 fifth that happen to land on the template's
+    # fret 3 / fret 2 positions.
+    cluster = [
+        {"t": 0.0, "s": 1, "f": 3, "sus": 0},
+        {"t": 0.02, "s": 2, "f": 2, "sus": 0},
+    ]
+    chord_templates = [{"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
     assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "run"
 
 
@@ -1898,13 +1922,31 @@ def test_classify_cluster_single_note_is_plain_note():
 
 def test_classify_cluster_works_for_unusual_tunings_with_more_strings():
     # A 7-string extended-range chart: chord-template matching must not
-    # assume a fixed 6-string layout -- string index 6 is valid here.
+    # assume a fixed 6-string layout -- string index 6 is valid here. The
+    # template is an illustrative 2-string shape (not a claimed real voicing
+    # of any named tuning/chord) matched in full (2 of its 2 used strings),
+    # which is meaningful-share evidence regardless of chord size.
     cluster = [
         {"t": 0.0, "s": 6, "f": 0, "sus": 0},
         {"t": 0.02, "s": 3, "f": 2, "sus": 0},
     ]
-    chord_templates = [{"name": "Drop A5", "frets": [-1, -1, -1, 2, -1, -1, 0]}]
+    chord_templates = [{"name": "fixture-2-string-shape", "frets": [-1, -1, -1, 2, -1, -1, 0]}]
     assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "arpeggio"
+
+
+def test_classify_cluster_rejects_a_small_fraction_of_a_larger_unusual_tuning_template():
+    # Same 7-string layout, but now the matched 2 notes are only a small
+    # fraction of a larger (5-used-string) template -- must not pass on
+    # subset coincidence alone, same as the 6-string case above.
+    cluster = [
+        {"t": 0.0, "s": 6, "f": 0, "sus": 0},
+        {"t": 0.02, "s": 3, "f": 2, "sus": 0},
+    ]
+    chord_templates = [{
+        "name": "fixture-5-string-shape",
+        "frets": [-1, 1, 2, 2, 3, -1, 0],
+    }]
+    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "run"
 
 
 def test_group_notes_threads_hand_shapes_and_chord_templates_into_classification():
@@ -1922,16 +1964,16 @@ def test_group_notes_threads_hand_shapes_and_chord_templates_into_classification
 def test_notes_for_level_preserves_a_melodic_run_instead_of_collapsing_to_one_note():
     # A 6-note cross-string scale run with no arpeggio evidence. Under the
     # old behavior this cluster would have been labeled "arpeggio" and the
-    # bottom tier would keep only the single bass-most note. As a "run", the
-    # bottom tier should still thin it, but keep more than one note so the
-    # melodic sequence survives.
+    # bottom tier would keep only the single note on the group's highest
+    # string index. As a "run", the bottom tier should still thin it, but
+    # keep more than one note so the melodic sequence survives.
     ns = [{"t": i * 0.02, "s": i % 6, "f": i + 1, "sus": 0} for i in range(6)]
     groups = [{"type": "run", "level": 0, "time": 0.0, "chord": None, "notes": ns}]
 
     notes, chords = routes._notes_for_level(groups, level=0, max_level=3)
 
     assert chords == []
-    assert len(notes) > 1, "a melodic run must not collapse to a single presumed-root note"
+    assert len(notes) > 1, "a melodic run must not collapse to a single presumed-anchor note"
     assert len(notes) < len(ns), "the bottom tier still thins the run"
 
 
@@ -1975,14 +2017,18 @@ def test_evenly_sample_returns_first_item_when_keep_n_is_one():
     assert routes._evenly_sample(ns, 1) == [1]
 
 
-def test_group_anchor_note_picks_a_bass_position_not_a_claimed_harmonic_root():
-    # An inverted voicing: the bass-most (highest string index) note here is
-    # NOT the chord's harmonic root (that would be a different pitch class
-    # entirely in a real inversion) -- _group_anchor_note only ever claims
-    # to return the bass/position anchor, never a proven root, which is
-    # exactly what it must still return here.
+def test_group_anchor_note_picks_the_highest_string_index_not_a_claimed_harmonic_root():
+    # An inverted voicing: _group_anchor_note picks max(s) -- the note on
+    # the numerically highest string index (s=5 here) -- purely a position
+    # convention. It must NOT be read as "the chord's root" (a real
+    # inversion's root can be on any string) and, per feedpak's own
+    # low-string-first indexing (index 0 = lowest-pitched string, mirrored
+    # in song.py's _TUNING_BASE_MIDI), max(s) actually lands on the
+    # highest-*pitched* string here, not the lowest/bass one either -- this
+    # function only ever claims a position, never a pitch-register or
+    # harmonic identity.
     group = {"notes": [
-        {"s": 5, "f": 3},  # e.g. the chord's third in the bass (an inversion)
+        {"s": 5, "f": 3},  # highest string index in this group
         {"s": 1, "f": 7},
     ]}
     anchor = routes._group_anchor_note(group, prefer_fretted=False)
@@ -1991,8 +2037,9 @@ def test_group_anchor_note_picks_a_bass_position_not_a_claimed_harmonic_root():
 
 def test_notes_for_level_linked_arpeggio_via_hand_shape_still_reduces_to_one_note():
     # A genuine authored arpeggio (hand-shape evidence) should still get the
-    # existing bottom-tier bass-anchor reduction -- only unsubstantiated
-    # "run" clusters get the new preserve-the-sequence treatment.
+    # existing bottom-tier highest-string-index reduction -- only
+    # unsubstantiated "run" clusters get the new preserve-the-sequence
+    # treatment.
     groups = [{
         "type": "arpeggio", "level": 0, "time": 0.0, "chord": None,
         "notes": [{"t": 0.0, "s": 1, "f": 7}, {"t": 0.04, "s": 5, "f": 3}],

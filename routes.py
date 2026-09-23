@@ -309,17 +309,37 @@ def _cluster_matches_chord_shape(cluster, chord_templates):
     """True when the cluster's per-string frets are an exact subset of an
     authored `ChordTemplate`'s fingering (wire key `frets`, indexed by
     string — see `_notes_for_level`'s chord-reduction docstring for the
-    same indexing convention). A real chord-identity match, drawn from the
-    chart's own chord vocabulary, rather than an incidental "these notes
-    happen to be close together" coincidence."""
+    same indexing convention) AND that subset covers a meaningful share of
+    the template's own fretted/used strings — not just any coincidental
+    subset. Without the share requirement, a 2-note cluster that happens
+    to land on two strings of a large template (e.g. a passing interval
+    that coincidentally matches 2 of a 6-string open chord's 5 used
+    strings) would read as chord-identity evidence, which is exactly the
+    false-positive class issue #73 set out to eliminate -- caught in
+    review on PR #100 (pullfrog).
+
+    "Meaningful share" here is: the cluster covers at least 3 of the
+    template's own strings, or at least half of them (rounded up) —
+    whichever is the lower bar. A cluster that fully matches a small
+    template (e.g. a 2-string power-chord shape) still counts even though
+    it's only 2 notes, since 2-of-2 is the whole shape, not a coincidental
+    fragment of a larger one."""
     if not chord_templates:
         return False
     by_string = {}
     for n in cluster:
         by_string[n.get("s", 0)] = n.get("f", 0)
+    if len(by_string) < 2:
+        return False
     for ct in chord_templates:
         frets = ct.get("frets") or []
-        if all(0 <= s < len(frets) and frets[s] == f for s, f in by_string.items()):
+        if not all(0 <= s < len(frets) and frets[s] == f for s, f in by_string.items()):
+            continue
+        template_used = sum(1 for fr in frets if fr >= 0)
+        if template_used < 2:
+            continue
+        min_share = min(3, math.ceil(template_used / 2))
+        if len(by_string) >= min_share:
             return True
     return False
 
@@ -327,9 +347,10 @@ def _cluster_matches_chord_shape(cluster, chord_templates):
 def _classify_cluster(cluster, *, hand_shapes=None, chord_templates=None):
     """Classify a time/fret-proximity cluster of different-string notes as
     `"arpeggio"` (a genuine implicit broken chord, eligible for the
-    bass-anchor reduction `_notes_for_level` applies at the bottom tier)
-    or `"run"` (an unsubstantiated melodic sequence, preserved across the
-    ladder instead of collapsed toward one presumed anchor note).
+    highest-string-index anchor reduction `_notes_for_level` applies at
+    the bottom tier) or `"run"` (an unsubstantiated melodic sequence,
+    preserved across the ladder instead of collapsed toward one presumed
+    anchor note).
 
     Before issue #73, ANY different-string notes landing inside the
     grouping time/fret window became an "arpeggio" with no further
@@ -360,9 +381,9 @@ def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4,
     """Group flat wire notes/chords into atomic difficulty-scoring units.
 
     Simplified relative to a full chart editor's grouping (no link_next
-    chain or hand-shape-window arpeggio detection) — explicit chords, then
-    time-proximity clusters of otherwise-solo notes, then leftover
-    individual notes. A multi-note cluster is only ever labeled
+    chain) — explicit chords, then time-proximity clusters of otherwise-solo
+    notes, then leftover individual notes. A multi-note cluster is only ever
+    labeled
     `"arpeggio"` when `_classify_cluster` finds real evidence for it
     (issue #73); otherwise it's labeled `"run"` — a fast scale or other
     melodic sequence that time/fret proximity alone doesn't prove is a
@@ -419,18 +440,24 @@ def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4,
 
 
 def _group_anchor_note(group, *, prefer_fretted=True):
-    """Return the fretted group's bass/hand-position anchor.
+    """Return the fretted group's highest-string-index / position anchor.
 
-    Rocksmith string indices run high pitch to low pitch, so the highest
-    string index is the group's bass-most note — the same bass-string
-    convention chord reduction below uses. This is a positional anchor,
-    not a proven harmonic root: without an authored chord identity (a
-    matching `ChordTemplate`/`chord_id`, or — for a solo cluster — the
-    evidence `_classify_cluster` checks, issue #73) there's no way to know
-    whether the bass-most note is actually the chord's root, an inversion,
-    or just the lowest note of an unrelated melodic shape. Callers and
-    docs should say "bass"/"position", not "root", unless that authored
-    identity is actually in hand.
+    Picks `max(s)` among the group's notes — the note on the numerically
+    highest string index, purely a position/index convention (feedpak's
+    wire `s` and `ChordTemplate.frets`/`fingers` are indexed low-string-
+    first per feedpak-v1.md §6.2/§6.6 and `song.py`'s `_TUNING_BASE_MIDI`,
+    so `max(s)` actually lands on the highest-*pitched* string — the
+    treble-most note, e.g. high e on a standard 6-string — not the lowest/
+    bass one; an earlier revision of this docstring claimed the reverse).
+    This is a positional anchor, not a proven harmonic root, and not
+    necessarily even the group's bass note: without an authored chord
+    identity (a matching `ChordTemplate`/`chord_id`, or — for a solo
+    cluster — the evidence `_classify_cluster` checks, issue #73) there's
+    no way to know whether this note is the chord's root, an inversion, or
+    just one note of an unrelated melodic shape. Callers and docs should
+    describe it by position (highest string index), not claim "root" or a
+    pitch-register name, unless that authored identity is actually in
+    hand.
 
     `prefer_fretted` (default True — used by the fret-jump scoring and
     lower-tier bridging below) picks a fretted note (f > 0) over an open
@@ -438,9 +465,9 @@ def _group_anchor_note(group, *, prefer_fretted=True):
     all, so letting it win as the anchor hides where the hand actually is,
     producing bogus fret-jump distances. `_notes_for_level`'s bottom-tier
     arpeggio note selection passes `prefer_fretted=False` — there the goal
-    is the bass-string anchor regardless of fretted state, since an open
-    bass string is a valid (indeed easier) simplification for the bottom
-    tier, not a hand-position signal.
+    is this same highest-string-index anchor regardless of fretted state,
+    since an open string at that index is a valid (indeed easier)
+    simplification for the bottom tier, not a hand-position signal.
     """
     notes = group.get("notes", []) or []
     if prefer_fretted:
@@ -796,12 +823,12 @@ def _prune_techniques(note, diff_percent):
 
 
 def _pick_partial_voicing(ranked, n):
-    """Pick `n` notes from a chord's notes (already sorted bass-first — see
-    _notes_for_level's docstring on the bass/position convention) for a
-    reduced voicing. Always keeps the bass note (ranked[0]), then greedily
-    adds whichever remaining note keeps the voicing's own fret span
-    (_fret_span) smallest. An open string (f=0) contributes nothing to the
-    span, so it's always a free, no-stretch add.
+    """Pick `n` notes from a chord's notes (already sorted by descending
+    string index — see _notes_for_level's docstring on that convention)
+    for a reduced voicing. Always keeps the highest-string-index note
+    (ranked[0]), then greedily adds whichever remaining note keeps the
+    voicing's own fret span (_fret_span) smallest. An open string (f=0)
+    contributes nothing to the span, so it's always a free, no-stretch add.
 
     Deliberately diverges from the keys path's outer-voice selection
     (_notes_for_level_keys picks by pitch extremes, since a piano hand
@@ -949,23 +976,28 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None):
             ch_time = float(ch.get("t", 0))
             ch_notes = list(ch.get("notes", []) or [])
             if len(ch_notes) > 1:
-                # String-index convention follows the arrangement source
-                # (Rocksmith-derived): index 0 = highest-pitched string, so
-                # the highest index among a chord's notes is its bass note
-                # by position, not necessarily its harmonic root — an
-                # inversion's bass note differs from the chord's root by
-                # definition. Determining the true root would need the
+                # String-index convention follows feedpak's own wire format
+                # (feedpak-v1.md §6.2/§6.6, mirrored in song.py's
+                # _TUNING_BASE_MIDI): index 0 = lowest-pitched string, so
+                # the HIGHEST index among a chord's notes is its
+                # highest-pitched (treble-most) note by position, not its
+                # bass note and not necessarily its harmonic root — a
+                # slash-chord's bass note, or an inversion's, can be any
+                # string. Determining the true root/bass would need the
                 # chord's authored identity (chord_id -> a ChordTemplate's
-                # name), which isn't threaded through here; "bass"/
-                # "position" is the honest claim this heuristic can make
-                # (issue #73).
+                # name), which isn't threaded through here; "highest
+                # string index" / "position" is the honest claim this
+                # heuristic can make (issue #73; an earlier revision of
+                # this comment wrongly claimed the reverse direction and
+                # called this note the "bass").
                 ranked = sorted(ch_notes, key=lambda n: n.get("s", 0), reverse=True)
-                # root-only only very early, then a partial voicing that grows
-                # by one note at a mid-ladder threshold, mirroring the keys
-                # path's outer-voices -> +middle -> full progression — authored
-                # ladders widen chords quickly (root-only is a bottom-tier-only
-                # thing) but a 4+-note chord still gets a real middle rung
-                # instead of jumping straight from 2 notes to the full voicing.
+                # Highest-string-index-only very early, then a partial
+                # voicing that grows by one note at a mid-ladder threshold,
+                # mirroring the keys path's outer-voices -> +middle -> full
+                # progression — authored ladders widen chords quickly (this
+                # is a bottom-tier-only thing) but a 4+-note chord still
+                # gets a real middle rung instead of jumping straight from
+                # 2 notes to the full voicing.
                 if diff_percent < _CHORD_ROOT_ONLY_FRAC:
                     ch_notes = [ranked[0]]
                 elif diff_percent < _CHORD_MID_VOICING_FRAC or len(ranked) <= 3:
@@ -981,10 +1013,10 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None):
         elif g["type"] == "arpeggio" and level < max_level:
             ns = g["notes"]
             if level == 0:
-                # Bass string, not hand-position: an open bass string is a
-                # valid, easier bottom-tier simplification, so don't skew
-                # toward a fretted note here the way the jump-scoring
-                # anchor does.
+                # Highest-string-index, not hand-position: an open string
+                # at that index is a valid, easier bottom-tier
+                # simplification, so don't skew toward a fretted note here
+                # the way the jump-scoring anchor does.
                 anchor = _group_anchor_note(g, prefer_fretted=False) or ns[0]
                 out_notes.append(_prune_note_for_level(anchor, diff_percent))
             else:
@@ -994,12 +1026,18 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None):
             # No arpeggio evidence for this cluster (issue #73) — it's an
             # unsubstantiated melodic sequence (e.g. a fast cross-string
             # scale run), not a proven broken chord, so it must not be
-            # collapsed toward one presumed bass/root note even at the
-            # bottom tier the way a real arpeggio is above. Thin
-            # proportionally to the level (same ratio as the arpeggio
-            # branch) and sample evenly across the run so the surviving
-            # notes still trace its melodic contour instead of always
-            # favoring the run's opening notes.
+            # collapsed toward one presumed anchor note even at the bottom
+            # tier the way a real arpeggio is above. Thin proportionally to
+            # the level (same ratio as the arpeggio branch) and sample
+            # evenly across the run so the surviving notes still trace its
+            # melodic contour instead of always favoring the run's opening
+            # notes. NOTE: for a short run (fewer than roughly 2x
+            # max_level notes) this ratio still rounds down to a single
+            # surviving note at the bottom tier -- "traces the contour"
+            # only becomes visible once a run is long enough for keep_n>1;
+            # it's still strictly better than the old behavior (which
+            # collapsed to one note regardless of length), just not a
+            # contour for every run.
             ns = g["notes"]
             keep_n = max(1, (len(ns) * (level + 1)) // max_level)
             kept = _evenly_sample(ns, keep_n)

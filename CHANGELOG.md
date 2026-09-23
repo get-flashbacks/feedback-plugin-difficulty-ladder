@@ -21,24 +21,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `_notes_for_level` no longer collapses a `"run"` group toward one
   presumed-root note at the bottom tier — it thins proportionally to the
   level (same ratio as a real arpeggio) and samples evenly across the run
-  (new `_evenly_sample` helper) so the surviving notes still trace the
-  run's melodic contour.
-- Renamed "root"/"harmonic root" language to "bass"/"position" throughout
-  the fretted grouping and chord-reduction docstrings and comments
-  (`_group_anchor_note`, `_notes_for_level`, `_pick_partial_voicing`) —
-  the highest-string-index convention these functions use is a bass/
-  hand-position anchor by convention, not a proven harmonic root; an
-  inversion's bass note differs from the chord's actual root by
-  definition, and this generator has no authored chord-identity data
-  threaded through to tell the difference. No behavior change.
+  (new `_evenly_sample` helper) so the surviving notes trace the run's
+  melodic contour once it's long enough for the ratio to keep more than
+  one note; a short run still keeps one note at the bottom tier, same as
+  before, just no longer forced to for every run length.
+- Corrected "root"/"harmonic root" language in the fretted grouping and
+  chord-reduction docstrings and comments (`_group_anchor_note`,
+  `_notes_for_level`, `_pick_partial_voicing`) to describe what these
+  functions actually pick: the note on the numerically **highest string
+  index** (`max(s)`) in a group. This is a position anchor, not a proven
+  harmonic root — an inversion's/slash-chord's bass note can be on any
+  string, and no authored chord identity is threaded through to tell the
+  difference. A first pass at this fix mislabeled it "bass"; per feedpak's
+  own wire convention (§6.2/§6.6: string index 0 = lowest-pitched string,
+  mirrored in `song.py`'s `_TUNING_BASE_MIDI`), `max(s)` actually lands on
+  the highest-*pitched* string (treble-most, e.g. high e on a standard
+  6-string tuning) — the reverse of "bass." No runtime behavior changed;
+  only the documentation's claim about note direction did (PR #100 review).
+- Tightened `_cluster_matches_chord_shape`'s chord-template evidence
+  (PR #100 review): a match now also requires the cluster to cover a
+  meaningful share of the template's own used strings (at least 3, or at
+  least half — whichever is fewer), not any coincidental subset. Without
+  this, a 2-note passing interval that happened to land on 2 of a 6-string
+  open chord's 5 used strings would read as chord-identity evidence — the
+  exact false-arpeggio class issue #73 set out to eliminate. A cluster
+  that fully matches a small template (e.g. a 2-string power-chord shape)
+  still counts, since a complete match of a small shape is real evidence
+  regardless of the shape's size.
 
 ### Added
 - Test coverage for the new evidence-gated arpeggio classification: no
   evidence, sustain overlap, authored hand-shape linkage, chord-template
-  shape match, a mismatched near-miss shape, unusual (7-string) tunings,
-  melodic-run preservation at the bottom tier vs. prefix-vs-contour
-  thinning, and confirmation that a genuinely authored arpeggio still gets
-  the existing bass-anchor reduction (#73).
+  shape match (with a realistic open-C fixture), a mismatched near-miss
+  shape, a regression test for the coincidental-partial-match false
+  positive above, unusual (7-string) tunings (including the same
+  partial-match rejection at that string count), melodic-run preservation
+  at the bottom tier vs. prefix-vs-contour thinning, and confirmation that
+  a genuinely authored arpeggio still gets the existing highest-string-
+  index reduction (#73).
 - Test coverage for the acceptance-criteria edge cases named in #82/#83:
   0%/100% accuracy at phrase finalization, an out-of-range ratio/difficulty
   clamp, a non-finite (missing) accuracy ratio, an exact-duplicate
