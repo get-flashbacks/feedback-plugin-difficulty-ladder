@@ -72,7 +72,7 @@ def _assert_on_tier_scale(phrase, n_levels):
     assert all(b > a for a, b in pairwise(diffs))  # nosec B101 - pytest assertion
     assert diffs[-1] <= n_levels - 1  # nosec B101 - pytest assertion
     expected_max = n_levels - 1 if len(diffs) > 1 else 0
-    assert phrase["max_difficulty"] == expected_max
+    assert phrase["max_difficulty"] == expected_max  # nosec B101 - pytest assertion
 
 
 def test_returns_none_for_near_empty_arrangement():
@@ -223,7 +223,7 @@ def test_bottom_arpeggio_voice_preserves_the_root_string():
     notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
 
     assert chords == []
-    assert [(n["s"], n["f"]) for n in notes] == [(1, 3)]
+    assert [(n["s"], n["f"]) for n in notes] == [(1, 3)]  # nosec B101 - pytest assertion
 
 
 def test_bottom_arpeggio_voice_preserves_an_open_root_string():
@@ -239,7 +239,7 @@ def test_bottom_arpeggio_voice_preserves_an_open_root_string():
     notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
 
     assert chords == []
-    assert [(n["s"], n["f"]) for n in notes] == [(0, 0)]
+    assert [(n["s"], n["f"]) for n in notes] == [(0, 0)]  # nosec B101 - pytest assertion
 
 
 def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
@@ -271,11 +271,11 @@ def test_group_anchor_note_prefers_a_fretted_note_over_an_incidental_open_string
         {"s": 3, "f": 13}, {"s": 4, "f": 12}, {"s": 5, "f": 12},
     ]}
     anchor = routes._group_anchor_note(group)
-    assert anchor == {"s": 1, "f": 12}
+    assert anchor == {"s": 1, "f": 12}  # nosec B101 - pytest assertion
 
     # All-open group: falls back to the lowest-string note.
     open_group = {"notes": [{"s": 5, "f": 0}, {"s": 4, "f": 0}]}
-    assert routes._group_anchor_note(open_group) == {"s": 4, "f": 0}
+    assert routes._group_anchor_note(open_group) == {"s": 4, "f": 0}  # nosec B101 - pytest assertion
 
 
 def test_fret_jump_penalty_reflects_the_true_fretted_position_not_an_incidental_open_string():
@@ -941,9 +941,9 @@ def test_bend_intent_downgraded_below_its_gate_but_release_is_spared():
     note_release = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 1}
 
     below_bt_gate = routes._prune_techniques(note_round_trip, diff_percent=0.60)
-    assert below_bt_gate["bt"] == 0, "round-trip should downgrade to a plain bend-up below its gate"
+    assert below_bt_gate["bt"] == 0, "round-trip should downgrade to a plain bend-up below its gate"  # nosec B101 - pytest assertion
     assert below_bt_gate["bn"] == 1.0, "bn itself survives above its own (earlier) gate"
-    assert below_bt_gate["f"] == 5, "both are struck unbent, so the fret is unchanged"
+    assert below_bt_gate["f"] == 5, "both are struck unbent, so the fret is unchanged"  # nosec B101 - pytest assertion
 
     above_bt_gate = routes._prune_techniques(note_pre_bend, diff_percent=0.70)
     assert above_bt_gate["bt"] == 2
@@ -977,9 +977,9 @@ def test_stripped_bend_does_not_leave_a_stale_bt_or_bnv_behind():
     }
     pruned = routes._prune_techniques(note, diff_percent=0.30)
     assert pruned["bn"] == 0
-    assert pruned["bt"] == 0, "a round-trip flag on a bn=0 note is nonsensical and must not survive"
+    assert pruned["bt"] == 0, "a round-trip flag on a bn=0 note is nonsensical and must not survive"  # nosec B101 - pytest assertion
     assert "bnv" not in pruned, "a stale bend curve must not survive when the bend itself is gone"
-    assert pruned["f"] == 5, "a round-trip is struck unbent, so the fret is unchanged"
+    assert pruned["f"] == 5, "a round-trip is struck unbent, so the fret is unchanged"  # nosec B101 - pytest assertion
 
 
 def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spared():
@@ -997,7 +997,7 @@ def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spar
         "even though release alone (bn intact) is never downgraded"
     )
     # A release is struck at the bent pitch: the simplified note is fretted there.
-    assert pruned["f"] == 6
+    assert pruned["f"] == 6  # nosec B101 - pytest assertion
 
 
 # ---------------------------------------------------------------------------
@@ -1532,7 +1532,7 @@ def test_collapse_identical_levels_merges_duplicate_adjacent_tiers():
     assert len(collapsed) == 2
     # Tier numbers are kept, not renumbered: the second level's content
     # starts at tier 2, and a reader needs that to map the slider correctly.
-    assert [lvl["difficulty"] for lvl in collapsed] == [0, 2]
+    assert [lvl["difficulty"] for lvl in collapsed] == [0, 2]  # nosec B101 - pytest assertion
     # the cleaner (un-pruned) representative of the duplicate run survives
     assert collapsed[0]["notes"] == [{"t": 0, "s": 2, "f": 3}]
     assert collapsed[1]["notes"] == [{"t": 0, "s": 2, "f": 5}]
@@ -1580,7 +1580,7 @@ def test_keys_fixed_depth_collapses_duplicate_tiers():
     for a, b in pairwise(levels):
         assert a["notes"] != b["notes"] or a["chords"] != b["chords"]
     _assert_on_tier_scale(phrases[0], n_levels=4)
-    assert len(levels) < 4, (
+    assert len(levels) < 4, (  # nosec B101 - pytest assertion
         "keys must not always ship the full requested depth when tiers are duplicates"
     )
 
@@ -1592,7 +1592,7 @@ def test_shallow_phrase_reports_actual_depth_not_the_requested_cap():
     arr = _arrangement(notes)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=8)
     assert phrases
-    assert len(phrases[0]["levels"]) < 8
+    assert len(phrases[0]["levels"]) < 8  # nosec B101 - pytest assertion
 
 
 def test_empty_section_phrase_still_reports_zero_depth_after_collapse():
@@ -1859,12 +1859,12 @@ def test_easy_phrase_is_complete_at_a_lower_tier_than_a_hard_phrase():
         _assert_on_tier_scale(p, n_levels=4)
     # The easy verse is played in full at every slider position -- it used
     # to be thinned at the bottom exactly as hard as the solo.
-    assert len(easy_phrase["levels"]) == 1
-    assert len(easy_phrase["levels"][0]["notes"]) == 16
+    assert len(easy_phrase["levels"]) == 1  # nosec B101 - pytest assertion
+    assert len(easy_phrase["levels"][0]["notes"]) == 16  # nosec B101 - pytest assertion
     # The solo differs at every tier and still has a skeleton at the bottom.
-    assert [lvl["difficulty"] for lvl in hard_phrase["levels"]] == [0, 1, 2, 3]
+    assert [lvl["difficulty"] for lvl in hard_phrase["levels"]] == [0, 1, 2, 3]  # nosec B101 - pytest assertion
     counts = [len(lvl["notes"]) for lvl in hard_phrase["levels"]]
-    assert 0 < counts[0] < counts[1] < counts[2] < counts[3] == 128
+    assert 0 < counts[0] < counts[1] < counts[2] < counts[3] == 128  # nosec B101 - pytest assertion
 
 
 def test_uniformly_hard_phrase_gets_a_full_ladder():
@@ -1874,28 +1874,42 @@ def test_uniformly_hard_phrase_gets_a_full_ladder():
     hard = [{"t": 16 + i * 0.125, "s": 4, "f": 17, "sus": 0, "tp": True} for i in range(128)]
     phrases = routes.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
     hard_phrase = phrases[1]
-    assert [lvl["difficulty"] for lvl in hard_phrase["levels"]] == [0, 1, 2, 3]
+    assert [lvl["difficulty"] for lvl in hard_phrase["levels"]] == [0, 1, 2, 3]  # nosec B101 - pytest assertion
     bottom_times = [n["t"] for n in hard_phrase["levels"][0]["notes"]]
-    assert bottom_times, "the bottom tier must not go silent"
+    assert bottom_times, "the bottom tier must not go silent"  # nosec B101 - pytest assertion
     # Spread across the phrase, not just its first few notes.
-    assert max(bottom_times) - min(bottom_times) > 0.75 * (hard[-1]["t"] - hard[0]["t"])
+    assert max(bottom_times) - min(bottom_times) > 0.75 * (hard[-1]["t"] - hard[0]["t"])  # nosec B101 - pytest assertion
 
 
 def test_all_multi_level_phrases_share_the_requested_tier_scale():
     arr = _arrangement(_technical_notes(0, 30, step=0.1), sections=[{"time": 0}, {"time": 10}, {"time": 20}])
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=5)
-    assert phrases
+    assert phrases  # nosec B101 - pytest assertion
     for p in phrases:
         _assert_on_tier_scale(p, n_levels=5)
 
 
 def test_tier_levels_are_nested():
+    # Each tier must contain every (onset, string) the tier below plays,
+    # counting chord members as well as single notes. Frets can legitimately
+    # differ between tiers (a simplified pre-bend is fretted at its peak), so
+    # they are not part of the key.
     hard = [{"t": 16 + i * 0.125, "s": 3 + (i % 3), "f": 14 + (i % 5), "sus": 0} for i in range(128)]
-    phrases = routes.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
+    arr = _easy_then_hard(hard)
+    arr["chords"] = [
+        {"t": 16.0625 + i * 1.0, "notes": [{"s": 0, "f": 3}, {"s": 1, "f": 5}, {"s": 2, "f": 5}, {"s": 3, "f": 4}]}
+        for i in range(12)
+    ]
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+
+    def played(lvl):
+        keys = {(n["t"], n["s"]) for n in lvl["notes"]}
+        keys |= {(c["t"], n["s"]) for c in lvl["chords"] for n in c["notes"]}
+        return keys
+
     for p in phrases:
-        times = [{n["t"] for n in lvl["notes"]} for lvl in p["levels"]]
-        for lower, higher in pairwise(times):
-            assert lower <= higher
+        for lower, higher in pairwise([played(lvl) for lvl in p["levels"]]):
+            assert lower <= higher  # nosec B101 - pytest assertion
 
 
 def test_keys_phrases_use_the_tier_scale_too():
@@ -1905,13 +1919,13 @@ def test_keys_phrases_use_the_tier_scale_too():
         "beats": _tiered_beats(64), "sections": [], "tuning": [],
     }
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
-    assert phrases
+    assert phrases  # nosec B101 - pytest assertion
     for p in phrases:
         _assert_on_tier_scale(p, n_levels=4)
 
 
 def test_spread_key_orders_positions_evenly():
-    assert [routes._spread_key(i) for i in range(4)] == [0.0, 0.5, 0.25, 0.75]
+    assert [routes._spread_key(i) for i in range(4)] == [0.0, 0.5, 0.25, 0.75]  # nosec B101 - pytest assertion
 
 
 # ---------------------------------------------------------------------------
@@ -1930,19 +1944,19 @@ def _chord_group(level=0):
 
 def test_bottom_tier_reduces_chords_to_the_root_at_the_default_four_tiers():
     notes, chords = routes._notes_for_level(_chord_group(), level=0, max_level=3)
-    assert chords == []
-    assert [(n["s"], n["f"]) for n in notes] == [(0, 3)], "root = lowest string (a G chord's low G)"
+    assert chords == []  # nosec B101 - pytest assertion
+    assert [(n["s"], n["f"]) for n in notes] == [(0, 3)], "root = lowest string (a G chord's low G)"  # nosec B101 - pytest assertion
 
 
 def test_second_tier_keeps_a_partial_voicing_built_on_the_root():
     notes, _ = routes._notes_for_level(_chord_group(), level=1, max_level=3)
-    assert len(notes) == 2
-    assert (0, 3) in [(n["s"], n["f"]) for n in notes]
+    assert len(notes) == 2  # nosec B101 - pytest assertion
+    assert (0, 3) in [(n["s"], n["f"]) for n in notes]  # nosec B101 - pytest assertion
 
 
 def test_root_only_is_not_used_when_the_bottom_tier_covers_more_than_a_quarter():
     notes, _ = routes._notes_for_level(_chord_group(), level=0, max_level=2)
-    assert len(notes) == 2
+    assert len(notes) == 2  # nosec B101 - pytest assertion
 
 
 # ---------------------------------------------------------------------------
@@ -1953,8 +1967,8 @@ def test_stripped_pre_bend_is_fretted_at_the_bent_pitch():
     note = {"t": 0.0, "s": 2, "f": 7, "sus": 0.5, "bn": 2.0, "bt": 2,
             "bnv": [{"t": 0, "v": 2.0}, {"t": 0.5, "v": 2.0}]}
     pruned = routes._prune_techniques(note, diff_percent=0.30)
-    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (9, 0, 0)
-    assert "bnv" not in pruned
+    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (9, 0, 0)  # nosec B101 - pytest assertion
+    assert "bnv" not in pruned  # nosec B101 - pytest assertion
 
 
 def test_pre_bend_below_its_intent_gate_is_fretted_not_turned_into_a_bend_up():
@@ -1962,27 +1976,31 @@ def test_pre_bend_below_its_intent_gate_is_fretted_not_turned_into_a_bend_up():
     # pre-bend's onset -- so the intent downgrade frets the peak instead.
     note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 2}
     pruned = routes._prune_techniques(note, diff_percent=0.60)
-    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (6, 0, 0)
+    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (6, 0, 0)  # nosec B101 - pytest assertion
 
 
 def test_pre_bend_release_is_fretted_at_its_onset_pitch():
     note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 2.0, "bt": 3}
     pruned = routes._prune_techniques(note, diff_percent=0.60)
-    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (7, 0, 0)
+    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (7, 0, 0)  # nosec B101 - pytest assertion
 
 
 def test_bend_up_keeps_its_fret_when_stripped():
     note = {"t": 0.0, "s": 2, "f": 7, "sus": 0, "bn": 2.0}
     pruned = routes._prune_techniques(note, diff_percent=0.30)
-    assert (pruned["f"], pruned["bn"]) == (7, 0)
+    assert (pruned["f"], pruned["bn"]) == (7, 0)  # nosec B101 - pytest assertion
 
 
 def test_struck_at_peak_bend_without_a_fretted_equivalent_is_kept_as_authored():
-    quarter_tone = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 0.5, "bt": 2}
+    curve = [{"t": 0, "v": 0.5}, {"t": 0.2, "v": 0.5}, {"t": 0.4, "v": 0}]
+    quarter_tone = {"t": 0.0, "s": 2, "f": 5, "sus": 0.4, "bn": 0.5, "bt": 3, "bnv": curve}
     past_last_fret = {"t": 0.0, "s": 2, "f": 23, "sus": 0, "bn": 2.0, "bt": 2}
     for note in (quarter_tone, past_last_fret):
         pruned = routes._prune_techniques(note, diff_percent=0.30)
-        assert (pruned["f"], pruned["bn"], pruned["bt"]) == (note["f"], note["bn"], note["bt"])
+        assert (pruned["f"], pruned["bn"], pruned["bt"]) == (note["f"], note["bn"], note["bt"])  # nosec B101 - pytest assertion
+    # "As authored" includes the curve: the bnv gate (0.80) must not strip it
+    # from a bend that was deliberately kept.
+    assert routes._prune_techniques(quarter_tone, diff_percent=0.30)["bnv"] == curve  # nosec B101 - pytest assertion
 
 
 def test_natural_harmonic_is_kept_where_stripping_would_change_its_pitch():
@@ -1990,10 +2008,10 @@ def test_natural_harmonic_is_kept_where_stripping_would_change_its_pitch():
     # would be a different note entirely.
     for fret in (5, 7, 4):
         note = {"t": 0.0, "s": 2, "f": fret, "sus": 0, "hm": True}
-        assert routes._prune_techniques(note, diff_percent=0.30).get("hm") is True
+        assert routes._prune_techniques(note, diff_percent=0.30).get("hm") is True  # nosec B101 - pytest assertion
     for fret in (12, 19, 24):
         note = {"t": 0.0, "s": 2, "f": fret, "sus": 0, "hm": True}
-        assert "hm" not in routes._prune_techniques(note, diff_percent=0.30)
+        assert "hm" not in routes._prune_techniques(note, diff_percent=0.30)  # nosec B101 - pytest assertion
 
 
 def test_explicit_false_flags_do_not_keep_a_duplicate_tier_alive():
@@ -2002,9 +2020,9 @@ def test_explicit_false_flags_do_not_keep_a_duplicate_tier_alive():
     # tier and the untouched top tier compared as different.
     pruned = {"t": 0, "s": 0, "f": 0, "sus": 0.6, "sl": -1, "slu": -1, "bn": 0.0}
     source = dict(pruned, ho=False, po=False, pm=False, tp=False)
-    assert routes._canonical_note_for_compare(pruned) == routes._canonical_note_for_compare(source)
+    assert routes._canonical_note_for_compare(pruned) == routes._canonical_note_for_compare(source)  # nosec B101 - pytest assertion
     levels = [
         {"difficulty": 0, "notes": [pruned], "chords": [], "anchors": [], "handshapes": []},
         {"difficulty": 1, "notes": [source], "chords": [], "anchors": [], "handshapes": []},
     ]
-    assert [lvl["difficulty"] for lvl in routes._collapse_identical_levels(levels)] == [0]
+    assert [lvl["difficulty"] for lvl in routes._collapse_identical_levels(levels)] == [0]  # nosec B101 - pytest assertion

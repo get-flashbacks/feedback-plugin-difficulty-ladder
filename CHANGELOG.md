@@ -33,7 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The HUD glasses and the `difficulty:sections-updated` payload size and fill
   by the tier a phrase is complete at (core `getPhrases().top_difficulty`,
   falling back to `max_difficulty`), so an easy phrase shows full once the
-  slider reaches that tier.
+  slider reaches that tier. A section whose phrases are all single-level now reports
+  100% when it has notes (a generated easy phrase, complete at the bottom
+  tier) and 0% only when it is silent, matching the HUD glasses.
 
 ### Fixed
 - **Chord root / hand anchor used the top string.** String 0 is the lowest

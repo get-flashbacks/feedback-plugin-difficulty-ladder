@@ -1183,6 +1183,22 @@
         return { idxLevel: idxLevel, fillFrac: top <= 0 ? 1 : Math.min(1, idxLevel / top) };
     }
 
+    // True when the full (unfiltered) chart has a note or chord onset in
+    // [t0, t1). Only consulted for sections whose phrases are all single-level,
+    // from the throttled section emit -- never a per-frame path.
+    function _chartHasContentIn(hw, t0, t1) {
+        var lists = [
+            typeof hw.getNotes === 'function' ? hw.getNotes() : null,
+            typeof hw.getChords === 'function' ? hw.getChords() : null,
+        ];
+        return lists.some(function (list) {
+            return Array.isArray(list) && list.some(function (ev) {
+                var t = Number(ev && ev.t);
+                return t >= t0 && t < t1;
+            });
+        });
+    }
+
     // How hard a phrase is, for glass sizing: the tier where it becomes
     // complete. Falls back to max_difficulty on a core that predates
     // getPhrases().top_difficulty (identical for fully authored ladders).
@@ -1716,22 +1732,22 @@
                 // which could disagree materially with drawHud()'s discrete
                 // tiers for the same mastery/difficulty pair.
                 //
-                // maxSectionDifficulty === 0 is handled separately rather
-                // than falling into _tierFillFrac's own zero-difficulty case:
-                // there, "no ladder to climb" means a single-tier *phrase* is
-                // presented as fully filled (drawHud's pre-existing, unchanged
-                // convention). At the *section* level it instead means "no
-                // difficulty content overlaps this section at all" (e.g. an
-                // empty/silent section next to phrases that do have depth) --
-                // reusing the phrase convention here would render an empty
-                // section as a misleadingly "fully mastered" glass, which the
-                // old continuous formula never did (it was always 0% whenever
-                // maxSectionDifficulty was 0, review-caught -- Sourcery,
-                // PR #79).
-                var fillPercentage = maxSectionDifficulty > 0
-                    ? _tierFillFrac(mastery, Number(hardestPhrase.max_difficulty),
-                        maxSectionDifficulty).fillFrac * 100
-                    : 0;
+                // maxSectionDifficulty === 0 means every overlapping phrase
+                // is a single level. That is two different things: an empty/
+                // silent section (no chart content at all) must not show a
+                // misleadingly "fully mastered" glass (0%, review-caught --
+                // Sourcery, PR #79), but a section of easy phrases that are
+                // complete at the bottom tier (generated ladders on the
+                // shared tier scale) is played in full at every slider
+                // position -- 100%, matching drawHud's full glass for the
+                // same phrases. The full chart's own notes tell them apart.
+                var fillPercentage;
+                if (maxSectionDifficulty > 0) {
+                    fillPercentage = _tierFillFrac(mastery, Number(hardestPhrase.max_difficulty),
+                        maxSectionDifficulty).fillFrac * 100;
+                } else {
+                    fillPercentage = _chartHasContentIn(hw, section.time, nextSectionTime) ? 100 : 0;
+                }
 
                 // Determine glass size based on section difficulty
                 var glassSize = 'medium';
@@ -2783,7 +2799,7 @@
             upsertPlayerContext, removePlayerContext, listPlayerContexts,
             loadPhraseAttemptStore, loadPhraseAttempts, savePhraseAttempts,
             recordPhraseAttempt, _phraseIdOf,
-            _presentedDifficultyLevel, _tierFillFrac, _phraseTopDifficulty,
+            _presentedDifficultyLevel, _tierFillFrac, _phraseTopDifficulty, _chartHasContentIn,
             calculateAndEmitSectionDifficulties,
             commitPhraseResult, resetPerSongState,
             updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,

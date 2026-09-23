@@ -217,13 +217,51 @@ test('calculateAndEmitSectionDifficulties sizes and fills sections by the tier e
     assert.equal(solo.glassSize, 'large');
 });
 
-function stubHighwayForSectionDifficulty({ sections, phrases, mastery }) {
+function stubHighwayForSectionDifficulty({ sections, phrases, mastery, notes, chords }) {
     return {
         getSections: () => sections,
         getPhrases: () => phrases,
         getMastery: () => mastery,
+        getNotes: () => notes || [],
+        getChords: () => chords || [],
     };
 }
+
+test('a section of single-level phrases is full when it has notes and empty when it has none', () => {
+    const mod = freshPlugin();
+    // Generated easy phrases collapse to one level (max_difficulty 0): they
+    // play in full at every slider position, so the section glass is full,
+    // matching drawHud. A silent section with the same shape stays at 0%.
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Break' }, { time: 20, name: 'Solo' }],
+        phrases: [
+            { start_time: 0, end_time: 10, max_difficulty: 0, top_difficulty: 0 },
+            { start_time: 10, end_time: 20, max_difficulty: 0, top_difficulty: 0 },
+            { start_time: 20, end_time: 30, max_difficulty: 3, top_difficulty: 3 },
+        ],
+        notes: [{ t: 1, s: 0, f: 3 }, { t: 22, s: 2, f: 7 }],
+        chords: [{ t: 4, notes: [{ s: 0, f: 3 }] }],
+        mastery: 0.1,
+    });
+    let emitted = null;
+    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    const sections = emitted.detail.sectionDifficulties;
+    assert.equal(sections[0].fillPercentage, 100, 'easy verse with notes is played in full');
+    assert.equal(sections[1].fillPercentage, 0, 'a silent break is not shown as mastered');
+    assert.equal(sections[2].fillPercentage, 0, 'the solo is at its bottom tier at 10%');
+});
+
+test('_chartHasContentIn checks notes and chords in a half-open window', () => {
+    const mod = freshPlugin();
+    const hw = { getNotes: () => [{ t: 5 }], getChords: () => [{ t: 12 }] };
+    assert.equal(mod._chartHasContentIn(hw, 0, 5), false, 'end is exclusive');
+    assert.equal(mod._chartHasContentIn(hw, 5, 6), true);
+    assert.equal(mod._chartHasContentIn(hw, 10, Infinity), true, 'chords count');
+    assert.equal(mod._chartHasContentIn({}, 0, Infinity), false, 'no getters, no content');
+});
 
 test('calculateAndEmitSectionDifficulties fills each section using the same discrete tier drawHud() uses', () => {
     const mod = freshPlugin();

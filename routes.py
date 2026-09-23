@@ -558,6 +558,9 @@ def _assign_tiers(groups, n_tiers, global_thresholds, beat_times=(), *, tempo=No
     total = len(groups)
     in_time_order = sorted(range(total), key=lambda i: groups[i]["time"])
     position = {gi: pos for pos, gi in enumerate(in_time_order)}
+    # Ties in score go to beat-aligned groups first: a thinned tier keeps
+    # its rhythmic landmarks up front (the same bias _score_groups's -0.12
+    # and _refine_lower_tier_path apply), then _spread_key spreads the rest.
     ranked = sorted(range(total), key=lambda i: (
         groups[i]["score"],
         0 if _is_beat_aligned(groups[i]["time"], beat_times, tolerance=tempo.beat_tolerance) else 1,
@@ -747,11 +750,15 @@ def _prune_bend(out, diff_percent):
       replaced by a fretted note at the peak pitch. Previously it became a
       plain fret (bn gate) or a bend-UP (bt gate), both of which strike the
       note a whole step or so flat of the recording.
-    - A struck-at-peak bend with no fretted equivalent is left as authored:
-      keeping a technique on a low tier is better than a wrong pitch.
+    - A struck-at-peak bend with no fretted equivalent is left as authored
+      (bn, bt AND its bnv curve): keeping a technique on a low tier is better
+      than a wrong pitch.
+
+    Returns True only in that last case, so the caller also skips the bnv
+    gate for it.
     """
     if not out.get("bn"):
-        return
+        return False
     bt = out.get("bt", 0)
     strip = diff_percent < _TECH_GATE_FRAC["bn"]
     # Only the genuinely harder intents (pre-bend, pre-bend-release,
@@ -759,11 +766,11 @@ def _prune_bend(out, diff_percent):
     # meaningfully harder than a plain bend and stays until bn's gate.
     downgrade = not strip and diff_percent < _TECH_GATE_FRAC["bt"] and bt in (2, 3, 4)
     if not (strip or downgrade):
-        return
+        return False
     if bt in _BEND_STRUCK_AT_PEAK:
         peak_fret = _fretted_bend_peak(out)
         if peak_fret is None:
-            return
+            return True
         out["f"] = peak_fret
         out["bn"] = 0
         out["bt"] = 0
@@ -775,6 +782,7 @@ def _prune_bend(out, diff_percent):
         out.pop("bnv", None)
     else:
         out["bt"] = 0  # round-trip -> plain bend-up: same onset pitch
+    return False
 
 
 def _prune_techniques(note, diff_percent):
@@ -784,9 +792,11 @@ def _prune_techniques(note, diff_percent):
     keep whatever techniques its underlying notes had. Removal is
     pitch-preserving — see _prune_bend and _HARMONIC_PITCH_SAFE_FRETS."""
     out = dict(note)
-    _prune_bend(out, diff_percent)
+    bend_kept_as_authored = _prune_bend(out, diff_percent)
     for key, gate in _TECH_GATE_FRAC.items():
         if key in ("bn", "bt") or diff_percent >= gate:
+            continue
+        if key == "bnv" and bend_kept_as_authored:
             continue
         if key in ("sl", "slu"):
             out[key] = -1
