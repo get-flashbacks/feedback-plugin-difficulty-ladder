@@ -1169,11 +1169,26 @@
     // left to fill toward, so it's reported as fully filled (matches the
     // pre-existing "no glass to fill toward" convention both call sites
     // already followed for this case).
-    function _tierFillFrac(mastery, maxDifficulty) {
+    //
+    // `topDifficulty` (optional, defaults to maxDifficulty) is the tier from
+    // which the phrase plays in full -- core's getPhrases().top_difficulty.
+    // Generated ladders share one arrangement-wide tier scale, so an easy
+    // phrase is complete well below max_difficulty; its glass is full from
+    // that tier on rather than only at the very top of the slider.
+    function _tierFillFrac(mastery, maxDifficulty, topDifficulty) {
         if (!isFinite(maxDifficulty) || maxDifficulty <= 0) return { idxLevel: 0, fillFrac: 1 };
+        var top = isFinite(topDifficulty) ? Math.min(topDifficulty, maxDifficulty) : maxDifficulty;
         var clamped = Math.max(0, Math.min(1, mastery));
         var idxLevel = Math.min(maxDifficulty, Math.floor(clamped * (maxDifficulty + 1)));
-        return { idxLevel: idxLevel, fillFrac: idxLevel / maxDifficulty };
+        return { idxLevel: idxLevel, fillFrac: top <= 0 ? 1 : Math.min(1, idxLevel / top) };
+    }
+
+    // How hard a phrase is, for glass sizing: the tier where it becomes
+    // complete. Falls back to max_difficulty on a core that predates
+    // getPhrases().top_difficulty (identical for fully authored ladders).
+    function _phraseTopDifficulty(phrase) {
+        var top = Number(phrase && phrase.top_difficulty);
+        return isFinite(top) ? top : Number(phrase && phrase.max_difficulty) || 0;
     }
 
     function _presentedDifficultyLevel(hw, phrase) {
@@ -1667,7 +1682,7 @@
         // Calculate max difficulty across all phrases
         var maxDiff = 1;
         for (var i = 0; i < phrases.length; i++) {
-            maxDiff = Math.max(maxDiff, phrases[i].max_difficulty);
+            maxDiff = Math.max(maxDiff, _phraseTopDifficulty(phrases[i]));
         }
 
         // Map sections to difficulty data
@@ -1678,11 +1693,14 @@
 
             // Find phrases within this section's time range
             var sectionDifficultiesInRange = [];
+            var hardestPhrase = null;
             for (var pi = 0; pi < phrases.length; pi++) {
                 var phrase = phrases[pi];
                 // Check if phrase overlaps with section
                 if (phrase.end_time > section.time && phrase.start_time < nextSectionTime) {
-                    sectionDifficultiesInRange.push(phrase.max_difficulty);
+                    var top = _phraseTopDifficulty(phrase);
+                    sectionDifficultiesInRange.push(top);
+                    if (!hardestPhrase || top > _phraseTopDifficulty(hardestPhrase)) hardestPhrase = phrase;
                 }
             }
 
@@ -1711,7 +1729,8 @@
                 // maxSectionDifficulty was 0, review-caught -- Sourcery,
                 // PR #79).
                 var fillPercentage = maxSectionDifficulty > 0
-                    ? _tierFillFrac(mastery, maxSectionDifficulty).fillFrac * 100
+                    ? _tierFillFrac(mastery, Number(hardestPhrase.max_difficulty),
+                        maxSectionDifficulty).fillFrac * 100
                     : 0;
 
                 // Determine glass size based on section difficulty
@@ -2281,7 +2300,7 @@
         if (_hudMaxDifficulty == null) {
             _hudMaxDifficulty = 1;
             phrases.forEach(function (phrase) {
-                _hudMaxDifficulty = Math.max(_hudMaxDifficulty, phrase.max_difficulty);
+                _hudMaxDifficulty = Math.max(_hudMaxDifficulty, _phraseTopDifficulty(phrase));
             });
         }
         var maxDiff = _hudMaxDifficulty;
@@ -2327,9 +2346,10 @@
         }
 
         list.forEach(function (p, i2) {
-            var sizeFrac = Math.max(0.3, p.max_difficulty / maxDiff);
+            var pTop = _phraseTopDifficulty(p);
+            var sizeFrac = Math.max(0.3, pTop / maxDiff);
             var glassH = GLASS_MIN_H + (GLASS_MAX_H - GLASS_MIN_H) * sizeFrac;
-            var fillFrac = _tierFillFrac(mastery, p.max_difficulty).fillFrac;
+            var fillFrac = _tierFillFrac(mastery, p.max_difficulty, pTop).fillFrac;
             var x = i2 * (GLASS_W + GLASS_GAP);
             var y = h - glassH - 4;
             var isCurrent = (start + i2) === curIdx;
@@ -2763,7 +2783,7 @@
             upsertPlayerContext, removePlayerContext, listPlayerContexts,
             loadPhraseAttemptStore, loadPhraseAttempts, savePhraseAttempts,
             recordPhraseAttempt, _phraseIdOf,
-            _presentedDifficultyLevel, _tierFillFrac,
+            _presentedDifficultyLevel, _tierFillFrac, _phraseTopDifficulty,
             calculateAndEmitSectionDifficulties,
             commitPhraseResult, resetPerSongState,
             updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,

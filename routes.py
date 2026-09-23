@@ -322,8 +322,11 @@ def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4):
 def _group_anchor_note(group, *, prefer_fretted=True):
     """Return the fretted group's harmonic/hand-position anchor.
 
-    Rocksmith string indices run high pitch to low pitch, so the highest
-    string index is the same root convention used by chord reduction below.
+    String index 0 is the LOWEST-pitched string (feedpak-v1 §6.2, and
+    gp2rs's `_gp_string_to_rs`), so the lowest string index is the bass /
+    root — the same root convention used by chord reduction below. (This
+    used to take the highest index, i.e. the top string, which made chord
+    reduction keep the melody-side note and call it the root.)
 
     `prefer_fretted` (default True — used by the fret-jump scoring and
     lower-tier bridging below) picks a fretted note (f > 0) over an open
@@ -339,7 +342,7 @@ def _group_anchor_note(group, *, prefer_fretted=True):
     if prefer_fretted:
         fretted = [n for n in notes if n.get("f", 0) > 0]
         notes = fretted or notes
-    return max(notes, key=lambda n: n.get("s", 0), default=None)
+    return min(notes, key=lambda n: n.get("s", 0), default=None)
 
 
 def _is_beat_aligned(t, beat_times, tolerance=0.06):
@@ -476,49 +479,97 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
 # list pushes the low-tier cutoffs down without changing the top tier.
 _RETENTION_CURVE_EXPONENT = 1.35
 
-# Notes needed (per level of the cap) before a phrase is considered to have
-# enough raw content to justify a deep ladder, independent of how varied
-# that content is. A phrase can be short but still highly varied (or long
-# but monotonous) — depth needs both signals, not just one.
-_EVENTS_PER_LEVEL = 6
+
+# ── Tier assignment ──────────────────────────────────────────────────────────
+#
+# Every phrase is laid out on ONE arrangement-wide tier scale (0..n_tiers-1),
+# so a given mastery-slider position means the same difficulty everywhere in
+# the song. The previous scheme ranked groups by percentile *within each
+# phrase* and gave each phrase its own depth (from score spread), which made
+# the slider phrase-relative twice over: the bottom rung of an easy verse was
+# thinned exactly as hard as the bottom rung of the solo, and a passage that
+# was hard all the way through (low spread) got the SHORTEST ladder.
+#
+# A group's tier is the lower of two independent answers:
+#   * global — the same retention curve as before, but with its thresholds
+#     taken over every group in the arrangement. An easy group enters early
+#     no matter which phrase it's in, so an easy phrase is complete at a low
+#     tier and simply stops changing above it.
+#   * floor — the retention curve applied within the phrase by rank. It
+#     guarantees a hard phrase still has a playable skeleton at the bottom
+#     tier instead of going silent, and it is what gives a uniformly hard
+#     phrase a full-depth ladder.
+# Taking the minimum keeps tiers nested (each tier adds groups, never drops
+# them) because both inputs are monotone in the tier.
 
 
-def _phrase_level_count(groups, cap):
-    """Pick a per-phrase ladder depth (2..cap) from how much difficulty
-    *variation* the phrase actually has, instead of using the same depth
-    for every phrase in the arrangement (the single biggest gap between a
-    mechanical percentile-bucket ladder and one that reads as purpose-built:
-    a simple riff gets a short ladder, a technical passage gets a long one).
-
-    Score spread alone isn't enough — a two-note phrase can have maximal
-    spread but not enough raw content to fill out a deep ladder — so spread
-    is scaled down when there isn't much to grade.
-    """
-    if not groups:
-        return 2
-    scores = [g["score"] for g in groups]
-    spread = max(scores) - min(scores)
-    total_notes = sum(max(1, len(g["notes"])) for g in groups)
-    density_factor = min(1.0, total_notes / (_EVENTS_PER_LEVEL * cap))
-    estimate = 2 + round(spread * density_factor * (cap - 2))
-    return max(2, min(estimate, cap))
+# Upper end of the fixed score scale the global cutoffs are capped by: tier k
+# admits nothing scoring above (k+1)/n_tiers * this. Without the cap the
+# cutoffs are pure arrangement quantiles, so in a song that is mostly one hard
+# passage that passage IS the median and lands in the low tiers almost whole.
+# 0.6 is a starting calibration from synthetic passages (open-position quarter
+# notes and whole-note chords score < 0.15, an eighth-note low-position riff
+# 0.1-0.4, sixteenth-note tapping/legato runs 0.4-0.65), not a validated
+# scale; at 4 tiers it puts the cutoffs at 0.15 / 0.30 / 0.45.
+_ABSOLUTE_SCORE_SPAN = 0.6
 
 
-def _assign_levels(groups, n_levels, curve_exponent=_RETENTION_CURVE_EXPONENT):
+def _tier_thresholds(scores, n_tiers, curve_exponent=_RETENTION_CURVE_EXPONENT):
+    """Arrangement-wide score cutoffs for tiers 0..n_tiers-2 from `scores`
+    (any order): the retention-curve quantile of the arrangement's scores,
+    capped by the fixed scale above. A score strictly above cutoff k is not
+    admitted at tier k by this route (the per-phrase floor may still admit
+    it — see _assign_tiers)."""
+    scores_sorted = sorted(scores)
+    total = len(scores_sorted)
+    if not total:
+        return []
+    return [
+        min(
+            scores_sorted[min(int(((i + 1) / n_tiers) ** curve_exponent * total), total - 1)],
+            (i + 1) / n_tiers * _ABSOLUTE_SCORE_SPAN,
+        )
+        for i in range(n_tiers - 1)
+    ]
+
+
+def _spread_key(index):
+    """Van der Corput (base-2 radical inverse) value of `index` — an ordering
+    of 0, 1, 2, … that visits positions evenly across the range (0, 0.5,
+    0.25, 0.75, …). Used to break score ties in the per-phrase floor so a
+    run of equally hard notes is thinned evenly across the phrase rather than
+    keeping only its first few notes."""
+    result, denom = 0.0, 1.0
+    while index:
+        denom *= 2.0
+        result += (index & 1) / denom
+        index >>= 1
+    return result
+
+
+def _assign_tiers(groups, n_tiers, global_thresholds, beat_times=(), *, tempo=None,
+                  curve_exponent=_RETENTION_CURVE_EXPONENT):
+    """Set g["level"] for one phrase's groups on the arrangement-wide tier
+    scale (see the section comment above)."""
+    tempo = tempo or _TempoParams()
     if not groups:
         return
-    scores_sorted = sorted(g["score"] for g in groups)
-    total = len(scores_sorted)
-    thresholds = [
-        scores_sorted[min(int(((i + 1) / n_levels) ** curve_exponent * total), total - 1)]
-        for i in range(n_levels - 1)
+    top = n_tiers - 1
+    total = len(groups)
+    in_time_order = sorted(range(total), key=lambda i: groups[i]["time"])
+    position = {gi: pos for pos, gi in enumerate(in_time_order)}
+    ranked = sorted(range(total), key=lambda i: (
+        groups[i]["score"],
+        0 if _is_beat_aligned(groups[i]["time"], beat_times, tolerance=tempo.beat_tolerance) else 1,
+        _spread_key(position[i]),
+    ))
+    floor_counts = [
+        max(1, math.ceil(((k + 1) / n_tiers) ** curve_exponent * total)) for k in range(top)
     ]
-    for g in groups:
-        lvl = 0
-        for t in thresholds:
-            if g["score"] > t:
-                lvl += 1
-        g["level"] = min(lvl, n_levels - 1)
+    for rank, gi in enumerate(ranked):
+        floor_level = next((k for k, count in enumerate(floor_counts) if rank < count), top)
+        global_level = sum(1 for t in global_thresholds if groups[gi]["score"] > t)
+        groups[gi]["level"] = min(floor_level, global_level, top)
 
 
 def _best_bridge_candidate(groups_sorted, group_times, left, right, level, beat_times, original_jump, *,
@@ -657,34 +708,92 @@ _TECH_GATE_FRAC = {
 }
 
 
+# Pitch-preserving simplification: removing a technique must not change the
+# pitch the note is STRUCK at, which is both what the player hears against the
+# recording and what note_detect checks at the onset.
+_MAX_FRET = 24  # feedpak-v1 §6.2: "f" 0 = open, 24 = max
+# Bend intents whose onset is already at the bent pitch: release (a held bend
+# let down), pre-bend, pre-bend-and-release (feedpak-v1 §6.2.1).
+_BEND_STRUCK_AT_PEAK = frozenset({1, 2, 3})
+# A bend within this many semitones of a whole number can be replaced by a
+# fretted note at that pitch; anything else (a quarter-tone "blues curl") has
+# no fretted equivalent.
+_BEND_SEMITONE_TOLERANCE = 0.25
+# Frets where a natural harmonic sounds the same pitch as the fretted note
+# (the 2nd/3rd/4th partials' nodes at 12, 19 and 24). At every other node
+# (5, 7, 4, 9, …) the harmonic sounds well above the fretted pitch, so
+# stripping `hm` would turn it into a different note.
+_HARMONIC_PITCH_SAFE_FRETS = frozenset({12, 19, 24})
+
+
+def _fretted_bend_peak(note):
+    """Fret on the same string that sounds this note's bend peak, or None
+    when no fretted note can (non-whole-semitone bend, or past fret 24)."""
+    bn = float(note.get("bn", 0) or 0)
+    semis = round(bn)
+    if semis < 1 or abs(bn - semis) > _BEND_SEMITONE_TOLERANCE:
+        return None
+    target = int(note.get("f", 0)) + semis
+    return target if target <= _MAX_FRET else None
+
+
+def _prune_bend(out, diff_percent):
+    """Apply the bn/bt gates to `out` (mutated) without changing the pitch
+    the note is struck at.
+
+    - A bend struck unbent (bend-up, round-trip) just loses the bend: its
+      onset pitch is the plain fret either way.
+    - A bend struck at its peak (release, pre-bend, pre-bend-and-release) is
+      replaced by a fretted note at the peak pitch. Previously it became a
+      plain fret (bn gate) or a bend-UP (bt gate), both of which strike the
+      note a whole step or so flat of the recording.
+    - A struck-at-peak bend with no fretted equivalent is left as authored:
+      keeping a technique on a low tier is better than a wrong pitch.
+    """
+    if not out.get("bn"):
+        return
+    bt = out.get("bt", 0)
+    strip = diff_percent < _TECH_GATE_FRAC["bn"]
+    # Only the genuinely harder intents (pre-bend, pre-bend-release,
+    # round-trip) are affected by bt's own gate; release (1) isn't
+    # meaningfully harder than a plain bend and stays until bn's gate.
+    downgrade = not strip and diff_percent < _TECH_GATE_FRAC["bt"] and bt in (2, 3, 4)
+    if not (strip or downgrade):
+        return
+    if bt in _BEND_STRUCK_AT_PEAK:
+        peak_fret = _fretted_bend_peak(out)
+        if peak_fret is None:
+            return
+        out["f"] = peak_fret
+        out["bn"] = 0
+        out["bt"] = 0
+        out.pop("bnv", None)
+    elif strip:
+        # A removed bend must not leave stale bend-shape metadata behind.
+        out["bn"] = 0
+        out["bt"] = 0
+        out.pop("bnv", None)
+    else:
+        out["bt"] = 0  # round-trip -> plain bend-up: same onset pitch
+
+
 def _prune_techniques(note, diff_percent):
     """Strip technique flags a phrase hasn't "earned" yet at this rung of
     its own ladder, so a low tier reads as a simplified-but-intentional
     version of the part rather than a random note subset that happens to
-    keep whatever techniques its underlying notes had."""
+    keep whatever techniques its underlying notes had. Removal is
+    pitch-preserving — see _prune_bend and _HARMONIC_PITCH_SAFE_FRETS."""
     out = dict(note)
+    _prune_bend(out, diff_percent)
     for key, gate in _TECH_GATE_FRAC.items():
-        if diff_percent < gate:
-            if key in ("sl", "slu"):
-                out[key] = -1
-            elif key == "bn":
-                out[key] = 0
-                # A stripped bend must not leave stale bend-shape metadata
-                # behind. bt's own gate below only downgrades the "harder"
-                # intents (2/3/4) since release (1) isn't penalized on its
-                # own — but once bn is gone entirely there's no bend left
-                # for ANY intent value, including release, to describe.
-                out["bt"] = 0
-            elif key == "bt":
-                # Only the genuinely harder intents (pre-bend, pre-bend-
-                # release, round-trip) get downgraded to a plain bend-up;
-                # release (1) isn't meaningfully harder than a plain bend
-                # and is left as authored (unless bn's own gate above
-                # already cleared it).
-                if out.get("bt", 0) in (2, 3, 4):
-                    out["bt"] = 0
-            else:
-                out.pop(key, None)
+        if key in ("bn", "bt") or diff_percent >= gate:
+            continue
+        if key in ("sl", "slu"):
+            out[key] = -1
+        elif key == "hm" and int(out.get("f", 0)) not in _HARMONIC_PITCH_SAFE_FRETS:
+            continue
+        else:
+            out.pop(key, None)
     return out
 
 
@@ -715,8 +824,12 @@ def _pick_partial_voicing(ranked, n):
     return kept
 
 
-# Named for clarity — unchanged from the original tuned root-only threshold.
-_CHORD_ROOT_ONLY_FRAC = 0.20
+# Chords reduce to their root alone on any tier whose slider band ends in the
+# bottom quarter. This was `diff_percent < 0.20`, which no tier could satisfy
+# at the default 4 tiers (the bottom tier's diff_percent is 0.25), so the
+# documented root-only rung silently never happened; `<= 0.25` makes it the
+# bottom tier at 4 tiers and the bottom one or two tiers at 5-8.
+_CHORD_ROOT_ONLY_MAX_FRAC = 0.25
 # A 4+-note chord's middle voice appears only in roughly the top half of a
 # phrase's own ladder, keeping early tiers sparse the same way
 # _RETENTION_CURVE_EXPONENT and _TECH_GATE_FRAC already bias the bottom of
@@ -822,17 +935,17 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None):
             ch_time = float(ch.get("t", 0))
             ch_notes = list(ch.get("notes", []) or [])
             if len(ch_notes) > 1:
-                # String-index convention follows the arrangement source
-                # (Rocksmith-derived): index 0 = highest-pitched string, so
-                # the highest index among a chord's notes is its root.
-                ranked = sorted(ch_notes, key=lambda n: n.get("s", 0), reverse=True)
+                # String-index convention (feedpak-v1 §6.2): index 0 = the
+                # lowest-pitched string, so the lowest index among a chord's
+                # notes is its root/bass.
+                ranked = sorted(ch_notes, key=lambda n: n.get("s", 0))
                 # root-only only very early, then a partial voicing that grows
                 # by one note at a mid-ladder threshold, mirroring the keys
                 # path's outer-voices -> +middle -> full progression — authored
                 # ladders widen chords quickly (root-only is a bottom-tier-only
                 # thing) but a 4+-note chord still gets a real middle rung
                 # instead of jumping straight from 2 notes to the full voicing.
-                if diff_percent < _CHORD_ROOT_ONLY_FRAC:
+                if diff_percent <= _CHORD_ROOT_ONLY_MAX_FRAC:
                     ch_notes = [ranked[0]]
                 elif diff_percent < _CHORD_MID_VOICING_FRAC or len(ranked) <= 3:
                     if len(ranked) > 2:
@@ -853,8 +966,15 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None):
                 anchor = _group_anchor_note(g, prefer_fretted=False) or ns[0]
                 out_notes.append(_prune_note_for_level(anchor, diff_percent))
             else:
+                # Always include the bottom tier's root, then the earliest
+                # remaining notes, so each tier is a superset of the one
+                # below (taking just ns[:keep_n] could drop the root the
+                # bottom tier kept).
                 keep_n = max(1, (len(ns) * (level + 1)) // max_level)
-                out_notes.extend(_prune_note_for_level(n, diff_percent) for n in ns[:keep_n])
+                root = _group_anchor_note(g, prefer_fretted=False) or ns[0]
+                kept = [root] + [n for n in ns if n is not root][:keep_n - 1]
+                kept.sort(key=lambda n: float(n.get("t", 0)))
+                out_notes.extend(_prune_note_for_level(n, diff_percent) for n in kept)
         else:
             if level < max_level:
                 out_notes.extend(_prune_note_for_level(n, diff_percent) for n in g["notes"])
@@ -1169,33 +1289,42 @@ def _canonical_note_for_compare(note):
     """`note` with any field sitting at its wire-format default dropped, so
     tier-duplicate comparison sees past _prune_techniques's explicit
     sentinel writes (see _NOTE_FIELD_DEFAULTS) to the actual playable
-    content."""
+    content. A `False` boolean flag is also dropped: every boolean note
+    field defaults to false (feedpak-v1 §6.2), and gating a technique pops
+    its key, so a source note carrying `"ho": false` would otherwise differ
+    from its own pruned copy and keep a duplicate tier alive."""
     return {
         k: v for k, v in note.items()
-        if k not in _NOTE_FIELD_DEFAULTS or v != _NOTE_FIELD_DEFAULTS[k]
+        if v is not False and (k not in _NOTE_FIELD_DEFAULTS or v != _NOTE_FIELD_DEFAULTS[k])
     }
 
 
 def _collapse_identical_levels(levels_out):
-    """Merge adjacent tiers whose generated content is identical, then
-    renumber `difficulty` 0..k sequentially (issue #70).
+    """Merge adjacent tiers whose generated content is identical (issue #70),
+    keeping each surviving level's `difficulty` as the tier where its content
+    FIRST appears — so the numbers can be sparse (e.g. 0, 1, 3).
 
-    A ladder cap (`n_levels`) is a MAXIMUM depth, not a promise every rung
-    differs from its neighbor: `_phrase_level_count`'s floor of 2 still
-    applies to a phrase with zero score spread (every group scored
-    identically), and keys always generates the full requested depth
-    regardless of content variation. Either can produce two or more tiers
-    with identical notes/chords -- pure noise for the player, since the
-    mastery slider would show distinct positions that play identically.
+    Every phrase is generated on the same arrangement-wide tier scale (see
+    _assign_tiers), so an easy phrase is typically complete a few tiers
+    below the top and every tier above that repeats it. Storing those
+    repeats is pure noise, but renumbering the survivors 0..k (as this used
+    to) would throw away the tier scale itself: the player needs to know
+    that a phrase's second level starts at tier 3, not at tier 1. A reader
+    maps the mastery slider onto `max_difficulty + 1` tiers and plays the
+    last level whose `difficulty` is <= the current tier. (A reader that
+    instead indexes levels by position still gets a valid, just
+    phrase-relative, ladder.)
+
     Anchors/handshapes are derived purely from notes/chords, so comparing
     those two fields (through _canonical_note_for_compare, to see past
     prune-artifact sentinel keys) is sufficient to detect a true duplicate.
 
     Within a run of duplicates, the LATER (higher-difficulty) tier's dict is
-    kept as the representative rather than the first: pruning only ever adds
-    sentinel keys (never removes real content — see _NOTE_FIELD_DEFAULTS), so
-    the later tier in an equal-content run is always the same-or-cleaner
-    version, up to and including the untouched top tier itself.
+    kept as the representative content rather than the first: pruning only
+    ever adds sentinel keys (never removes real content — see
+    _NOTE_FIELD_DEFAULTS), so the later tier in an equal-content run is
+    always the same-or-cleaner version, up to and including the untouched
+    top tier itself.
     """
     if not levels_out:
         return levels_out
@@ -1206,11 +1335,10 @@ def _collapse_identical_levels(levels_out):
             _canonical_note_for_compare(n) for n in prev["notes"]
         ]
         if same_notes and lvl["chords"] == prev["chords"]:
+            lvl["difficulty"] = prev["difficulty"]
             collapsed[-1] = lvl
             continue
         collapsed.append(lvl)
-    for i, lvl in enumerate(collapsed):
-        lvl["difficulty"] = i
     return collapsed
 
 
@@ -1313,6 +1441,9 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # review follow-up) rather than per phrase/level.
         link_next_keep_ids = _global_link_next_survivors(groups_all)
 
+    top_tier = n_levels - 1
+    global_thresholds = _tier_thresholds([g["score"] for g in groups_all], n_levels)
+
     phrases_out = []
     for t0, t1 in windows:
         phrase_groups = [g for g in groups_all if t0 <= g["time"] < t1]
@@ -1331,22 +1462,22 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
                 }],
             })
             continue
-        # `n_levels` is a cap, not a fixed depth: a sparse phrase gets a
-        # short ladder and a dense one gets a long one, instead of every
-        # phrase in the arrangement sharing one global depth. Keys keeps a
-        # fixed depth for now (its scoring/curve wasn't tuned for this).
-        phrase_n_levels = n_levels if is_keys else _phrase_level_count(phrase_groups, n_levels)
-        phrase_max_level = phrase_n_levels - 1
-        _assign_levels(phrase_groups, phrase_n_levels)
+        # Every phrase is built on the same n_levels-tier scale (see
+        # _assign_tiers); how many DISTINCT levels a phrase ends up with
+        # follows from how hard its content is, once
+        # _collapse_identical_levels drops the tiers where it has stopped
+        # changing — an easy riff is complete early, a hard passage differs
+        # at every tier.
+        _assign_tiers(phrase_groups, n_levels, global_thresholds, beat_times, tempo=tempo)
         if not is_keys:
-            _refine_lower_tier_path(phrase_groups, beat_times, phrase_max_level, tempo=tempo)
+            _refine_lower_tier_path(phrase_groups, beat_times, top_tier, tempo=tempo)
         levels_out = []
-        for lvl in range(phrase_n_levels):
+        for lvl in range(n_levels):
             if is_keys:
-                lvl_notes, lvl_chords = _notes_for_level_keys(phrase_groups, lvl, phrase_max_level)
+                lvl_notes, lvl_chords = _notes_for_level_keys(phrase_groups, lvl, top_tier)
             else:
                 lvl_notes, lvl_chords = _notes_for_level(
-                    phrase_groups, lvl, phrase_max_level, link_next_keep_ids=link_next_keep_ids,
+                    phrase_groups, lvl, top_tier, link_next_keep_ids=link_next_keep_ids,
                 )
             # Fret anchors and hand shapes are fretboard concepts the piano
             # renderer never consumes (mirrors feedBack's own editor plugin's
@@ -1369,7 +1500,11 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         phrases_out.append({
             "start_time": round(t0, 3),
             "end_time": round(t1, 3),
-            "max_difficulty": len(levels_out) - 1,
+            # The shared tier scale, so a reader maps the slider identically
+            # onto every phrase. A phrase whose tiers all collapsed to one
+            # level has no ladder at all, reported as 0 (the same convention
+            # core uses for a single-level phrase).
+            "max_difficulty": top_tier if len(levels_out) > 1 else 0,
             "levels": levels_out,
         })
     return phrases_out if phrases_out else None
@@ -1555,13 +1690,12 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
     return {
         "ok": True, "arrangement_index": arrangement_index,
         "phrases": len(phrases),
-        # `requested_levels` is the cap the caller asked for (n_levels);
-        # `max_difficulty` is what generation actually reached across this
-        # arrangement's phrases -- these diverge whenever any phrase's own
-        # adaptive depth (_phrase_level_count) landed under the cap, or
-        # duplicate-tier collapsing (_collapse_identical_levels) shortened
-        # a phrase's ladder. Reporting only `n_levels - 1` here previously
-        # claimed a depth generation may not have actually produced.
+        # `requested_levels` is the tier scale the caller asked for
+        # (n_levels); `max_difficulty` is the highest phrase max_difficulty
+        # actually written -- n_levels - 1 when at least one phrase has a
+        # real ladder, 0 when every phrase collapsed to a single level
+        # (_collapse_identical_levels). Reporting only `n_levels - 1` here
+        # previously claimed a ladder generation may not have produced.
         "requested_levels": n_levels,
         "max_difficulty": max((p["max_difficulty"] for p in phrases), default=0),
         "instrument": instrument,

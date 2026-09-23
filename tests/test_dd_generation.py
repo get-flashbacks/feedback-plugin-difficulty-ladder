@@ -62,6 +62,19 @@ def _technical_notes(t0, t1, step=0.1):
     return notes
 
 
+def _assert_on_tier_scale(phrase, n_levels):
+    """A generated phrase's levels sit on the shared tier scale: difficulty
+    numbers start at 0 and strictly increase (sparse where tiers collapsed),
+    and max_difficulty is the scale's top tier -- or 0 when the phrase
+    collapsed to a single level (no ladder)."""
+    diffs = [lvl["difficulty"] for lvl in phrase["levels"]]
+    assert diffs[0] == 0
+    assert all(b > a for a, b in pairwise(diffs))
+    assert diffs[-1] <= n_levels - 1
+    expected_max = n_levels - 1 if len(diffs) > 1 else 0
+    assert phrase["max_difficulty"] == expected_max
+
+
 def test_returns_none_for_near_empty_arrangement():
     arr = _arrangement(_simple_notes(0, 1, step=0.5))  # well under MIN_EVENTS_FOR_GENERATION
     assert routes.generate_phrases_for_arrangement(arr, n_levels=4) is None
@@ -72,8 +85,8 @@ def test_simple_phrase_gets_a_shorter_ladder_than_the_cap():
     arr = _arrangement(notes)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
     assert phrases, "expected at least one phrase"
-    assert phrases[0]["max_difficulty"] < 5, (
-        "a near-constant, single-string phrase should not consume the full ladder cap"
+    assert len(phrases[0]["levels"]) < 6, (
+        "a near-constant, single-string phrase should not have a distinct level at every tier"
     )
 
 
@@ -111,7 +124,7 @@ def test_dense_technical_phrase_uses_more_of_the_cap_than_a_simple_one():
     technical_phrases = routes.generate_phrases_for_arrangement(technical, n_levels=6)
 
     assert simple_phrases and technical_phrases
-    assert technical_phrases[0]["max_difficulty"] > simple_phrases[0]["max_difficulty"]
+    assert len(technical_phrases[0]["levels"]) > len(simple_phrases[0]["levels"])
 
 
 def test_bottom_tier_is_sparser_than_a_flat_percentile_split():
@@ -119,13 +132,12 @@ def test_bottom_tier_is_sparser_than_a_flat_percentile_split():
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     levels = phrases[0]["levels"]
-    max_level = phrases[0]["max_difficulty"]
-    top_count = len(levels[max_level]["notes"]) + len(levels[max_level]["chords"])
+    top_count = len(levels[-1]["notes"]) + len(levels[-1]["chords"])
     bottom_count = len(levels[0]["notes"]) + len(levels[0]["chords"])
     assert top_count > 0
     # a flat percentile split would put ~1/n_levels of the content at the
     # bottom tier; the convex retention curve should land well under that
-    assert bottom_count / top_count < 1.0 / (max_level + 1)
+    assert bottom_count / top_count < 1.0 / 4
 
 
 def test_flashy_techniques_are_gated_out_of_low_tiers():
@@ -150,7 +162,7 @@ def test_chords_are_thinned_below_the_top_tier_and_intact_at_the_top():
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     levels = phrases[0]["levels"]
-    max_level = phrases[0]["max_difficulty"]
+    max_level = len(levels) - 1
 
     def chord_note_count_at(lvl):
         return sum(
@@ -201,31 +213,33 @@ def test_lower_tier_refinement_falls_back_to_a_beat_group_when_none_was_kept():
 
 
 def test_bottom_arpeggio_voice_preserves_the_root_string():
+    # String 0 is the LOWEST string (feedpak-v1 §6.2), so s=1 is the root
+    # here even though it's played after the higher s=5 note.
     groups = [{
         "type": "arpeggio", "level": 0, "time": 0.0, "chord": None,
-        "notes": [{"t": 0.0, "s": 1, "f": 7}, {"t": 0.04, "s": 5, "f": 3}],
+        "notes": [{"t": 0.0, "s": 5, "f": 7}, {"t": 0.04, "s": 1, "f": 3}],
     }]
 
     notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
 
     assert chords == []
-    assert [(n["s"], n["f"]) for n in notes] == [(5, 3)]
+    assert [(n["s"], n["f"]) for n in notes] == [(1, 3)]
 
 
 def test_bottom_arpeggio_voice_preserves_an_open_root_string():
-    # The root string (s=5) is played open here. Bottom-tier arpeggio
-    # selection cares about the harmonic root, not hand position — an open
-    # root is a valid, easier simplification, so it must not be skipped in
-    # favor of the fretted note the way the jump-scoring anchor now is.
+    # The root string (s=0, the lowest) is played open here. Bottom-tier
+    # arpeggio selection cares about the harmonic root, not hand position —
+    # an open root is a valid, easier simplification, so it must not be
+    # skipped in favor of the fretted note the way the jump-scoring anchor is.
     groups = [{
         "type": "arpeggio", "level": 0, "time": 0.0, "chord": None,
-        "notes": [{"t": 0.0, "s": 5, "f": 0}, {"t": 0.04, "s": 2, "f": 5}],
+        "notes": [{"t": 0.0, "s": 0, "f": 0}, {"t": 0.04, "s": 3, "f": 5}],
     }]
 
     notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
 
     assert chords == []
-    assert [(n["s"], n["f"]) for n in notes] == [(5, 0)]
+    assert [(n["s"], n["f"]) for n in notes] == [(0, 0)]
 
 
 def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
@@ -251,17 +265,17 @@ def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
 def test_group_anchor_note_prefers_a_fretted_note_over_an_incidental_open_string():
     # An open string needs no hand position at all, so it must not be picked
     # as the hand-position anchor when the group also has fretted notes —
-    # even though it's the highest string index (the usual root convention).
+    # even though it's the lowest string (the usual root convention).
     group = {"notes": [
-        {"s": 0, "f": 12}, {"s": 1, "f": 12}, {"s": 2, "f": 13},
-        {"s": 3, "f": 13}, {"s": 4, "f": 12}, {"s": 5, "f": 0},
+        {"s": 0, "f": 0}, {"s": 1, "f": 12}, {"s": 2, "f": 13},
+        {"s": 3, "f": 13}, {"s": 4, "f": 12}, {"s": 5, "f": 12},
     ]}
     anchor = routes._group_anchor_note(group)
-    assert anchor["f"] > 0
+    assert anchor == {"s": 1, "f": 12}
 
-    # All-open group: falls back to the highest-string-index note as before.
+    # All-open group: falls back to the lowest-string note.
     open_group = {"notes": [{"s": 5, "f": 0}, {"s": 4, "f": 0}]}
-    assert routes._group_anchor_note(open_group) == {"s": 5, "f": 0}
+    assert routes._group_anchor_note(open_group) == {"s": 4, "f": 0}
 
 
 def test_fret_jump_penalty_reflects_the_true_fretted_position_not_an_incidental_open_string():
@@ -792,7 +806,9 @@ def test_bass_slap_and_pop_previously_scored_as_a_plain_note():
 
 
 def test_pinch_harmonic_gated_out_later_than_natural_harmonic():
-    note_hm = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "hm": True}
+    # Fret 12: stripping a natural harmonic there keeps its pitch, so the
+    # gate applies (see test_natural_harmonic_is_kept_where_stripping_would_change_its_pitch).
+    note_hm = {"t": 0.0, "s": 2, "f": 12, "sus": 0, "hm": True}
     note_hp = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "hp": True}
     assert "hm" not in routes._prune_techniques(note_hm, diff_percent=0.70)
     assert "hp" not in routes._prune_techniques(note_hp, diff_percent=0.90), (
@@ -920,12 +936,14 @@ def test_bend_curve_with_shaping_scores_higher_than_a_trivial_two_point_curve():
 
 
 def test_bend_intent_downgraded_below_its_gate_but_release_is_spared():
+    note_round_trip = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 4}
     note_pre_bend = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 2}
     note_release = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 1}
 
-    below_bt_gate = routes._prune_techniques(note_pre_bend, diff_percent=0.60)
-    assert below_bt_gate["bt"] == 0, "pre-bend should downgrade to a plain bend-up below its gate"
+    below_bt_gate = routes._prune_techniques(note_round_trip, diff_percent=0.60)
+    assert below_bt_gate["bt"] == 0, "round-trip should downgrade to a plain bend-up below its gate"
     assert below_bt_gate["bn"] == 1.0, "bn itself survives above its own (earlier) gate"
+    assert below_bt_gate["f"] == 5, "both are struck unbent, so the fret is unchanged"
 
     above_bt_gate = routes._prune_techniques(note_pre_bend, diff_percent=0.70)
     assert above_bt_gate["bt"] == 2
@@ -954,13 +972,14 @@ def test_bend_curve_stripped_below_its_gate_bn_and_bt_survive():
 def test_stripped_bend_does_not_leave_a_stale_bt_or_bnv_behind():
     note = {
         "t": 0.0, "s": 2, "f": 5, "sus": 0,
-        "bn": 1.5, "bt": 3,
-        "bnv": [{"t": 0, "v": 0}, {"t": 0.1, "v": 0.5}, {"t": 0.2, "v": 1.5}],
+        "bn": 1.5, "bt": 4,
+        "bnv": [{"t": 0, "v": 0}, {"t": 0.1, "v": 1.5}, {"t": 0.2, "v": 0}],
     }
     pruned = routes._prune_techniques(note, diff_percent=0.30)
     assert pruned["bn"] == 0
-    assert pruned["bt"] == 0, "a pre-bend flag on a bn=0 note is nonsensical and must not survive"
+    assert pruned["bt"] == 0, "a round-trip flag on a bn=0 note is nonsensical and must not survive"
     assert "bnv" not in pruned, "a stale bend curve must not survive when the bend itself is gone"
+    assert pruned["f"] == 5, "a round-trip is struck unbent, so the fret is unchanged"
 
 
 def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spared():
@@ -970,13 +989,15 @@ def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spar
     # But once bn's gate strips the bend entirely, "release" is no longer
     # a meaningful description of anything -- there's no bend left to
     # release -- so it must be cleared too, not just the harder intents.
-    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.5, "bt": 1}
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 1}
     pruned = routes._prune_techniques(note, diff_percent=0.30)
     assert pruned["bn"] == 0
     assert pruned["bt"] == 0, (
         "a release flag on a bn=0 note is nonsensical and must not survive, "
         "even though release alone (bn intact) is never downgraded"
     )
+    # A release is struck at the bent pitch: the simplified note is fretted there.
+    assert pruned["f"] == 6
 
 
 # ---------------------------------------------------------------------------
@@ -1366,8 +1387,7 @@ def test_chord_only_top_tier_gets_anchors():
     arr = _arrangement([], chords=chords)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
-    max_level = phrases[0]["max_difficulty"]
-    top = phrases[0]["levels"][max_level]
+    top = phrases[0]["levels"][-1]
     assert top["notes"] == []
     assert len(top["chords"]) == 4
     assert top["anchors"], "a chord-only top tier must still get fret anchors"
@@ -1510,7 +1530,9 @@ def test_collapse_identical_levels_merges_duplicate_adjacent_tiers():
     ]
     collapsed = routes._collapse_identical_levels(levels)
     assert len(collapsed) == 2
-    assert [lvl["difficulty"] for lvl in collapsed] == [0, 1]
+    # Tier numbers are kept, not renumbered: the second level's content
+    # starts at tier 2, and a reader needs that to map the slider correctly.
+    assert [lvl["difficulty"] for lvl in collapsed] == [0, 2]
     # the cleaner (un-pruned) representative of the duplicate run survives
     assert collapsed[0]["notes"] == [{"t": 0, "s": 2, "f": 3}]
     assert collapsed[1]["notes"] == [{"t": 0, "s": 2, "f": 5}]
@@ -1527,9 +1549,9 @@ def test_collapse_identical_levels_keeps_distinct_tiers_untouched():
 
 def test_repetitive_fretted_phrase_collapses_duplicate_tiers():
     # Equal-score-ish content: identical string/fret/no techniques,
-    # evenly spaced. _phrase_level_count's floor + percentile bucketing
-    # can still nominally split this into more tiers than there's real
-    # variation for -- no two adjacent tiers may describe the same notes.
+    # evenly spaced. The per-phrase floor could still nominally split this
+    # into more tiers than there's real variation for -- no two adjacent
+    # tiers may describe the same notes.
     notes = [{"t": round(i * 0.25, 3), "s": 2, "f": 3, "sus": 0} for i in range(60)]
     arr = _arrangement(notes, n_beats=60)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
@@ -1539,7 +1561,7 @@ def test_repetitive_fretted_phrase_collapses_duplicate_tiers():
         a_notes = [routes._canonical_note_for_compare(n) for n in a["notes"]]
         b_notes = [routes._canonical_note_for_compare(n) for n in b["notes"]]
         assert a_notes != b_notes or a["chords"] != b["chords"]
-    assert phrases[0]["max_difficulty"] == len(levels) - 1
+    _assert_on_tier_scale(phrases[0], n_levels=6)
 
 
 def test_keys_fixed_depth_collapses_duplicate_tiers():
@@ -1557,8 +1579,8 @@ def test_keys_fixed_depth_collapses_duplicate_tiers():
     levels = phrases[0]["levels"]
     for a, b in pairwise(levels):
         assert a["notes"] != b["notes"] or a["chords"] != b["chords"]
-    assert phrases[0]["max_difficulty"] == len(levels) - 1
-    assert phrases[0]["max_difficulty"] < 3, (
+    _assert_on_tier_scale(phrases[0], n_levels=4)
+    assert len(levels) < 4, (
         "keys must not always ship the full requested depth when tiers are duplicates"
     )
 
@@ -1570,7 +1592,7 @@ def test_shallow_phrase_reports_actual_depth_not_the_requested_cap():
     arr = _arrangement(notes)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=8)
     assert phrases
-    assert phrases[0]["max_difficulty"] < 7
+    assert len(phrases[0]["levels"]) < 8
 
 
 def test_empty_section_phrase_still_reports_zero_depth_after_collapse():
@@ -1780,7 +1802,7 @@ def test_generate_phrases_preserves_ln_across_a_phrase_boundary():
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=2)
     assert phrases
     first_phrase = phrases[0]
-    top_level = first_phrase["levels"][first_phrase["max_difficulty"]]
+    top_level = first_phrase["levels"][-1]
     tagged = [n for n in top_level["notes"] if n["t"] == 4.5]
     assert tagged and tagged[0].get("ln") is True
 
@@ -1807,3 +1829,182 @@ def test_generate_library_route_records_canonical_section_times_failure_and_cont
     data = resp.json()
     assert data["generated"] == 1
     assert any("corrupt archive" in f.get("error", "") for f in data["failed"])
+
+
+# ---------------------------------------------------------------------------
+# Arrangement-wide tier scale: the mastery slider means the same difficulty in
+# every phrase, an easy phrase is complete early, and a hard phrase keeps a
+# full ladder even when it's hard all the way through.
+# ---------------------------------------------------------------------------
+
+def _tiered_beats(n):
+    return [{"time": i * 0.5, "measure": (i // 4 + 1) if i % 4 == 0 else -1} for i in range(n)]
+
+
+def _easy_then_hard(hard_notes):
+    easy = [{"t": float(i), "s": 1, "f": 3, "sus": 0.9} for i in range(16)]
+    return {
+        "type": "lead", "name": "lead", "tuning": [0] * 6,
+        "notes": easy + hard_notes, "chords": [], "beats": _tiered_beats(80),
+        "sections": [{"time": 0}, {"time": 16}],
+    }
+
+
+def test_easy_phrase_is_complete_at_a_lower_tier_than_a_hard_phrase():
+    hard = [{"t": 16 + i * 0.125, "s": 3 + (i % 3), "f": 14 + (i % 5), "sus": 0, "ho": i % 2 == 1}
+            for i in range(128)]
+    phrases = routes.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
+    easy_phrase, hard_phrase = phrases
+    for p in phrases:
+        _assert_on_tier_scale(p, n_levels=4)
+    # The easy verse is played in full at every slider position -- it used
+    # to be thinned at the bottom exactly as hard as the solo.
+    assert len(easy_phrase["levels"]) == 1
+    assert len(easy_phrase["levels"][0]["notes"]) == 16
+    # The solo differs at every tier and still has a skeleton at the bottom.
+    assert [lvl["difficulty"] for lvl in hard_phrase["levels"]] == [0, 1, 2, 3]
+    counts = [len(lvl["notes"]) for lvl in hard_phrase["levels"]]
+    assert 0 < counts[0] < counts[1] < counts[2] < counts[3] == 128
+
+
+def test_uniformly_hard_phrase_gets_a_full_ladder():
+    # Every note in the solo scores the same (same string, fret, technique,
+    # spacing). Depth used to come from score SPREAD, so this got the
+    # shortest ladder; the per-phrase floor now thins it evenly instead.
+    hard = [{"t": 16 + i * 0.125, "s": 4, "f": 17, "sus": 0, "tp": True} for i in range(128)]
+    phrases = routes.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
+    hard_phrase = phrases[1]
+    assert [lvl["difficulty"] for lvl in hard_phrase["levels"]] == [0, 1, 2, 3]
+    bottom_times = [n["t"] for n in hard_phrase["levels"][0]["notes"]]
+    assert bottom_times, "the bottom tier must not go silent"
+    # Spread across the phrase, not just its first few notes.
+    assert max(bottom_times) - min(bottom_times) > 0.75 * (hard[-1]["t"] - hard[0]["t"])
+
+
+def test_all_multi_level_phrases_share_the_requested_tier_scale():
+    arr = _arrangement(_technical_notes(0, 30, step=0.1), sections=[{"time": 0}, {"time": 10}, {"time": 20}])
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=5)
+    assert phrases
+    for p in phrases:
+        _assert_on_tier_scale(p, n_levels=5)
+
+
+def test_tier_levels_are_nested():
+    hard = [{"t": 16 + i * 0.125, "s": 3 + (i % 3), "f": 14 + (i % 5), "sus": 0} for i in range(128)]
+    phrases = routes.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
+    for p in phrases:
+        times = [{n["t"] for n in lvl["notes"]} for lvl in p["levels"]]
+        for lower, higher in pairwise(times):
+            assert lower <= higher
+
+
+def test_keys_phrases_use_the_tier_scale_too():
+    notes = [{"t": round(i * 0.25, 3), "s": 2 + (i % 3), "f": (i * 7) % 24, "sus": 0} for i in range(64)]
+    arr = {
+        "type": "keys", "name": "keys", "notes": notes, "chords": [],
+        "beats": _tiered_beats(64), "sections": [], "tuning": [],
+    }
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases
+    for p in phrases:
+        _assert_on_tier_scale(p, n_levels=4)
+
+
+def test_spread_key_orders_positions_evenly():
+    assert [routes._spread_key(i) for i in range(4)] == [0.0, 0.5, 0.25, 0.75]
+
+
+# ---------------------------------------------------------------------------
+# Chord reduction: root-only is reachable at the default tier count, and the
+# root is the LOWEST string (string 0 = lowest, feedpak-v1 §6.2).
+# ---------------------------------------------------------------------------
+
+def _chord_group(level=0):
+    chord = {"t": 1.0, "notes": [
+        {"s": 0, "f": 3}, {"s": 1, "f": 2}, {"s": 2, "f": 0},
+        {"s": 3, "f": 0}, {"s": 4, "f": 0}, {"s": 5, "f": 3},
+    ]}
+    return [{"type": "chord", "notes": list(chord["notes"]), "chord": chord,
+             "time": 1.0, "score": 0.5, "level": level}]
+
+
+def test_bottom_tier_reduces_chords_to_the_root_at_the_default_four_tiers():
+    notes, chords = routes._notes_for_level(_chord_group(), level=0, max_level=3)
+    assert chords == []
+    assert [(n["s"], n["f"]) for n in notes] == [(0, 3)], "root = lowest string (a G chord's low G)"
+
+
+def test_second_tier_keeps_a_partial_voicing_built_on_the_root():
+    notes, _ = routes._notes_for_level(_chord_group(), level=1, max_level=3)
+    assert len(notes) == 2
+    assert (0, 3) in [(n["s"], n["f"]) for n in notes]
+
+
+def test_root_only_is_not_used_when_the_bottom_tier_covers_more_than_a_quarter():
+    notes, _ = routes._notes_for_level(_chord_group(), level=0, max_level=2)
+    assert len(notes) == 2
+
+
+# ---------------------------------------------------------------------------
+# Pitch-preserving technique removal.
+# ---------------------------------------------------------------------------
+
+def test_stripped_pre_bend_is_fretted_at_the_bent_pitch():
+    note = {"t": 0.0, "s": 2, "f": 7, "sus": 0.5, "bn": 2.0, "bt": 2,
+            "bnv": [{"t": 0, "v": 2.0}, {"t": 0.5, "v": 2.0}]}
+    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (9, 0, 0)
+    assert "bnv" not in pruned
+
+
+def test_pre_bend_below_its_intent_gate_is_fretted_not_turned_into_a_bend_up():
+    # A bend-up is struck at the unbent fret, which is a whole step flat of a
+    # pre-bend's onset -- so the intent downgrade frets the peak instead.
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 2}
+    pruned = routes._prune_techniques(note, diff_percent=0.60)
+    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (6, 0, 0)
+
+
+def test_pre_bend_release_is_fretted_at_its_onset_pitch():
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 2.0, "bt": 3}
+    pruned = routes._prune_techniques(note, diff_percent=0.60)
+    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (7, 0, 0)
+
+
+def test_bend_up_keeps_its_fret_when_stripped():
+    note = {"t": 0.0, "s": 2, "f": 7, "sus": 0, "bn": 2.0}
+    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    assert (pruned["f"], pruned["bn"]) == (7, 0)
+
+
+def test_struck_at_peak_bend_without_a_fretted_equivalent_is_kept_as_authored():
+    quarter_tone = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 0.5, "bt": 2}
+    past_last_fret = {"t": 0.0, "s": 2, "f": 23, "sus": 0, "bn": 2.0, "bt": 2}
+    for note in (quarter_tone, past_last_fret):
+        pruned = routes._prune_techniques(note, diff_percent=0.30)
+        assert (pruned["f"], pruned["bn"], pruned["bt"]) == (note["f"], note["bn"], note["bt"])
+
+
+def test_natural_harmonic_is_kept_where_stripping_would_change_its_pitch():
+    # A harmonic at fret 7 sounds the pitch of fret 19; a plain fret-7 note
+    # would be a different note entirely.
+    for fret in (5, 7, 4):
+        note = {"t": 0.0, "s": 2, "f": fret, "sus": 0, "hm": True}
+        assert routes._prune_techniques(note, diff_percent=0.30).get("hm") is True
+    for fret in (12, 19, 24):
+        note = {"t": 0.0, "s": 2, "f": fret, "sus": 0, "hm": True}
+        assert "hm" not in routes._prune_techniques(note, diff_percent=0.30)
+
+
+def test_explicit_false_flags_do_not_keep_a_duplicate_tier_alive():
+    # Importers commonly write every boolean flag explicitly ("ho": false).
+    # Gating pops the key, so without normalising false == absent the pruned
+    # tier and the untouched top tier compared as different.
+    pruned = {"t": 0, "s": 0, "f": 0, "sus": 0.6, "sl": -1, "slu": -1, "bn": 0.0}
+    source = dict(pruned, ho=False, po=False, pm=False, tp=False)
+    assert routes._canonical_note_for_compare(pruned) == routes._canonical_note_for_compare(source)
+    levels = [
+        {"difficulty": 0, "notes": [pruned], "chords": [], "anchors": [], "handshapes": []},
+        {"difficulty": 1, "notes": [source], "chords": [], "anchors": [], "handshapes": []},
+    ]
+    assert [lvl["difficulty"] for lvl in routes._collapse_identical_levels(levels)] == [0]

@@ -46,6 +46,22 @@ contract.
   counts in their response, so a caller can tell "nothing to do" (already had
   phrases, too little content) apart from "this generator doesn't support
   that instrument" apart from an outright failure.
+- **One difficulty scale per song.** Every phrase is laid out on the same
+  `levels`-tier scale (default 4), so a slider position means the same
+  difficulty in the verse as in the solo. A note group enters a tier when it
+  is easy for this song *and* on a fixed score scale, or when it's among its
+  own phrase's easiest (so a hard phrase always keeps a playable skeleton).
+  An easy phrase is therefore complete a tier or two in and stops changing,
+  while a hard phrase differs at every tier. Tiers where a phrase didn't
+  change are dropped from the file, and the remaining levels keep their tier
+  numbers (e.g. `difficulty` 0, 1, 3 with `max_difficulty` 3). feedBack core
+  maps the slider through those numbers; an older core still plays the
+  ladder, just scaled per phrase.
+- **Simplifications keep the pitch the note is struck at.** A pre-bend or
+  release (struck already bent) is simplified to a fretted note at the bent
+  pitch rather than an unbent one; a natural harmonic is only turned into a
+  fretted note where that sounds the same pitch (frets 12, 19, 24). Chords
+  reduce toward their root, which is the lowest string (string 0).
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
