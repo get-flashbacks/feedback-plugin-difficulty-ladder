@@ -1332,7 +1332,8 @@ def _collapse_octave_duplicates(ns, preferred=()):
     a beginner as the single note, so it's a free simplification on top of
     the voice-thinning above. Notes in `preferred` win an octave collision;
     this lets a harder reduced tier retain the representative already exposed
-    by an easier tier instead of replacing it with its octave partner."""
+    by an easier tier instead of replacing it with its octave partner.
+    `preferred` must contain the same note objects that appear in `ns`."""
     preferred_ids = {id(n) for n in preferred}
     ordered = [n for n in ns if id(n) in preferred_ids]
     ordered.extend(n for n in ns if id(n) not in preferred_ids)
