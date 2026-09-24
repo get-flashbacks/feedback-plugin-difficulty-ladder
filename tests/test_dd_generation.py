@@ -84,7 +84,7 @@ def test_simple_phrase_gets_a_shorter_ladder_than_the_cap():
     notes = _simple_notes(0, 10, step=0.5, fret=3)  # constant fret -> near-zero score spread
     arr = _arrangement(notes)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
-    assert phrases, "expected at least one phrase"
+    assert phrases, "expected at least one phrase"  # nosec B101 - pytest assertion
     assert len(phrases[0]["levels"]) < 6, (  # nosec B101 - pytest assertion
         "a near-constant, single-string phrase should not have a distinct level at every tier"
     )

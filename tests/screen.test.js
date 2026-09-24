@@ -195,7 +195,7 @@ test('_phraseTopDifficulty prefers core top_difficulty and falls back to max_dif
 
 test('calculateAndEmitSectionDifficulties sizes and fills sections by the tier each phrase is complete at', () => {
     const mod = freshPlugin();
-    global.window.highway = stubHighwayForSectionDifficulty({
+    const { getEmitted } = setupSectionDifficultyTest({
         sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Solo' }],
         phrases: [
             { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 },
@@ -203,11 +203,10 @@ test('calculateAndEmitSectionDifficulties sizes and fills sections by the tier e
         ],
         mastery: 0.3,
     });
-    let emitted = null;
-    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
 
     mod.calculateAndEmitSectionDifficulties();
 
+    const emitted = getEmitted();
     const [verse, solo] = [emitted.detail.sectionDifficulties[0], emitted.detail.sectionDifficulties[1]];
     assert.equal(verse.maxDifficulty, 1);
     assert.equal(verse.fillPercentage, 100, 'the easy verse is already played in full at tier 1');
@@ -227,12 +226,19 @@ function stubHighwayForSectionDifficulty({ sections, phrases, mastery, notes, ch
     };
 }
 
+function setupSectionDifficultyTest(config) {
+    global.window.highway = stubHighwayForSectionDifficulty(config);
+    let emitted = null;
+    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
+    return { getEmitted: () => emitted };
+}
+
 test('a section of single-level phrases is full when it has notes and empty when it has none', () => {
     const mod = freshPlugin();
     // Generated easy phrases collapse to one level (max_difficulty 0): they
     // play in full at every slider position, so the section glass is full,
     // matching drawHud. A silent section with the same shape stays at 0%.
-    global.window.highway = stubHighwayForSectionDifficulty({
+    const { getEmitted } = setupSectionDifficultyTest({
         sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Break' }, { time: 20, name: 'Solo' }],
         phrases: [
             { start_time: 0, end_time: 10, max_difficulty: 0, top_difficulty: 0 },
@@ -243,11 +249,10 @@ test('a section of single-level phrases is full when it has notes and empty when
         chords: [{ t: 4, notes: [{ s: 0, f: 3 }] }],
         mastery: 0.1,
     });
-    let emitted = null;
-    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
 
     mod.calculateAndEmitSectionDifficulties();
 
+    const emitted = getEmitted();
     const sections = emitted.detail.sectionDifficulties;
     assert.equal(sections[0].fillPercentage, 100, 'easy verse with notes is played in full');
     assert.equal(sections[1].fillPercentage, 0, 'a silent break is not shown as mastered');
@@ -270,7 +275,7 @@ test('calculateAndEmitSectionDifficulties fills each section using the same disc
     // wrong: mastery 0.6 against max_difficulty 2 lands on tier 1 (of 2),
     // i.e. 50% -- not the 30% the old `mastery * maxSectionDifficulty /
     // globalMaxDifficulty` formula would have emitted.
-    global.window.highway = stubHighwayForSectionDifficulty({
+    const { getEmitted } = setupSectionDifficultyTest({
         sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Chorus' }],
         phrases: [
             { start_time: 0, end_time: 10, max_difficulty: 2 },
@@ -278,11 +283,10 @@ test('calculateAndEmitSectionDifficulties fills each section using the same disc
         ],
         mastery: 0.6,
     });
-    let emitted = null;
-    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
 
     mod.calculateAndEmitSectionDifficulties();
 
+    const emitted = getEmitted();
     assert.equal(emitted.name, 'difficulty:sections-updated');
     const verse = emitted.detail.sectionDifficulties[0];
     const expected = mod._tierFillFrac(0.6, 2);
@@ -300,7 +304,7 @@ test('calculateAndEmitSectionDifficulties reports 0% for a section whose only ph
     // convention here would render an empty section as misleadingly "fully
     // mastered". The old continuous formula always emitted 0% for this case.
     const mod = freshPlugin();
-    global.window.highway = stubHighwayForSectionDifficulty({
+    const { getEmitted } = setupSectionDifficultyTest({
         sections: [{ time: 0, name: 'Intro' }, { time: 5, name: 'Verse' }],
         phrases: [
             { start_time: 0, end_time: 5, max_difficulty: 0 },
@@ -308,11 +312,10 @@ test('calculateAndEmitSectionDifficulties reports 0% for a section whose only ph
         ],
         mastery: 0.6,
     });
-    let emitted = null;
-    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
 
     mod.calculateAndEmitSectionDifficulties();
 
+    const emitted = getEmitted();
     const intro = emitted.detail.sectionDifficulties[0];
     assert.equal(intro.maxDifficulty, 0);
     assert.equal(intro.fillPercentage, 0);
