@@ -708,7 +708,7 @@ def _assign_tiers(groups, n_tiers, global_thresholds, beat_times=(), *, tempo=No
     position = {gi: pos for pos, gi in enumerate(in_time_order)}
     # Ties in score go to beat-aligned groups first: a thinned tier keeps
     # its rhythmic landmarks up front (the same bias _score_groups's -0.12
-    # and _refine_lower_tier_path apply), then _spread_key spreads the rest.
+    # applies), then _spread_key spreads the rest.
     ranked = sorted(range(total), key=lambda i: (
         groups[i]["score"],
         0 if _is_beat_aligned(groups[i]["time"], beat_times, tolerance=tempo.beat_tolerance) else 1,
@@ -1689,7 +1689,9 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # difficulty mapping: equally-scored groups can end up at different tiers
         # when one phrase's local playability needs trigger promotions that don't
         # occur in another phrase. Disabling it preserves the shared global tier
-        # scale. TODO: incorporate playability constraints into arrangement-wide
+        # scale. _refine_lower_tier_path and its bridge helpers (routes.py
+        # 726-820) are now unused in production pending the TODO below.
+        # TODO: incorporate playability constraints into arrangement-wide
         # tier assignment (before generating phrase levels) instead of post-hoc.
         levels_out = []
         for lvl in range(n_levels):
