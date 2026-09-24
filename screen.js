@@ -1838,7 +1838,7 @@
     }
 
     function _advanceCursorToTime(items, cursor, playbackTime) {
-        while (cursor < items.length && items.at(cursor).t < playbackTime) cursor++;
+        while (cursor < items.length && items[cursor].t < playbackTime) cursor++;
         return cursor;
     }
 
@@ -1855,7 +1855,7 @@
     // as necessary without rescanning the song arrays.
     function _enqueuePhraseJudgments(items, cursor, phrase, cutoff, notesOf, pending, judged) {
         while (cursor < items.length) {
-            var item = items.at(cursor);
+            var item = items[cursor];
             if (item.t < phrase.start_time) {
                 cursor++;
                 continue;
@@ -1863,7 +1863,7 @@
             if (item.t >= phrase.end_time || item.t > cutoff) break;
             var itemNotes = notesOf(item);
             for (var ni = 0; ni < itemNotes.length; ni++) {
-                var note = itemNotes.at(ni);
+                var note = itemNotes[ni];
                 var key = judgmentKey(item.t, note.s, note.f);
                 if (!judged.has(key) && !pending.has(key)) {
                     pending.set(key, {
@@ -1991,7 +1991,7 @@
             // discard unresolved entries so they cannot leak into the next
             // phrase.
             if (!rewound && !jumpedForward && _curPhraseIdx >= 0) {
-                _enqueueMainPhraseEvents(hw, phrases.at(_curPhraseIdx), Infinity);
+                _enqueueMainPhraseEvents(hw, phrases[_curPhraseIdx], Infinity);
                 _pollMainPending(provider, t, true);
                 _pendingJudgments.clear();
             }
@@ -2314,7 +2314,7 @@
             idx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
         if (idx !== state.curPhraseIdx) {
             if (!rewound && !jumpedForward && state.curPhraseIdx >= 0) {
-                _enqueueSplitPhraseEvents(hw, state, phrases.at(state.curPhraseIdx), Infinity);
+                _enqueueSplitPhraseEvents(hw, state, phrases[state.curPhraseIdx], Infinity);
                 _pollSplitPending(state, provider, t, true);
                 // A phrase boundary is the terminal ownership edge. Results
                 // still active/null after the final poll are intentionally
@@ -2332,7 +2332,7 @@
             state.pendingJudgments = new Map();
         }
         if (idx < 0) return;
-        var phrase = phrases.at(idx), cutoff = t - 0.6;
+        var phrase = phrases[idx], cutoff = t - 0.6;
         _enqueueSplitPhraseEvents(hw, state, phrase, cutoff);
         _pollSplitPending(state, provider, t, false);
     }
