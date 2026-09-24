@@ -413,13 +413,16 @@ def test_instrument_kind_detects_drums_by_name_when_type_is_blank():
 
 def test_instrument_kind_detects_unsupported_by_name_when_type_is_blank():
     # Issue #102: missing type should not silently mean fretted for names
-    # identifying unsupported instruments (Sax, Vocals, etc.)
+    # identifying unsupported instruments (Sax, Vocals, etc.). Narrow to only
+    # unambiguous non-fretted names to avoid false positives (e.g., "Harmony"
+    # guitar, "Strings" arrangement are common fretted part names).
     assert routes._instrument_kind("", "Sax") == "unsupported"
     assert routes._instrument_kind("", "Saxophone") == "unsupported"
     assert routes._instrument_kind("", "Vocals") == "unsupported"
-    assert routes._instrument_kind("", "Harmony") == "unsupported"
-    assert routes._instrument_kind(None, "Strings") == "unsupported"
-    assert routes._instrument_kind("", "  Violin  ") == "unsupported"
+    assert routes._instrument_kind(None, "Violin") == "unsupported"
+    assert routes._instrument_kind("", "  Cello  ") == "unsupported"
+    assert routes._instrument_kind("", "Flute") == "unsupported"
+    assert routes._instrument_kind("", "Trumpet") == "unsupported"
 
 
 def test_instrument_kind_blank_type_with_fretted_names_still_defaults_to_fretted():

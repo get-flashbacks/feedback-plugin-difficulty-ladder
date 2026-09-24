@@ -48,7 +48,7 @@ MAX_PROCESSING_SECONDS = 120  # hard cap per /generate-library call to bound CPU
 _KEYS_NAME_RE = re.compile(r"^(keys|piano|keyboard|synth)", re.IGNORECASE)
 _DRUMS_NAME_RE = re.compile(r"^(drums?|percussion|kit)", re.IGNORECASE)
 _UNSUPPORTED_NAME_RE = re.compile(
-    r"^(sax|saxophone|vocals?|voices?|harmony|harmonic|vocal|strings?|violin|cello|flute|trumpet|trombone|horn|harmony|lyrics?|notation)",
+    r"^(sax|saxophone|vocals?|voices?|violin|cello|flute|trumpet|trombone|lyrics?|notation)",
     re.IGNORECASE
 )
 
