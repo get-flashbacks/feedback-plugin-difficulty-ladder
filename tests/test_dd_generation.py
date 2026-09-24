@@ -2190,6 +2190,59 @@ def test_keys_phrases_use_the_tier_scale_too():
     assert phrases  # nosec B101 - pytest assertion
     for p in phrases:
         _assert_on_tier_scale(p, n_levels=4)
+        identities = [
+            {(n["t"], routes._note_midi_keys(n)) for n in lvl["notes"]}
+            for lvl in p["levels"]
+        ]
+        for lower, higher in pairwise(identities):
+            assert lower <= higher  # nosec B101 - pytest assertion
+
+
+def test_keys_octave_dedup_keeps_easier_tier_midi_representatives():
+    # At tier 1 the median voice (71) is an octave below the tier-0 melody
+    # voice (83). The octave simplifier must retain 83 rather than swapping
+    # it out, since difficulty tiers are cumulative by absolute pitch.
+    midis = [52, 64, 71, 83]
+    notes = [{"t": 1.0, "s": midi // 24, "f": midi % 24} for midi in midis]
+    groups = [{
+        "type": "chord", "notes": notes, "chord": None,
+        "time": 1.0, "score": 0.5, "level": 0,
+    }]
+
+    reduced = []
+    for level in range(3):
+        level_notes, _ = routes._notes_for_level_keys(groups, level, max_level=3)
+        reduced.append({(n["t"], routes._note_midi_keys(n)) for n in level_notes})
+
+    assert reduced[0] == {(1.0, 52), (1.0, 83)}  # nosec B101 - pytest assertion
+    assert reduced[0] <= reduced[1] <= reduced[2]  # nosec B101 - pytest assertion
+    assert (1.0, 71) not in reduced[1]  # nosec B101 - octave simplification
+
+
+def test_keys_reduced_tier_collapses_a_simple_octave_double():
+    notes = [{"t": 0.0, "s": 2, "f": 12}, {"t": 0.0, "s": 3, "f": 0}]
+    groups = [{
+        "type": "chord", "notes": notes, "chord": None,
+        "time": 0.0, "score": 0.5, "level": 0,
+    }]
+
+    reduced, _ = routes._notes_for_level_keys(groups, level=0, max_level=3)
+
+    assert len(reduced) == 1  # nosec B101 - pytest assertion
+    assert routes._note_midi_keys(reduced[0]) in {60, 72}  # nosec B101 - pytest assertion
+
+
+def test_keys_reduced_tier_preserves_ranked_pitch_order():
+    midis = [52, 59, 67]
+    notes = [{"t": 0.0, "s": midi // 24, "f": midi % 24} for midi in midis]
+    groups = [{
+        "type": "chord", "notes": notes, "chord": None,
+        "time": 0.0, "score": 0.5, "level": 0,
+    }]
+
+    reduced, _ = routes._notes_for_level_keys(groups, level=1, max_level=3)
+
+    assert [routes._note_midi_keys(n) for n in reduced] == midis  # nosec B101
 
 
 def test_spread_key_orders_positions_evenly():
