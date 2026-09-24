@@ -633,6 +633,8 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
                 )
                 cost += string_jump_bonus
                 retention_score += string_jump_bonus
+        # `cost` is deliberately left unclamped (it can exceed 1.0) and does
+        # not affect ranking yet — only `retention_score` feeds tiering.
         g["cost"] = cost
         g["value"] = value
         g["retention_score"] = max(0.0, min(1.0, retention_score))

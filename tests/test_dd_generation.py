@@ -806,15 +806,15 @@ def test_fretted_cost_is_intrinsic_while_beat_value_changes_retention_rank():
 
     routes._score_groups(groups, n_strings=6, beat_times=beat_times)
 
-    assert groups[0]["cost"] == groups[1]["cost"]  # nosec B101
-    assert [g["value"] for g in groups] == [1.0, 0.0]  # nosec B101
-    assert groups[0]["retention_score"] < groups[1]["retention_score"]  # nosec B101
+    assert groups[0]["cost"] == groups[1]["cost"]  # nosec B101 - pytest assertion
+    assert [g["value"] for g in groups] == [1.0, 0.0]  # nosec B101 - pytest assertion
+    assert groups[0]["retention_score"] < groups[1]["retention_score"]  # nosec B101 - pytest assertion
 
     thresholds = routes._tier_thresholds(
         [g["retention_score"] for g in groups], n_tiers=2,
     )
     routes._assign_tiers(groups, 2, thresholds, beat_times)
-    assert [g["level"] for g in groups] == [0, 1]  # nosec B101
+    assert [g["level"] for g in groups] == [0, 1]  # nosec B101 - pytest assertion
 
 
 def test_fretted_retention_discount_precedes_clamp():
@@ -833,9 +833,9 @@ def test_fretted_retention_discount_precedes_clamp():
     routes._score_groups(groups, n_strings=6, beat_times=[0.7])
 
     scored = groups[-1]
-    assert scored["cost"] > 1.0  # nosec B101
-    assert scored["retention_score"] == legacy_scores[-1]  # nosec B101
-    assert scored["retention_score"] < 1.0  # nosec B101
+    assert scored["cost"] > 1.0  # nosec B101 - pytest assertion
+    assert scored["retention_score"] == legacy_scores[-1]  # nosec B101 - pytest assertion
+    assert scored["retention_score"] < 1.0  # nosec B101 - pytest assertion
 
 
 @pytest.mark.parametrize("sustain", [0, 2.0, -0.5, "2.0"])
@@ -857,8 +857,8 @@ def test_fretted_retention_score_exactly_matches_legacy_formula(sustain):
 
     routes._score_groups(groups, n_strings=6, beat_times=beat_times)
 
-    assert [g["retention_score"] for g in groups] == expected  # nosec B101
-    assert groups[-1] == {  # nosec B101
+    assert [g["retention_score"] for g in groups] == expected  # nosec B101 - pytest assertion
+    assert groups[-1] == {  # nosec B101 - pytest assertion
         "time": 2.0, "notes": [], "cost": 0.0, "value": 0.0,
         "retention_score": 0.0,
     }
@@ -881,9 +881,9 @@ def test_keys_cost_and_retention_score_remain_identical_with_no_value():
 
     routes._score_groups_keys(groups)
 
-    assert groups[0]["value"] == 0.0  # nosec B101
-    assert groups[0]["cost"] == groups[0]["retention_score"]  # nosec B101
-    assert 0.0 <= groups[0]["cost"] <= 1.0  # nosec B101
+    assert groups[0]["value"] == 0.0  # nosec B101 - pytest assertion
+    assert groups[0]["cost"] == groups[0]["retention_score"]  # nosec B101 - pytest assertion
+    assert 0.0 <= groups[0]["cost"] <= 1.0  # nosec B101 - pytest assertion
 
 
 @pytest.mark.parametrize("sustain", [0, 2.0, -0.5, "2.0"])
@@ -900,9 +900,9 @@ def test_keys_cost_exactly_matches_legacy_formula(sustain):
 
     routes._score_groups_keys(groups)
 
-    assert [g["cost"] for g in groups] == expected  # nosec B101
-    assert [g["retention_score"] for g in groups] == expected  # nosec B101
-    assert all(g["value"] == 0.0 for g in groups)  # nosec B101
+    assert [g["cost"] for g in groups] == expected  # nosec B101 - pytest assertion
+    assert [g["retention_score"] for g in groups] == expected  # nosec B101 - pytest assertion
+    assert all(g["value"] == 0.0 for g in groups)  # nosec B101 - pytest assertion
 
 
 def test_keys_malformed_sustain_keeps_legacy_error_behavior():
@@ -923,7 +923,7 @@ def test_cost_value_split_preserves_legacy_generated_ladder_fixture():
 
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=3)
 
-    assert phrases is not None  # nosec B101
+    assert phrases is not None  # nosec B101 - pytest assertion
     assert [(level["difficulty"], [n["t"] for n in level["notes"]])
             for level in phrases[0]["levels"]] == [
         (0, [0.0, 3.0]),
