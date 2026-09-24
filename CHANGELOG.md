@@ -103,7 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positive above, unusual (7-string) tunings (including the same
   partial-match rejection at that string count), melodic-run preservation
   at the bottom tier vs. prefix-vs-contour thinning, and confirmation that
-  a genuinely authored arpeggio still gets the existing highest-string-
+  a genuinely authored arpeggio still gets the existing lowest-string-
   index reduction (#73).
 - Test coverage for the acceptance-criteria edge cases named in #82/#83:
   0%/100% accuracy at phrase finalization, an out-of-range ratio/difficulty
