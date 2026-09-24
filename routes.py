@@ -1326,26 +1326,25 @@ def _score_groups_keys(groups, *, tempo=None):
         )
 
 
-def _collapse_octave_duplicates(ns):
+def _collapse_octave_duplicates(ns, preferred=()):
     """Merge notes that are the same pitch class exactly one octave apart
     down to a single note — a doubled root/octave voicing plays the same to
     a beginner as the single note, so it's a free simplification on top of
-    the voice-thinning above. Keeps whichever note came first in `ns` (i.e.
-    whatever the existing keep-logic already selected as the surviving
-    voice), just drops the redundant octave partner."""
+    the voice-thinning above. Notes in `preferred` win an octave collision;
+    this lets a harder reduced tier retain the representative already exposed
+    by an easier tier instead of replacing it with its octave partner.
+    `preferred` must contain the same note objects that appear in `ns`."""
+    preferred_ids = {id(n) for n in preferred}
+    ordered = [n for n in ns if id(n) in preferred_ids]
+    ordered.extend(n for n in ns if id(n) not in preferred_ids)
     kept = []
-    dropped = set()
-    for i, n in enumerate(ns):
-        if id(n) in dropped:
-            continue
+    for n in ordered:
         midi_n = _note_midi_keys(n)
-        for m in ns[i + 1:]:
-            if id(m) in dropped:
-                continue
-            if abs(_note_midi_keys(m) - midi_n) == 12:
-                dropped.add(id(m))
+        if any(abs(_note_midi_keys(m) - midi_n) == 12 for m in kept):
+            continue
         kept.append(n)
-    return kept
+    kept_ids = {id(n) for n in kept}
+    return [n for n in ns if id(n) in kept_ids]
 
 
 def _notes_for_level_keys(groups, level, max_level):
@@ -1363,8 +1362,13 @@ def _notes_for_level_keys(groups, level, max_level):
         is_explicit_chord = g.get("chord") is not None
         if len(ns) > 1 and level < max_level:
             ranked = sorted(ns, key=_note_midi_keys)
+            # Every reduced tier starts with the simplified outer voices from
+            # the easiest tier. When a newly-added middle voice is an octave
+            # duplicate, prefer those established representatives so moving
+            # up a tier can only add absolute MIDI identities, never swap one.
+            outer = _collapse_octave_duplicates([ranked[0], ranked[-1]])
             if level == 0:
-                keep = [ranked[0], ranked[-1]]
+                keep = outer
             elif len(ranked) > 3:
                 mid = len(ranked) // 2
                 keep = [ranked[0], ranked[mid], ranked[-1]]
@@ -1378,7 +1382,7 @@ def _notes_for_level_keys(groups, level, max_level):
                     deduped.append(n)
             ns = deduped
             if len(ns) > 1:
-                ns = _collapse_octave_duplicates(ns)
+                ns = _collapse_octave_duplicates(ns, preferred=outer)
         for n in ns:
             merged = dict(n)
             if is_explicit_chord or merged.get("t") is None:

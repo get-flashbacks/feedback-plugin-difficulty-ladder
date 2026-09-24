@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Kept generated Keys tiers monotonic by preserving an easier tier's octave
+  representative when harder tiers add octave-equivalent middle voices.
+
 ### Changed
 - **Generated ladders use one difficulty scale per song.** Levels used to be
   per-phrase percentiles, with each phrase's depth taken from its score
