@@ -1192,13 +1192,10 @@
             typeof hw.getChords === 'function' ? hw.getChords() : null,
         ];
         return lists.some(function (list) {
-            if (!Array.isArray(list)) return false;
-            for (var i = 0; i < list.length; i++) {
-                var t = Number(list[i] && list[i].t);
-                if (t >= t1) break;
-                if (t >= t0) return true;
-            }
-            return false;
+            return Array.isArray(list) && list.some(function (ev) {
+                var t = Number(ev && ev.t);
+                return t >= t0 && t < t1;
+            });
         });
     }
 
