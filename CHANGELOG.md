@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Generated ladders use one difficulty scale per song.** Levels used to be
+  per-phrase percentiles, with each phrase's depth taken from its score
+  spread — so an easy verse was thinned at the bottom exactly as hard as the
+  solo, and a solo that was hard all the way through got the *shortest*
+  ladder. Every phrase is now built on the same `levels`-tier scale: a note
+  group enters a tier when it is easy for this song (arrangement-wide
+  retention curve, capped by a fixed score scale) or among its own phrase's
+  easiest (a per-phrase floor that keeps a playable skeleton in hard
+  phrases). Easy phrases become complete early; hard phrases differ at every
+  tier. Duplicate tiers are still dropped, but the remaining levels now keep
+  their tier numbers (sparse `difficulty`, shared `max_difficulty`) so the
+  slider maps the same way in every phrase — this needs the matching feedBack
+  core change; an older core still plays the ladder, scaled per phrase.
+- **Technique gates follow the song-wide tier**, so a technique appears at
+  the same slider position in every phrase (in a 2-level phrase, bends
+  previously survived even at the bottom).
+- **Pitch-preserving simplification.** A pre-bend, pre-bend-and-release or
+  release (all struck already bent) now becomes a fretted note at the bent
+  pitch instead of an unbent note a step or so flat of the recording; a
+  bend with no fretted equivalent (quarter-tone, past fret 24) is kept as
+  authored. Natural harmonics are only stripped at frets 12/19/24, where the
+  fretted note sounds the same pitch.
+- The HUD glasses and the `difficulty:sections-updated` payload size and fill
+  by the tier a phrase is complete at (core `getPhrases().top_difficulty`,
+  falling back to `max_difficulty`), so an easy phrase shows full once the
+  slider reaches that tier. A section whose phrases are all single-level now reports
+  100% when it has notes (a generated easy phrase, complete at the bottom
+  tier) and 0% only when it is silent, matching the HUD glasses.
 - Implicit arpeggio grouping in the fretted ladder generator (`_group_notes`)
   now requires real evidence before treating a time/fret-proximity cluster of
   different-string notes as a broken chord (#73): an authored hand-shape
@@ -38,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the highest-*pitched* string (treble-most, e.g. high e on a standard
   6-string tuning) — the reverse of "bass." No runtime behavior changed;
   only the documentation's claim about note direction did (PR #100 review).
+  PR #101 then did change the behavior, to the lowest string index — see
+  Fixed below.
 - Tightened `_cluster_matches_chord_shape`'s chord-template evidence
   (PR #100 review): a match now also requires the cluster to cover a
   meaningful share of the template's own used strings (at least 3, or at
@@ -49,6 +79,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still counts, since a complete match of a small shape is real evidence
   regardless of the shape's size.
 
+### Fixed
+- **Chord reduction kept the top string's note.** String 0 is the lowest
+  string (feedpak-v1 §6.2, gp2rs), and chord reduction and the hand-position
+  anchor took the highest index, so a reduced chord kept its treble-most
+  (melody-side) note. They now take the lowest string — the bass note, which
+  in standard open and barre shapes is usually the root. Still a positional
+  heuristic, not a proven root (inversions and slash chords differ).
+- **Root-only chords never happened at the default 4 levels.** The threshold
+  (`< 0.20`) was below the bottom tier's 0.25, so it needed 6+ levels; the
+  bottom tier now reduces chords to their root at 4+ levels.
+- A middle tier of an arpeggio could drop the root the bottom tier kept, so
+  tiers weren't nested; middle tiers now always include it.
+- Duplicate-tier detection treated an explicit `false` technique flag (as
+  importers write them) as different from the absent key left after gating,
+  so identical tiers were written to the pack; `false` now equals absent.
+
 ### Added
 - Test coverage for the new evidence-gated arpeggio classification: no
   evidence, sustain overlap, authored hand-shape linkage, chord-template
@@ -57,7 +103,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   positive above, unusual (7-string) tunings (including the same
   partial-match rejection at that string count), melodic-run preservation
   at the bottom tier vs. prefix-vs-contour thinning, and confirmation that
-  a genuinely authored arpeggio still gets the existing highest-string-
+  a genuinely authored arpeggio still gets the existing lowest-string-
   index reduction (#73).
 - Test coverage for the acceptance-criteria edge cases named in #82/#83:
   0%/100% accuracy at phrase finalization, an out-of-range ratio/difficulty
