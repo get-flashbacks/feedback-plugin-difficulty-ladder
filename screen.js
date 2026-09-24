@@ -2297,7 +2297,7 @@
             state.pendingJudgments = new Map();
         }
         if (idx < 0) return;
-        var phrase = phrases[idx], cutoff = t - 0.6;
+        var phrase = phrases.at(idx), cutoff = t - 0.6;
         _enqueueSplitPhraseEvents(hw, state, phrase, cutoff);
         _pollSplitPending(state, provider, t, false);
     }
