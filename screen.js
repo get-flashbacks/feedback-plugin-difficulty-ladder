@@ -1838,7 +1838,11 @@
     }
 
     function _advanceCursorToTime(items, cursor, playbackTime) {
+        // items[cursor] is a non-negative integer cursor bounded by items.length
+        // above, never external/attacker-controlled input.
+        /* eslint-disable security/detect-object-injection */
         while (cursor < items.length && items[cursor].t < playbackTime) cursor++;
+        /* eslint-enable security/detect-object-injection */
         return cursor;
     }
 
@@ -1854,6 +1858,9 @@
     // result settles, so an 'active'/null result can remain pending for as long
     // as necessary without rescanning the song arrays.
     function _enqueuePhraseJudgments(items, cursor, phrase, cutoff, notesOf, pending, judged) {
+        /* eslint-disable security/detect-object-injection --
+           cursor and ni are non-negative integer indices bounded by the
+           arrays' own .length, never external/attacker-controlled input. */
         while (cursor < items.length) {
             var item = items[cursor];
             if (item.t < phrase.start_time) {
@@ -1874,6 +1881,7 @@
             }
             cursor++;
         }
+        /* eslint-enable security/detect-object-injection */
         return cursor;
     }
 
@@ -1991,6 +1999,7 @@
             // discard unresolved entries so they cannot leak into the next
             // phrase.
             if (!rewound && !jumpedForward && _curPhraseIdx >= 0) {
+                // eslint-disable-next-line security/detect-object-injection -- _curPhraseIdx is bounded by the >= 0 check above and phrases.length
                 _enqueueMainPhraseEvents(hw, phrases[_curPhraseIdx], Infinity);
                 _pollMainPending(provider, t, true);
                 _pendingJudgments.clear();
@@ -2314,6 +2323,7 @@
             idx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
         if (idx !== state.curPhraseIdx) {
             if (!rewound && !jumpedForward && state.curPhraseIdx >= 0) {
+                // eslint-disable-next-line security/detect-object-injection -- state.curPhraseIdx is bounded by the >= 0 check above and phrases.length
                 _enqueueSplitPhraseEvents(hw, state, phrases[state.curPhraseIdx], Infinity);
                 _pollSplitPending(state, provider, t, true);
                 // A phrase boundary is the terminal ownership edge. Results
@@ -2332,6 +2342,7 @@
             state.pendingJudgments = new Map();
         }
         if (idx < 0) return;
+        // eslint-disable-next-line security/detect-object-injection -- idx is bounded by the `idx < 0` guard above and phrases.length
         var phrase = phrases[idx], cutoff = t - 0.6;
         _enqueueSplitPhraseEvents(hw, state, phrase, cutoff);
         _pollSplitPending(state, provider, t, false);
