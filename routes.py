@@ -46,6 +46,11 @@ MAX_PROCESSING_SECONDS = 120  # hard cap per /generate-library call to bound CPU
 # Same convention core uses for piano-roll mode (CLAUDE.md: "Any arrangement
 # named Keys, Piano, Keyboard, or Synth renders as a piano-roll chart").
 _KEYS_NAME_RE = re.compile(r"^(keys|piano|keyboard|synth)", re.IGNORECASE)
+_DRUMS_NAME_RE = re.compile(r"^(drums?|percussion|kit)", re.IGNORECASE)
+_UNSUPPORTED_NAME_RE = re.compile(
+    r"^(sax|saxophone|vocals?|voices?|harmony|harmonic|vocal|strings?|violin|cello|flute|trumpet|trombone|horn|harmony|lyrics?|notation)",
+    re.IGNORECASE
+)
 
 
 _FRETTED_TYPES = frozenset({"lead", "rhythm", "bass", "combo", "chord", "humstrum"})
@@ -68,20 +73,37 @@ def _instrument_kind(arr_type: str, arr_name: str) -> str:
     values, e.g. a vocals/harmony/notation arrangement whose `file` happens
     to point at something this generator can read structurally but whose
     content this generator has no business scoring. An *absent/blank* type
-    is NOT treated as unsupported — feedpakr (the GP importer, the primary
-    source of packs in the wild) never sets `type` at all for fretted/keys
-    arrangements, so requiring a recognized value there would reject the
-    overwhelming majority of real content. Blank type keeps today's
-    behavior: name-sniffed for keys, fretted otherwise.
+    still requires name-sniffing to detect unsupported instruments (drums,
+    sax, vocals, etc.) — feedpakr (the GP importer, the primary source of
+    packs in the wild) omits `type` for fretted/keys, but the name alone
+    can indicate an unsupported instrument (issue #102). Only when type is
+    blank AND the name doesn't match any unsupported pattern do we default
+    to fretted.
     """
     t = (arr_type or "").strip().lower()
+    n = (arr_name or "").strip()
+
+    # Explicit type always takes precedence
     if t in _DRUM_TYPES:
         return "drums"
     if t in _KEYS_TYPES:
         return "keys"
-    if _KEYS_NAME_RE.match((arr_name or "").strip()):
-        return "keys"
-    if t == "" or t in _FRETTED_TYPES:
+
+    # When type is blank, use name-sniffing to detect unsupported instruments
+    # and keys before defaulting to fretted
+    if t == "":
+        if _KEYS_NAME_RE.match(n):
+            return "keys"
+        if _DRUMS_NAME_RE.match(n):
+            return "drums"
+        if _UNSUPPORTED_NAME_RE.match(n):
+            return "unsupported"
+        # Blank type with no unsupported indicators: default to fretted
+        # (preserves compatibility with legacy packs from feedpakr)
+        return "fretted"
+
+    # Non-blank type: explicit classification
+    if t in _FRETTED_TYPES:
         return "fretted"
     return "unsupported"
 
