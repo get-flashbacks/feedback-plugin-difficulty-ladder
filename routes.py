@@ -934,11 +934,12 @@ def _prune_bend(out, diff_percent):
 
 
 def _prune_techniques(note, diff_percent):
-    """Strip technique flags a phrase hasn't "earned" yet at this rung of
-    its own ladder, so a low tier reads as a simplified-but-intentional
-    version of the part rather than a random note subset that happens to
-    keep whatever techniques its underlying notes had. Removal is
-    pitch-preserving — see _prune_bend and _HARMONIC_PITCH_SAFE_FRETS."""
+    """Strip technique flags a phrase hasn't "earned" yet at this
+    difficulty percentile on the arrangement-wide ladder, so a low tier
+    reads as a simplified-but-intentional version of the part rather than
+    a random note subset that happens to keep whatever techniques its
+    underlying notes had. Removal is pitch-preserving — see _prune_bend
+    and _HARMONIC_PITCH_SAFE_FRETS."""
     out = dict(note)
     bend_kept_as_authored = _prune_bend(out, diff_percent)
     for key, gate in _TECH_GATE_FRAC.items():
@@ -1685,6 +1686,11 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # at every tier.
         _assign_tiers(phrase_groups, n_levels, global_thresholds, beat_times, tempo=tempo)
         if not is_keys:
+            # Promote beat-aligned and bridge anchors to ensure playability in
+            # lower tiers. This refines group placements within the shared global
+            # tier scale (which is immutable) by only adding groups to lower tiers,
+            # preserving nesting and the difficulty threshold of each tier across
+            # all phrases in the arrangement.
             _refine_lower_tier_path(phrase_groups, beat_times, top_tier, tempo=tempo)
         levels_out = []
         for lvl in range(n_levels):
