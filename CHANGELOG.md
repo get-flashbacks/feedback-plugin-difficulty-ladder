@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Split generated-note mechanical cost from rhythmic retention value internally,
+  while preserving the existing ladder output and ranking behavior.
+
 ### Fixed
 - Kept generated Keys tiers monotonic by preserving an easier tier's octave
   representative when harder tiers add octave-equivalent middle voices.

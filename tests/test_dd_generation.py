@@ -6,6 +6,7 @@ conftest of its own) so `pytest tests/` works from this directory directly.
 import json
 import logging
 import sys
+from copy import deepcopy
 from itertools import pairwise
 from pathlib import Path
 from unittest.mock import patch
@@ -189,9 +190,12 @@ def test_chords_are_thinned_below_the_top_tier_and_intact_at_the_top():
 
 def test_lower_tier_refinement_promotes_a_beat_anchor_and_continuity_bridge():
     groups = [
-        {"time": 0.1, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 2}]},
-        {"time": 0.5, "score": 0.3, "level": 2, "notes": [{"s": 5, "f": 7}]},
-        {"time": 1.0, "score": 0.2, "level": 0, "notes": [{"s": 5, "f": 12}]},
+        {"time": 0.1, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 5, "f": 2}]},
+        {"time": 0.5, "cost": 0.3, "value": 1.0, "retention_score": 0.3,
+         "level": 2, "notes": [{"s": 5, "f": 7}]},
+        {"time": 1.0, "cost": 0.2, "value": 1.0, "retention_score": 0.2,
+         "level": 0, "notes": [{"s": 5, "f": 12}]},
     ]
 
     routes._refine_lower_tier_path(groups, [0.0, 0.5, 1.0], max_level=2)
@@ -203,8 +207,10 @@ def test_lower_tier_refinement_promotes_a_beat_anchor_and_continuity_bridge():
 
 def test_lower_tier_refinement_falls_back_to_a_beat_group_when_none_was_kept():
     groups = [
-        {"time": 0.1, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 3}]},
-        {"time": 0.5, "score": 0.2, "level": 2, "notes": [{"s": 5, "f": 4}]},
+        {"time": 0.1, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 5, "f": 3}]},
+        {"time": 0.5, "cost": 0.2, "value": 1.0, "retention_score": 0.2,
+         "level": 2, "notes": [{"s": 5, "f": 4}]},
     ]
 
     routes._refine_lower_tier_path(groups, [0.0, 0.5], max_level=2)
@@ -254,12 +260,12 @@ def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
     routes._score_groups(nearby, n_strings=6)
     routes._score_groups(after_rest, n_strings=6)
 
-    assert nearby[1]["score"] > after_rest[1]["score"]
+    assert nearby[1]["cost"] > after_rest[1]["cost"]
     # The 0.18 fret-jump bonus applies only within fret_jump_window_seconds
     # (nearby) and not beyond it (after_rest). Tempo-relative density (#71)
     # now also legitimately scores the close-together case as denser, so
     # the total gap is at least the isolated bonus, not exactly equal to it.
-    assert nearby[1]["score"] - after_rest[1]["score"] >= 0.18 - 1e-9
+    assert nearby[1]["cost"] - after_rest[1]["cost"] >= 0.18 - 1e-9
 
 
 def test_group_anchor_note_prefers_a_fretted_note_over_an_incidental_open_string():
@@ -295,11 +301,11 @@ def test_fret_jump_penalty_reflects_the_true_fretted_position_not_an_incidental_
     routes._score_groups(close_position, n_strings=6)
     routes._score_groups(far_position, n_strings=6)
 
-    assert far_position[1]["score"] > close_position[1]["score"], (
+    assert far_position[1]["cost"] > close_position[1]["cost"], (
         "a real large hand-position jump must still be penalized even when "
         "the anchor string happens to be open in the current group"
     )
-    assert abs(far_position[1]["score"] - close_position[1]["score"] - 0.18) < 1e-9, (
+    assert abs(far_position[1]["cost"] - close_position[1]["cost"] - 0.18) < 1e-9, (
         "an incidental open string on the anchor string must not itself "
         "read as a hand-position jump — the bonus must track the true "
         "fretted position (s=0), not the coincidentally-open anchor string"
@@ -308,11 +314,14 @@ def test_fret_jump_penalty_reflects_the_true_fretted_position_not_an_incidental_
 
 def test_lower_tier_refinement_does_not_insert_a_needless_bridge_for_an_open_anchor():
     groups = [
-        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 12}]},
+        {"time": 0.0, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 0, "f": 12}]},
         # Would look like a plausible bridge under the old (buggy) jump
         # computation, but nothing here actually needs bridging.
-        {"time": 0.2, "score": 0.5, "level": 2, "notes": [{"s": 0, "f": 6}]},
-        {"time": 0.5, "score": 0.1, "level": 0, "notes": [
+        {"time": 0.2, "cost": 0.5, "value": 0.0, "retention_score": 0.5,
+         "level": 2, "notes": [{"s": 0, "f": 6}]},
+        {"time": 0.5, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [
             {"s": 0, "f": 13}, {"s": 5, "f": 0},
         ]},
     ]
@@ -325,9 +334,12 @@ def test_lower_tier_refinement_still_bridges_a_genuine_fretted_anchor_jump():
     # the fretted-note preference in _group_anchor_note must not suppress
     # bridging for a real, large hand-position jump.
     groups = [
-        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 2}]},
-        {"time": 0.2, "score": 0.5, "level": 2, "notes": [{"s": 0, "f": 8}]},
-        {"time": 0.5, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 15}]},
+        {"time": 0.0, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 0, "f": 2}]},
+        {"time": 0.2, "cost": 0.5, "value": 0.0, "retention_score": 0.5,
+         "level": 2, "notes": [{"s": 0, "f": 8}]},
+        {"time": 0.5, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 0, "f": 15}]},
     ]
     routes._refine_lower_tier_path(groups, [], max_level=2)
     assert groups[1]["level"] == 0, (
@@ -537,9 +549,12 @@ def test_generate_song_processes_every_arrangement_and_keeps_going_after_a_bad_o
 
 def test_lower_tier_refinement_does_not_bridge_a_repositioning_rest():
     groups = [
-        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 2}]},
-        {"time": 1.0, "score": 0.2, "level": 2, "notes": [{"s": 5, "f": 7}]},
-        {"time": 2.0, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 12}]},
+        {"time": 0.0, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 5, "f": 2}]},
+        {"time": 1.0, "cost": 0.2, "value": 0.0, "retention_score": 0.2,
+         "level": 2, "notes": [{"s": 5, "f": 7}]},
+        {"time": 2.0, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 5, "f": 12}]},
     ]
 
     routes._refine_lower_tier_path(groups, [], max_level=2)
@@ -688,10 +703,233 @@ def test_syncopation_term_scores_a_more_off_beat_group_higher():
     tempo = routes._TempoParams(beat_interval=0.5)
     routes._score_groups(near_beat, n_strings=6, beat_times=beat_times, tempo=tempo)
     routes._score_groups(far_from_beat, n_strings=6, beat_times=beat_times, tempo=tempo)
-    assert far_from_beat[0]["score"] > near_beat[0]["score"], (
+    assert far_from_beat[0]["cost"] > near_beat[0]["cost"], (
         "landing further from the beat grid (more syncopated) should score "
         "harder even with identical note/fret/technique content"
     )
+
+
+def _legacy_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
+    """Independent oracle for the pre-split, single-score implementation."""
+    tempo = tempo or routes._TempoParams()
+    legacy = deepcopy(groups)
+    times_sorted = [float(g["time"]) for g in legacy]
+    for gi, group in enumerate(legacy):
+        notes = group["notes"]
+        if not notes:
+            group["score"] = 0.0
+            continue
+        avg_fret = sum(n.get("f", 0) for n in notes) / len(notes)
+        count_ratio = min(1.0, (len(notes) - 1) / max(n_strings - 1, 1))
+        spread_ratio = routes._string_span_score(notes, n_strings)
+        string_shape = (
+            routes._STRING_SPREAD_BLEND * spread_ratio
+            + (1.0 - routes._STRING_SPREAD_BLEND) * count_ratio
+        )
+        fretting = (
+            0.4 * routes._fret_score(avg_fret)
+            + 0.35 * routes._span_score(notes)
+            + 0.25 * string_shape
+        )
+        technique = max(routes._tech_score(n) for n in notes)
+        raw_density = routes._sequential_density(times_sorted, gi, tempo)
+        syncopation = routes._syncopation_score(
+            group["time"], beat_times, tempo.beat_interval,
+        )
+        density = min(
+            1.0,
+            (1.0 - routes._SYNCOPATION_DENSITY_WEIGHT) * raw_density
+            + routes._SYNCOPATION_DENSITY_WEIGHT * syncopation,
+        )
+        max_sus = max(float(n.get("sus", 0)) for n in notes)
+        sustain_ease = min(1.0, max_sus / tempo.sustain_ease_norm_seconds)
+        group["score"] = (
+            0.35 * fretting + 0.30 * technique + 0.20 * density
+            + 0.15 * (1.0 - sustain_ease)
+        )
+        if routes._is_beat_aligned(
+            group["time"], beat_times, tolerance=tempo.beat_tolerance,
+        ):
+            group["score"] -= 0.12
+        if gi and float(group["time"]) - float(legacy[gi - 1]["time"]) <= tempo.fret_jump_window_seconds:
+            previous = routes._group_anchor_note(legacy[gi - 1])
+            current = routes._group_anchor_note(group)
+            if previous and current:
+                fret_jump = abs(int(current.get("f", 0)) - int(previous.get("f", 0)))
+                group["score"] += min(0.18, max(0, fret_jump - 5) * 0.03)
+                string_jump = abs(int(current.get("s", 0)) - int(previous.get("s", 0)))
+                group["score"] += min(
+                    routes._STRING_JUMP_MAX_BONUS,
+                    max(0, string_jump - routes._STRING_JUMP_THRESHOLD)
+                    * routes._STRING_JUMP_COEF,
+                )
+        group["score"] = max(0.0, min(1.0, group["score"]))
+    return [g["score"] for g in legacy]
+
+
+def _legacy_keys_scores(groups, *, tempo=None):
+    """Independent oracle for the pre-split Keys score implementation."""
+    tempo = tempo or routes._TempoParams()
+    legacy = deepcopy(groups)
+    total = len(legacy)
+    times_sorted = [float(g["time"]) for g in legacy]
+    for gi, group in enumerate(legacy):
+        notes = group["notes"]
+        if not notes:
+            group["score"] = 0.0
+            continue
+        midis = [routes._note_midi_keys(n) for n in notes]
+        poly = min(1.0, (len(notes) - 1) / 4.0)
+        span = max(midis) - min(midis) if len(midis) > 1 else 0
+        span_score = min(1.0, span / 12.0)
+        density = routes._sequential_density(times_sorted, gi, tempo)
+        speed = 0.0
+        if gi + 1 < total:
+            dt = float(legacy[gi + 1]["time"]) - float(group["time"])
+            if dt > 0:
+                speed = min(1.0, max(0.0, (0.25 - dt) / 0.25))
+        max_sus = max(float(n.get("sus", 0)) for n in notes)
+        sustain_ease = min(1.0, max_sus / 2.0)
+        group["score"] = (
+            0.30 * poly + 0.25 * span_score + 0.20 * density
+            + 0.15 * speed + 0.10 * (1.0 - sustain_ease)
+        )
+    return [g["score"] for g in legacy]
+
+
+def test_fretted_cost_is_intrinsic_while_beat_value_changes_retention_rank():
+    groups = [
+        {"time": 0.0, "notes": [{"s": 2, "f": 5, "sus": 0}]},
+        {"time": 1.0, "notes": [{"s": 2, "f": 5, "sus": 0}]},
+    ]
+    beat_times = [0.0]
+
+    routes._score_groups(groups, n_strings=6, beat_times=beat_times)
+
+    assert groups[0]["cost"] == groups[1]["cost"]  # nosec B101
+    assert [g["value"] for g in groups] == [1.0, 0.0]  # nosec B101
+    assert groups[0]["retention_score"] < groups[1]["retention_score"]  # nosec B101
+
+    thresholds = routes._tier_thresholds(
+        [g["retention_score"] for g in groups], n_tiers=2,
+    )
+    routes._assign_tiers(groups, 2, thresholds, beat_times)
+    assert [g["level"] for g in groups] == [0, 1]  # nosec B101
+
+
+def test_fretted_retention_discount_precedes_clamp():
+    groups = [
+        {"time": i / 10, "notes": [{"s": 5, "f": 1, "sus": 0}]}
+        for i in range(7)
+    ]
+    groups.append(
+        {"time": 0.7, "notes": [
+            {"s": s, "f": 20 + s, "sus": 0, "tp": True}
+            for s in range(6)
+        ]}
+    )
+
+    legacy_scores = _legacy_fretted_scores(groups, n_strings=6, beat_times=[0.7])
+    routes._score_groups(groups, n_strings=6, beat_times=[0.7])
+
+    scored = groups[-1]
+    assert scored["cost"] > 1.0  # nosec B101
+    assert scored["retention_score"] == legacy_scores[-1]  # nosec B101
+    assert scored["retention_score"] < 1.0  # nosec B101
+
+
+@pytest.mark.parametrize("sustain", [0, 2.0, -0.5, "2.0"])
+def test_fretted_retention_score_exactly_matches_legacy_formula(sustain):
+    groups = [
+        {"time": 0.0, "notes": [{"s": 5, "f": 0, "sus": sustain}]},
+        {"time": 0.1, "notes": [
+            {"s": s, "f": 20 + s, "sus": sustain, "tp": True}
+            for s in range(6)
+        ]},
+        *[
+            {"time": 0.1 + i / 10, "notes": [{"s": i % 6, "f": 3, "sus": sustain}]}
+            for i in range(1, 8)
+        ],
+        {"time": 2.0, "notes": []},
+    ]
+    beat_times = [0.0, 0.1]
+    expected = _legacy_fretted_scores(groups, n_strings=6, beat_times=beat_times)
+
+    routes._score_groups(groups, n_strings=6, beat_times=beat_times)
+
+    assert [g["retention_score"] for g in groups] == expected  # nosec B101
+    assert groups[-1] == {  # nosec B101
+        "time": 2.0, "notes": [], "cost": 0.0, "value": 0.0,
+        "retention_score": 0.0,
+    }
+
+
+def test_fretted_malformed_sustain_keeps_legacy_error_behavior():
+    groups = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": "invalid"}]}]
+
+    with pytest.raises(ValueError):
+        _legacy_fretted_scores(groups, n_strings=6)
+    with pytest.raises(ValueError):
+        routes._score_groups(deepcopy(groups), n_strings=6)
+
+
+def test_keys_cost_and_retention_score_remain_identical_with_no_value():
+    groups = [{
+        "time": 0.0,
+        "notes": [{"s": 2, "f": 0, "sus": 0}, {"s": 2, "f": 12, "sus": 0}],
+    }]
+
+    routes._score_groups_keys(groups)
+
+    assert groups[0]["value"] == 0.0  # nosec B101
+    assert groups[0]["cost"] == groups[0]["retention_score"]  # nosec B101
+    assert 0.0 <= groups[0]["cost"] <= 1.0  # nosec B101
+
+
+@pytest.mark.parametrize("sustain", [0, 2.0, -0.5, "2.0"])
+def test_keys_cost_exactly_matches_legacy_formula(sustain):
+    groups = [
+        {"time": 0.0, "notes": []},
+        {"time": 0.1, "notes": [
+            {"s": 2, "f": 0, "sus": sustain},
+            {"s": 2, "f": 12, "sus": sustain},
+        ]},
+        {"time": 0.2, "notes": [{"s": 3, "f": 7, "sus": sustain}]},
+    ]
+    expected = _legacy_keys_scores(groups)
+
+    routes._score_groups_keys(groups)
+
+    assert [g["cost"] for g in groups] == expected  # nosec B101
+    assert [g["retention_score"] for g in groups] == expected  # nosec B101
+    assert all(g["value"] == 0.0 for g in groups)  # nosec B101
+
+
+def test_keys_malformed_sustain_keeps_legacy_error_behavior():
+    groups = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": "invalid"}]}]
+
+    with pytest.raises(ValueError):
+        _legacy_keys_scores(groups)
+    with pytest.raises(ValueError):
+        routes._score_groups_keys(deepcopy(groups))
+
+
+def test_cost_value_split_preserves_legacy_generated_ladder_fixture():
+    notes = [
+        {"t": i * 0.5, "s": 2, "f": 3 + (i % 3), "sus": 0}
+        for i in range(8)
+    ]
+    arr = _arrangement(notes, n_beats=10)
+
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=3)
+
+    assert phrases is not None  # nosec B101
+    assert [(level["difficulty"], [n["t"] for n in level["notes"]])
+            for level in phrases[0]["levels"]] == [
+        (0, [0.0, 3.0]),
+        (1, [0.0, 0.5, 1.5, 2.0, 3.0]),
+        (2, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]),
+    ]
 
 
 # ── Item 4: string-skip / hand-shape difficulty ──────────────────────────────
@@ -701,7 +939,7 @@ def test_string_spread_increases_fretting_score():
     wide = [{"time": 0.0, "notes": [{"s": 0, "f": 5, "sus": 0}, {"s": 5, "f": 5, "sus": 0}]}]
     routes._score_groups(narrow, n_strings=6)
     routes._score_groups(wide, n_strings=6)
-    assert wide[0]["score"] > narrow[0]["score"], (
+    assert wide[0]["cost"] > narrow[0]["cost"], (
         "a wider string spread (1<->6) should score harder than an adjacent-"
         "string group, even though both groups touch 2 strings"
     )
@@ -720,19 +958,22 @@ def test_string_jump_bonus_isolated_from_fret_jump():
     routes._score_groups(small_skip, n_strings=6)
     routes._score_groups(big_skip, n_strings=6)
 
-    assert big_skip[1]["score"] > small_skip[1]["score"]
-    assert abs(big_skip[1]["score"] - small_skip[1]["score"] - 0.06) < 1e-9  # min(0.08, (5-3)*0.03)
+    assert big_skip[1]["cost"] > small_skip[1]["cost"]
+    assert abs(big_skip[1]["cost"] - small_skip[1]["cost"] - 0.06) < 1e-9  # min(0.08, (5-3)*0.03)
 
 
 def test_lower_tier_refinement_bridges_a_string_skip_even_when_the_fret_jump_is_small():
     groups = [
-        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 3}]},
+        {"time": 0.0, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 0, "f": 3}]},
         # Small fret movement (3->4->5, jump of 2 -- well under the fret-only
         # max_jump=7) but a full string skip (0->2->5) -- the old fret-only
         # trigger would never have looked here; the new string-jump trigger
         # (skip of 5, over max_string_jump=3) does.
-        {"time": 0.2, "score": 0.5, "level": 2, "notes": [{"s": 2, "f": 4}]},
-        {"time": 0.5, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 5}]},
+        {"time": 0.2, "cost": 0.5, "value": 0.0, "retention_score": 0.5,
+         "level": 2, "notes": [{"s": 2, "f": 4}]},
+        {"time": 0.5, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 5, "f": 5}]},
     ]
     routes._refine_lower_tier_path(groups, [], max_level=2)
     assert groups[1]["level"] == 0, (
@@ -750,9 +991,12 @@ def test_lower_tier_refinement_bridges_a_pure_string_skip_with_zero_fret_movemen
     # silently a no-op. Acceptance now also accepts a candidate that improves
     # the STRING jump instead.
     groups = [
-        {"time": 0.0, "score": 0.1, "level": 0, "notes": [{"s": 0, "f": 5}]},
-        {"time": 0.2, "score": 0.5, "level": 2, "notes": [{"s": 2, "f": 5}]},
-        {"time": 0.5, "score": 0.1, "level": 0, "notes": [{"s": 5, "f": 5}]},
+        {"time": 0.0, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 0, "f": 5}]},
+        {"time": 0.2, "cost": 0.5, "value": 0.0, "retention_score": 0.5,
+         "level": 2, "notes": [{"s": 2, "f": 5}]},
+        {"time": 0.5, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
+         "level": 0, "notes": [{"s": 5, "f": 5}]},
     ]
     routes._refine_lower_tier_path(groups, [], max_level=2)
     assert groups[1]["level"] == 0, (
@@ -815,7 +1059,7 @@ def test_pinch_harmonic_scores_higher_than_natural_harmonic():
     pinch = [{"time": 0.0, "notes": [{"s": 2, "f": 5, "sus": 0, "hp": True}]}]
     routes._score_groups(natural, n_strings=6)
     routes._score_groups(pinch, n_strings=6)
-    assert pinch[0]["score"] > natural[0]["score"], (
+    assert pinch[0]["cost"] > natural[0]["cost"], (
         "a pinch harmonic requires more precise thumb-touch timing than a "
         "natural harmonic and should score harder, not the same"
     )
@@ -826,7 +1070,7 @@ def test_slap_scores_higher_than_pop():
     slap = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "slp": True}]}]
     routes._score_groups(pop, n_strings=6)
     routes._score_groups(slap, n_strings=6)
-    assert slap[0]["score"] > pop[0]["score"], (
+    assert slap[0]["cost"] > pop[0]["cost"], (
         "slap's percussive thumb strike is the harder half of the "
         "slap-and-pop pairing and should score harder than pop alone"
     )
@@ -840,7 +1084,7 @@ def test_bass_slap_and_pop_previously_scored_as_a_plain_note():
     slap = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "slp": True}]}]
     routes._score_groups(plain, n_strings=6)
     routes._score_groups(slap, n_strings=6)
-    assert slap[0]["score"] > plain[0]["score"]
+    assert slap[0]["cost"] > plain[0]["cost"]
 
 
 def test_pinch_harmonic_gated_out_later_than_natural_harmonic():
@@ -878,9 +1122,9 @@ def test_palm_mute_string_mute_and_vibrato_now_contribute_to_the_score():
     vibrato = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "vb": True}]}]
     for group in (plain, palm_muted, string_muted, vibrato):
         routes._score_groups(group, n_strings=6)
-    assert palm_muted[0]["score"] > plain[0]["score"]
-    assert string_muted[0]["score"] > plain[0]["score"]
-    assert vibrato[0]["score"] > plain[0]["score"]
+    assert palm_muted[0]["cost"] > plain[0]["cost"]
+    assert string_muted[0]["cost"] > plain[0]["cost"]
+    assert vibrato[0]["cost"] > plain[0]["cost"]
 
 
 def test_fret_hand_mute_now_scored_and_gated():
@@ -891,7 +1135,7 @@ def test_fret_hand_mute_now_scored_and_gated():
     fret_hand_muted = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "fhm": True}]}]
     routes._score_groups(plain, n_strings=6)
     routes._score_groups(fret_hand_muted, n_strings=6)
-    assert fret_hand_muted[0]["score"] > plain[0]["score"]
+    assert fret_hand_muted[0]["cost"] > plain[0]["cost"]
 
     note = {"t": 0.0, "s": 2, "f": 3, "sus": 0, "fhm": True}
     assert "fhm" not in routes._prune_techniques(note, diff_percent=0.5)
@@ -938,19 +1182,19 @@ def test_bend_intent_scoring_reflects_relative_difficulty():
     for g in (plain, release, pre_bend, pre_bend_release, round_trip):
         routes._score_groups(g, n_strings=6)
 
-    assert release[0]["score"] == plain[0]["score"], (
+    assert release[0]["cost"] == plain[0]["cost"], (
         "a release isn't meaningfully harder than a plain bend-up and should "
         "score identically"
     )
-    assert pre_bend[0]["score"] > plain[0]["score"], (
+    assert pre_bend[0]["cost"] > plain[0]["cost"], (
         "a pre-bend (blind bend to pitch, no real-time auditory feedback) "
         "should score harder than a plain bend"
     )
-    assert round_trip[0]["score"] > plain[0]["score"], (
+    assert round_trip[0]["cost"] > plain[0]["cost"], (
         "a round-trip bend (bidirectional control within one note) should "
         "score harder than a plain bend"
     )
-    assert pre_bend_release[0]["score"] > pre_bend[0]["score"], (
+    assert pre_bend_release[0]["cost"] > pre_bend[0]["cost"], (
         "pre-bend-and-release combines the blind-bend and controlled-release "
         "demands and should score hardest"
     )
@@ -967,7 +1211,7 @@ def test_bend_curve_with_shaping_scores_higher_than_a_trivial_two_point_curve():
     ])
     routes._score_groups(trivial, n_strings=6)
     routes._score_groups(shaped, n_strings=6)
-    assert shaped[0]["score"] > trivial[0]["score"], (
+    assert shaped[0]["cost"] > trivial[0]["cost"], (
         "a bend curve beyond a trivial two-point ramp signals deliberate "
         "mid-bend shaping and should score harder"
     )
@@ -1726,7 +1970,7 @@ def test_compressed_fretted_notes_score_higher_density_than_stretched():
     # A middle group (unaffected by start/end edge effects) scores
     # meaningfully higher when packed into ~1 second than spread across
     # ~20 seconds -- previously both scored identically (issue #71).
-    assert compressed[5]["score"] > stretched[5]["score"]
+    assert compressed[5]["cost"] > stretched[5]["cost"]
 
 
 def test_compressed_keys_notes_score_higher_density_than_stretched():
@@ -1735,7 +1979,7 @@ def test_compressed_keys_notes_score_higher_density_than_stretched():
     stretched = [{"time": round(i * 2.0, 3), "notes": [{"s": 2, "f": 0, "sus": 0}]} for i in range(11)]
     routes._score_groups_keys(compressed, tempo=tempo)
     routes._score_groups_keys(stretched, tempo=tempo)
-    assert compressed[5]["score"] > stretched[5]["score"]
+    assert compressed[5]["cost"] > stretched[5]["cost"]
 
 
 def test_wide_chord_does_not_inflate_density_beyond_a_single_note_group():
@@ -2206,7 +2450,8 @@ def test_keys_octave_dedup_keeps_easier_tier_midi_representatives():
     notes = [{"t": 1.0, "s": midi // 24, "f": midi % 24} for midi in midis]
     groups = [{
         "type": "chord", "notes": notes, "chord": None,
-        "time": 1.0, "score": 0.5, "level": 0,
+        "time": 1.0, "cost": 0.5, "value": 0.0,
+        "retention_score": 0.5, "level": 0,
     }]
 
     reduced = []
@@ -2223,7 +2468,8 @@ def test_keys_reduced_tier_collapses_a_simple_octave_double():
     notes = [{"t": 0.0, "s": 2, "f": 12}, {"t": 0.0, "s": 3, "f": 0}]
     groups = [{
         "type": "chord", "notes": notes, "chord": None,
-        "time": 0.0, "score": 0.5, "level": 0,
+        "time": 0.0, "cost": 0.5, "value": 0.0,
+        "retention_score": 0.5, "level": 0,
     }]
 
     reduced, _ = routes._notes_for_level_keys(groups, level=0, max_level=3)
@@ -2237,7 +2483,8 @@ def test_keys_reduced_tier_preserves_ranked_pitch_order():
     notes = [{"t": 0.0, "s": midi // 24, "f": midi % 24} for midi in midis]
     groups = [{
         "type": "chord", "notes": notes, "chord": None,
-        "time": 0.0, "score": 0.5, "level": 0,
+        "time": 0.0, "cost": 0.5, "value": 0.0,
+        "retention_score": 0.5, "level": 0,
     }]
 
     reduced, _ = routes._notes_for_level_keys(groups, level=1, max_level=3)
@@ -2260,7 +2507,8 @@ def _chord_group(level=0):
         {"s": 3, "f": 0}, {"s": 4, "f": 0}, {"s": 5, "f": 3},
     ]}
     return [{"type": "chord", "notes": list(chord["notes"]), "chord": chord,
-             "time": 1.0, "score": 0.5, "level": level}]
+             "time": 1.0, "cost": 0.5, "value": 0.0,
+             "retention_score": 0.5, "level": level}]
 
 
 def test_bottom_tier_reduces_chords_to_the_root_at_the_default_four_tiers():
