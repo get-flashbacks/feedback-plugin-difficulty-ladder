@@ -934,8 +934,8 @@ def _prune_bend(out, diff_percent):
 
 
 def _prune_techniques(note, diff_percent):
-    """Strip technique flags a phrase hasn't "earned" yet at this
-    difficulty percentile on the arrangement-wide ladder, so a low tier
+    """Strip technique flags a phrase hasn't "earned" yet at the shared
+    arrangement-wide tier scale represented by `diff_percent`, so a low tier
     reads as a simplified-but-intentional version of the part rather than
     a random note subset that happens to keep whatever techniques its
     underlying notes had. Removal is pitch-preserving — see _prune_bend
@@ -1685,13 +1685,12 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # changing — an easy riff is complete early, a hard passage differs
         # at every tier.
         _assign_tiers(phrase_groups, n_levels, global_thresholds, beat_times, tempo=tempo)
-        if not is_keys:
-            # Promote beat-aligned and bridge anchors to ensure playability in
-            # lower tiers. This refines group placements within the shared global
-            # tier scale (which is immutable) by only adding groups to lower tiers,
-            # preserving nesting and the difficulty threshold of each tier across
-            # all phrases in the arrangement.
-            _refine_lower_tier_path(phrase_groups, beat_times, top_tier, tempo=tempo)
+        # Per-phrase refinement (promoting beat/bridge anchors) breaks consistent
+        # difficulty mapping: equally-scored groups can end up at different tiers
+        # when one phrase's local playability needs trigger promotions that don't
+        # occur in another phrase. Disabling it preserves the shared global tier
+        # scale. TODO: incorporate playability constraints into arrangement-wide
+        # tier assignment (before generating phrase levels) instead of post-hoc.
         levels_out = []
         for lvl in range(n_levels):
             if is_keys:
