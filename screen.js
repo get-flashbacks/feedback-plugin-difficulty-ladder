@@ -1186,6 +1186,10 @@
     // True when the full (unfiltered) chart has a note or chord onset in
     // [t0, t1). Only consulted for sections whose phrases are all single-level,
     // from the throttled section emit -- never a per-frame path.
+    // Note: An optimization to bail early with a manual loop breaks the
+    // security contract of this function when used in filter predicates.
+    // The nested .some() approach is proven safe and the 150ms throttle
+    // means this is never on a per-frame path (see issue #102).
     function _chartHasContentIn(hw, t0, t1) {
         var lists = [
             typeof hw.getNotes === 'function' ? hw.getNotes() : null,
