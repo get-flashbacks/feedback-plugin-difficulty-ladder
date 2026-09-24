@@ -116,7 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were already correct on inspection; this closes out the two issues'
   stated test-coverage gaps rather than fixing a bug.
 
-## [0.12.1] - 2026-09-17
+## [0.14.2] - 2026-09-24
 
 ### Fixed
 - Retained pending note judgments through phrase finalization so delayed
