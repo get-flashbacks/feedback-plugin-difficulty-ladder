@@ -260,12 +260,12 @@ def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
     routes._score_groups(nearby, n_strings=6)
     routes._score_groups(after_rest, n_strings=6)
 
-    assert nearby[1]["cost"] > after_rest[1]["cost"]
+    assert nearby[1]["cost"] > after_rest[1]["cost"]  # nosec B101 - pytest assertion
     # The 0.18 fret-jump bonus applies only within fret_jump_window_seconds
     # (nearby) and not beyond it (after_rest). Tempo-relative density (#71)
     # now also legitimately scores the close-together case as denser, so
     # the total gap is at least the isolated bonus, not exactly equal to it.
-    assert nearby[1]["cost"] - after_rest[1]["cost"] >= 0.18 - 1e-9
+    assert nearby[1]["cost"] - after_rest[1]["cost"] >= 0.18 - 1e-9  # nosec B101 - pytest assertion
 
 
 def test_group_anchor_note_prefers_a_fretted_note_over_an_incidental_open_string():
@@ -301,11 +301,11 @@ def test_fret_jump_penalty_reflects_the_true_fretted_position_not_an_incidental_
     routes._score_groups(close_position, n_strings=6)
     routes._score_groups(far_position, n_strings=6)
 
-    assert far_position[1]["cost"] > close_position[1]["cost"], (
+    assert far_position[1]["cost"] > close_position[1]["cost"], (  # nosec B101 - pytest assertion
         "a real large hand-position jump must still be penalized even when "
         "the anchor string happens to be open in the current group"
     )
-    assert abs(far_position[1]["cost"] - close_position[1]["cost"] - 0.18) < 1e-9, (
+    assert abs(far_position[1]["cost"] - close_position[1]["cost"] - 0.18) < 1e-9, (  # nosec B101 - pytest assertion
         "an incidental open string on the anchor string must not itself "
         "read as a hand-position jump — the bonus must track the true "
         "fretted position (s=0), not the coincidentally-open anchor string"
