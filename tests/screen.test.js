@@ -604,6 +604,45 @@ test('phrase finalization discards judgments still unresolved after the final po
     assert.equal(state.phraseTotal, 0, 'discarded prior-phrase work cannot leak forward');
 });
 
+test('a correctly-held sustain crossing the phrase boundary is dropped once the final poll reads active', () => {
+    const mod = freshPlugin();
+    let time = 0.95;
+    // Mirrors note_detect's lifecycle: the provider renders 'active' for the
+    // sustain's entire ring — even after a 'hit' verdict is committed while the
+    // note is still ringing — and only exposes 'hit' after the hold ends.
+    let judgment = 'active';
+    const highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [
+            { start_time: 0, end_time: 1, max_difficulty: 2 },
+            { start_time: 1, end_time: 2, max_difficulty: 2 },
+        ],
+        getTime: () => time,
+        getNoteStateProvider: () => () => judgment,
+        getFilteredNotes: () => [{ t: 0.9, s: 4, f: 6 }],
+        getFilteredChords: () => [],
+        getMastery: () => 0.5,
+    };
+    const state = mod.newSplitScoreState();
+
+    mod.tickOneSplitHighway(highway, state);
+    // The sustain rings into phrase 2, so the boundary's final poll reads
+    // 'active' and the note is hard-cleared with the rest of the pending set.
+    time = 1.05;
+    mod.tickOneSplitHighway(highway, state);
+    assert.equal(state.pendingJudgments.size, 0);
+    assert.equal(state.phrasesScored, 0, 'a phrase whose only note was discarded has no scored result');
+
+    // The verdict lands after the hold ends, well past the boundary read.
+    judgment = 'hit';
+    time = 1.4;
+    mod.tickOneSplitHighway(highway, state);
+    assert.equal(state.phraseTotal, 0, 'the late-boundary sustain verdict is never counted');
+    assert.equal(state.phraseHits, 0);
+    assert.equal(state.phraseJudgments.length, 0);
+    assert.equal(state.pendingJudgments.size, 0, 'nor does it re-enter the next phrase as pending');
+});
+
 test('phrase finalization forces a pending poll before its throttle expires', () => {
     const mod = freshPlugin();
     let time = 0.75;

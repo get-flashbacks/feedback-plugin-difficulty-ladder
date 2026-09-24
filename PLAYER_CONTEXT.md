@@ -161,13 +161,18 @@ terminal; `active` and no result are pending. Difficulty Ladder samples that
 provider on the matching highway, retains pending notes even after they leave
 the rolling scan window, and counts each terminal result once.
 
-At a phrase boundary, Difficulty Ladder performs one final provider read for
-every still-pending note in that phrase. A provider must keep its terminal
-result observable through that final read. Notes that are still `active` or
-unresolved after it are explicitly discarded rather than guessed as hits or
-misses. This bounded finalization rule prevents delayed judgments and sustains
-from silently aging out while ensuring one phrase cannot retain pending state
-indefinitely.
+The retained-pending guarantee is per phrase. At a phrase boundary, Difficulty
+Ladder performs one final provider read for every still-pending note in that
+phrase and counts any terminal result it returns. A note still `active` (or
+otherwise unresolved) after that read is explicitly discarded rather than
+guessed as a hit or a miss, because attributing it to a later phrase would
+misrepresent where the play happened. Delayed verdicts and sustains that
+resolve inside their own phrase are therefore always counted, while a hold
+still ringing across `end_time` resolves too late for the boundary read and is
+dropped. Providers that render `active` through a held sustain's whole ring (as
+`note_detect` does) will not see those boundary-crossing sustains scored; the
+finalization rule prioritizes never fabricating or leaking a result over
+rescuing a note whose verdict lands after its phrase is owned by another.
 
 The current implementation finalizes a phrase when playback crosses into the
 next phrase, then records a player-scoped `difficulty_ladder.phrase_attempt.v2`

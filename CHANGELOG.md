@@ -23,7 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Retained pending note judgments through phrase finalization so delayed
-  verdicts and sustains no longer age out of the rolling scoring window.
+  verdicts and sustains that resolve inside their own phrase no longer age
+  out of the rolling scoring window. A sustain still ringing when playback
+  crosses the phrase boundary is re-polled once and then deliberately
+  discarded rather than guessed or leaked into the next phrase.
 - Documented the terminal judgment deadline and the legacy conservative
   mastery-origin heuristic instead of presenting every unexpected change as a
   confirmed manual action.
