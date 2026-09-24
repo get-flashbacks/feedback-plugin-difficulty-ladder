@@ -156,9 +156,23 @@ or reset transient state without changing another player's controller.
 ## Note detection and finalization
 
 `note_detect` owns note judgment. Its provider is attached to the player's
-highway and returns only the established `hit`, `active`, or `miss` states.
-Difficulty Ladder samples that provider on the matching highway and counts a
-note once, ignoring unresolved `active` results until they resolve.
+highway and returns `hit`, `active`, `miss`, or no result. `hit` and `miss` are
+terminal; `active` and no result are pending. Difficulty Ladder samples that
+provider on the matching highway, retains pending notes even after they leave
+the rolling scan window, and counts each terminal result once.
+
+The retained-pending guarantee is per phrase. At a phrase boundary, Difficulty
+Ladder performs one final provider read for every still-pending note in that
+phrase and counts any terminal result it returns. A note still `active` (or
+otherwise unresolved) after that read is explicitly discarded rather than
+guessed as a hit or a miss, because attributing it to a later phrase would
+misrepresent where the play happened. Delayed verdicts and sustains that
+resolve inside their own phrase are therefore always counted, while a hold
+still ringing across `end_time` resolves too late for the boundary read and is
+dropped. Providers that render `active` through a held sustain's whole ring (as
+`note_detect` does) will not see those boundary-crossing sustains scored; the
+finalization rule prioritizes never fabricating or leaking a result over
+rescuing a note whose verdict lands after its phrase is owned by another.
 
 The current implementation finalizes a phrase when playback crosses into the
 next phrase, then records a player-scoped `difficulty_ladder.phrase_attempt.v2`
@@ -167,6 +181,13 @@ If `note_detect` exposes a separate finalized-session event in the future, it
 must include the same `session_id`, `player_id`, profile, arrangement, and
 instrument/role/skill dimensions; consumers must deduplicate it against the
 phrase/session already finalized by the highway.
+
+The legacy Host `window.setMastery` function carries no source metadata.
+Consequently, an unexpected value change is treated conservatively as a manual
+override for compatibility, but this is a heuristic: restoration, Host sync,
+or another plugin can produce the same signal. New player-scoped integrations
+must include a `reason`/origin in `player-difficulty.v1`; consumers must not
+infer a human action when explicit origin metadata is available.
 
 `note_detect` must not call an unscoped `window.setMastery` for a split player.
 Difficulty changes are requested through `player-difficulty.v1` with the

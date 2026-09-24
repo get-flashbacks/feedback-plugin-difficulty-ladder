@@ -1078,6 +1078,7 @@
     // the settings-changed listener below can update settings.reactionSpeed
     // mid-song.
     let _judgedKeys = null;        // Set, reset every phrase to bound memory
+    let _pendingJudgments = null;  // Map of matured notes awaiting terminal hit/miss
     let _phraseHits = 0;
     let _phraseTotal = 0;
     let _phraseJudgments = [];
@@ -1095,6 +1096,7 @@
     let _noteCursor = 0;
     let _chordCursor = 0;
     let _lastScoredT = -1;
+    let _lastScoredWallT = -1;
     let _hudMaxDifficulty = null;
     let _hudBadgeMeasureKey = null;
     let _hudBadgeWidth = 0;
@@ -1124,6 +1126,7 @@
     function resetPerSongState() {
         _emaHitRate = null;
         _judgedKeys = new Set();
+        _pendingJudgments = new Map();
         _phraseHits = 0;
         _phraseTotal = 0;
         _phraseJudgments = [];
@@ -1138,6 +1141,7 @@
         _noteCursor = 0;
         _chordCursor = 0;
         _lastScoredT = -1;
+        _lastScoredWallT = -1;
         _hudMaxDifficulty = null;
         _hudBadgeMeasureKey = null;
         _hudBadgeWidth = 0;
@@ -1583,9 +1587,10 @@
         }
 
         var curPct = Math.round(hw.getMastery() * 100);
-        // Manual-override doctrine: a human action always wins over automation.
-        // If the live value has drifted from what we last observed, someone
-        // moved the slider themselves — stand down instead of fighting them.
+        // The compatibility API cannot identify who originated a mastery
+        // change. Treat originless drift conservatively as a possible manual
+        // override and stand down; this is a safety heuristic, not proof that
+        // a person moved the slider.
         if (_lastObservedMasteryPct != null && curPct !== _lastObservedMasteryPct) {
             _rampDirection = null;
             _rampProgress = 0;
@@ -1813,6 +1818,116 @@
     // is a read, not a takeover — highway.getNoteStateProvider() is a public
     // getter documented for exactly this kind of consumption.
     var _scoreRafHandle = null;
+    var PENDING_POLL_INTERVAL_SECONDS = 0.1;
+    var FORWARD_DISCONTINUITY_SECONDS = 1;
+
+    function _scoringWallTimeSeconds() {
+        return typeof performance !== 'undefined' && typeof performance.now === 'function'
+            ? performance.now() / 1000
+            : Date.now() / 1000;
+    }
+
+    function _isForwardScoringDiscontinuity(previousT, currentT, previousWallT, currentWallT) {
+        if (previousT < 0 || previousWallT < 0) return false;
+        var playbackAdvance = currentT - previousT;
+        var wallAdvance = Math.max(0, currentWallT - previousWallT);
+        // A stalled/throttled frame advances playback and wall time together.
+        // Only excess playback movement indicates a seek without an explicit
+        // Host seek-origin event.
+        return playbackAdvance > wallAdvance + FORWARD_DISCONTINUITY_SECONDS;
+    }
+
+    function _advanceCursorToTime(items, cursor, playbackTime) {
+        // items[cursor] is a non-negative integer cursor bounded by items.length
+        // above, never external/attacker-controlled input.
+        /* eslint-disable security/detect-object-injection */
+        while (cursor < items.length && items[cursor].t < playbackTime) cursor++;
+        /* eslint-enable security/detect-object-injection */
+        return cursor;
+    }
+
+    function _advanceMainCursorsToTime(hw, playbackTime) {
+        var notes = typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [];
+        var chords = typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [];
+        _noteCursor = _advanceCursorToTime(notes, _noteCursor, playbackTime);
+        _chordCursor = _advanceCursorToTime(chords, _chordCursor, playbackTime);
+    }
+
+    // Feed time-sorted song events into a phrase-local pending ledger exactly
+    // once. The cursor advances when an event is enqueued, not when its scorer
+    // result settles, so an 'active'/null result can remain pending for as long
+    // as necessary without rescanning the song arrays.
+    function _enqueuePhraseJudgments(items, cursor, phrase, cutoff, notesOf, pending, judged) {
+        /* eslint-disable security/detect-object-injection --
+           cursor and ni are non-negative integer indices bounded by the
+           arrays' own .length, never external/attacker-controlled input. */
+        while (cursor < items.length) {
+            var item = items[cursor];
+            if (item.t < phrase.start_time) {
+                cursor++;
+                continue;
+            }
+            if (item.t >= phrase.end_time || item.t > cutoff) break;
+            var itemNotes = notesOf(item);
+            for (var ni = 0; ni < itemNotes.length; ni++) {
+                var note = itemNotes[ni];
+                var key = judgmentKey(item.t, note.s, note.f);
+                if (!judged.has(key) && !pending.has(key)) {
+                    pending.set(key, {
+                        key: key, note: note, time: item.t,
+                        nextPollAt: -Infinity,
+                    });
+                }
+            }
+            cursor++;
+        }
+        /* eslint-enable security/detect-object-injection */
+        return cursor;
+    }
+
+    function _pollPendingJudgments(pending, judged, provider, playbackTime, force, onTerminal) {
+        pending.forEach(function (entry, key) {
+            if (!force && playbackTime < entry.nextPollAt) return;
+            var result = provider(entry.note, entry.time);
+            var name = typeof result === 'string' ? result : result && result.state;
+            if (name !== 'hit' && name !== 'miss') {
+                entry.nextPollAt = playbackTime + PENDING_POLL_INTERVAL_SECONDS;
+                return;
+            }
+            pending.delete(key);
+            if (judged.has(key)) return;
+            judged.add(key);
+            onTerminal(entry, name === 'hit');
+        });
+    }
+
+    function _enqueueMainPhraseEvents(hw, phrase, cutoff) {
+        var notes = typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [];
+        var chords = typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [];
+        _noteCursor = _enqueuePhraseJudgments(
+            notes, _noteCursor, phrase, cutoff, function (n) { return [n]; },
+            _pendingJudgments, _judgedKeys
+        );
+        _chordCursor = _enqueuePhraseJudgments(
+            chords, _chordCursor, phrase, cutoff, function (c) { return c.notes || []; },
+            _pendingJudgments, _judgedKeys
+        );
+    }
+
+    function _pollMainPending(provider, playbackTime, force) {
+        _pollPendingJudgments(
+            _pendingJudgments, _judgedKeys, provider, playbackTime, force,
+            function (entry, hit) {
+                _phraseTotal++;
+                if (hit) _phraseHits++;
+                _phraseJudgments.push({
+                    key: entry.key, time: entry.time, string: entry.note.s,
+                    fret: entry.note.f, hit: hit,
+                });
+            }
+        );
+    }
+
     function tickScoring() {
         if (!isPlayerActive()) {
             resetMasteryStreak();
@@ -1835,12 +1950,20 @@
         var phrases = hw.getPhrases();
         if (!phrases || phrases.length === 0) return;
         var t = hw.getTime();
+        var previousT = _lastScoredT;
+        var wallT = _scoringWallTimeSeconds();
+        var rewound = false;
+        // With no seek-origin metadata, a large playback-time gap is treated
+        // conservatively as a forward seek. Abandon the in-flight phrase so
+        // boundary collection cannot fabricate judgments for its unplayed tail.
+        var jumpedForward = _isForwardScoringDiscontinuity(previousT, t, _lastScoredWallT, wallT);
 
         // A backward jump (loop restart, user seek, section-practice rewind)
         // invalidates the forward-only cursors below — resync from scratch.
         // This branch is the only O(N)-ish path here and it's seek-triggered,
         // not per-frame.
         if (t < _lastScoredT - 0.05) {
+            rewound = true;
             _noteCursor = 0;
             _chordCursor = 0;
             // A seek within the same phrase leaves judgedKeys/phraseHits/etc
@@ -1851,79 +1974,52 @@
             _phraseTotal = 0;
             _phraseJudgments = [];
             _judgedKeys = new Set();
+            _pendingJudgments = new Map();
+        }
+        if (jumpedForward) {
+            // Seek-only scan: skip every event crossed by the jump before
+            // resuming normal cursor-fed scoring at the destination.
+            _advanceMainCursorsToTime(hw, t);
+            _phraseHits = 0;
+            _phraseTotal = 0;
+            _phraseJudgments = [];
+            _judgedKeys = new Set();
+            _pendingJudgments = new Map();
         }
         _lastScoredT = t;
+        _lastScoredWallT = wallT;
 
         var idx = _curPhraseIdx;
         if (idx < 0 || t < phrases[idx].start_time || t >= phrases[idx].end_time) {
             idx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
         }
         if (idx !== _curPhraseIdx) {
-            if (_curPhraseIdx >= 0 && _phraseTotal > 0) commitPhraseResult(_phraseHits / _phraseTotal);
+            // Collect even the tail that has not reached the normal maturity
+            // delay, give every pending result one final poll, then explicitly
+            // discard unresolved entries so they cannot leak into the next
+            // phrase.
+            if (!rewound && !jumpedForward && _curPhraseIdx >= 0) {
+                // eslint-disable-next-line security/detect-object-injection -- _curPhraseIdx is bounded by the >= 0 check above and phrases.length
+                _enqueueMainPhraseEvents(hw, phrases[_curPhraseIdx], Infinity);
+                _pollMainPending(provider, t, true);
+                _pendingJudgments.clear();
+            }
+            if (!rewound && !jumpedForward && _curPhraseIdx >= 0 && _phraseTotal > 0) {
+                commitPhraseResult(_phraseHits / _phraseTotal);
+            }
             _curPhraseIdx = idx;
             _phraseHits = 0;
             _phraseTotal = 0;
             _phraseJudgments = [];
             _judgedKeys = new Set();
+            _pendingJudgments = new Map();
         }
         if (idx < 0) return;
 
         var p = phrases[idx];
         var lookback = 0.6;   // seconds — give the scorer time to settle a judgment
-        var windowStart = Math.max(p.start_time, t - 2.0);
-
-        // Notes/chords arrive time-sorted (core guarantee — see highway.js).
-        // Advance each cursor past everything older than windowStart ONCE;
-        // it never needs to look at that prefix again, so this amortizes to
-        // O(total events in the song) instead of O(N) every rAF tick.
-        var notes = typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [];
-        while (_noteCursor < notes.length && notes[_noteCursor].t < windowStart) _noteCursor++;
-        for (var i = _noteCursor; i < notes.length; i++) {
-            var n = notes[i];
-            if (n.t > t - lookback) break;
-            if (n.t >= p.end_time) break;
-            var nk = judgmentKey(n.t, n.s, n.f);
-            if (_judgedKeys.has(nk)) continue;
-            var nst = provider(n, n.t);
-            if (!nst) continue;
-            var nname = typeof nst === 'string' ? nst : nst.state;
-            // 'active' (a sustain currently being held correctly) is
-            // deliberately NOT counted here — it's an ongoing render signal
-            // for the note's glow, not a separate scoring event, and the
-            // note's onset is assumed to already resolve to 'hit'/'miss' on
-            // its own judgment key elsewhere in the provider's lifecycle.
-            // Revisit if that assumption turns out wrong for a given scorer.
-            if (nname === 'hit' || nname === 'miss') {
-                _judgedKeys.add(nk);
-                _phraseTotal++;
-                if (nname === 'hit') _phraseHits++;
-                _phraseJudgments.push({ key: nk, time: n.t, string: n.s, fret: n.f, hit: nname === 'hit' });
-            }
-        }
-
-        var chords = typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [];
-        while (_chordCursor < chords.length && chords[_chordCursor].t < windowStart) _chordCursor++;
-        for (var j = _chordCursor; j < chords.length; j++) {
-            var c = chords[j];
-            if (c.t > t - lookback) break;
-            if (c.t >= p.end_time) break;
-            var cnotes = c.notes || [];
-            for (var k = 0; k < cnotes.length; k++) {
-                var cn = cnotes[k];
-                var ck = judgmentKey(c.t, cn.s, cn.f);
-                if (_judgedKeys.has(ck)) continue;
-                var cst = provider(cn, c.t);
-                if (!cst) continue;
-                var cname = typeof cst === 'string' ? cst : cst.state;
-                // 'active' excluded here too — same rationale as the note loop above.
-                if (cname === 'hit' || cname === 'miss') {
-                    _judgedKeys.add(ck);
-                    _phraseTotal++;
-                    if (cname === 'hit') _phraseHits++;
-                    _phraseJudgments.push({ key: ck, time: c.t, string: cn.s, fret: cn.f, hit: cname === 'hit' });
-                }
-            }
-        }
+        _enqueueMainPhraseEvents(hw, p, t - lookback);
+        _pollMainPending(provider, t, false);
     }
 
     // ---- Split Screen adaptation -----------------------------------------
@@ -1953,12 +2049,14 @@
 
     function _resetSplitScoreState(state, context, stableKey) {
         state.judgedKeys = new Set();
+        state.pendingJudgments = new Map();
         state.phraseHits = 0;
         state.phraseTotal = 0;
         state.phraseJudgments = [];
         state.phrasesScored = 0;
         state.curPhraseIdx = -1;
         state.lastScoredT = -1;
+        state.lastScoredWallT = -1;
         state.noteCursor = 0;
         state.chordCursor = 0;
         state.emaHitRate = null;
@@ -2117,9 +2215,9 @@
 
         var curPct = Math.round(hw.getMastery() * 100);
         if (state.lastObservedMasteryPct != null && curPct !== state.lastObservedMasteryPct) {
-            // A panel's slider was moved by a person. Disable only this
-            // controller; the global setting remains the default/enablement
-            // for the other simultaneous players.
+            // This compatibility path has no change-origin metadata. Treat
+            // drift conservatively as a possible manual override and disable
+            // only this controller; it is not proof a person moved the slider.
             state.rampDirection = null;
             state.rampProgress = 0;
             state.downStreak = 0;
@@ -2150,6 +2248,40 @@
         }
     }
 
+    function _enqueueSplitPhraseEvents(hw, state, phrase, cutoff) {
+        var notes = typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [];
+        var chords = typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [];
+        state.noteCursor = _enqueuePhraseJudgments(
+            notes, state.noteCursor, phrase, cutoff, function (n) { return [n]; },
+            state.pendingJudgments, state.judgedKeys
+        );
+        state.chordCursor = _enqueuePhraseJudgments(
+            chords, state.chordCursor, phrase, cutoff, function (c) { return c.notes || []; },
+            state.pendingJudgments, state.judgedKeys
+        );
+    }
+
+    function _advanceSplitCursorsToTime(hw, state, playbackTime) {
+        var notes = typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [];
+        var chords = typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [];
+        state.noteCursor = _advanceCursorToTime(notes, state.noteCursor, playbackTime);
+        state.chordCursor = _advanceCursorToTime(chords, state.chordCursor, playbackTime);
+    }
+
+    function _pollSplitPending(state, provider, playbackTime, force) {
+        _pollPendingJudgments(
+            state.pendingJudgments, state.judgedKeys, provider, playbackTime, force,
+            function (entry, hit) {
+                state.phraseTotal++;
+                if (hit) state.phraseHits++;
+                state.phraseJudgments.push({
+                    key: entry.key, time: entry.time, string: entry.note.s,
+                    fret: entry.note.f, hit: hit,
+                });
+            }
+        );
+    }
+
     function tickOneSplitHighway(hw, state) {
         if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return;
         var provider = typeof hw.getNoteStateProvider === 'function' ? hw.getNoteStateProvider() : null;
@@ -2157,7 +2289,14 @@
         var phrases = hw.getPhrases();
         if (!phrases || !phrases.length) return;
         var t = hw.getTime();
+        var previousT = state.lastScoredT;
+        var wallT = _scoringWallTimeSeconds();
+        var rewound = false;
+        var jumpedForward = _isForwardScoringDiscontinuity(
+            previousT, t, state.lastScoredWallT, wallT
+        );
         if (t < state.lastScoredT - 0.05) {
+            rewound = true;
             state.noteCursor = 0;
             state.chordCursor = 0;
             // Same rationale as the main tickScoring path: a seek within the
@@ -2167,13 +2306,32 @@
             state.phraseTotal = 0;
             state.phraseJudgments = [];
             state.judgedKeys = new Set();
+            state.pendingJudgments = new Map();
+        }
+        if (jumpedForward) {
+            _advanceSplitCursorsToTime(hw, state, t);
+            state.phraseHits = 0;
+            state.phraseTotal = 0;
+            state.phraseJudgments = [];
+            state.judgedKeys = new Set();
+            state.pendingJudgments = new Map();
         }
         state.lastScoredT = t;
+        state.lastScoredWallT = wallT;
         var idx = state.curPhraseIdx;
         if (idx < 0 || t < phrases[idx].start_time || t >= phrases[idx].end_time)
             idx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
         if (idx !== state.curPhraseIdx) {
-            if (state.curPhraseIdx >= 0 && state.phraseTotal > 0) {
+            if (!rewound && !jumpedForward && state.curPhraseIdx >= 0) {
+                // eslint-disable-next-line security/detect-object-injection -- state.curPhraseIdx is bounded by the >= 0 check above and phrases.length
+                _enqueueSplitPhraseEvents(hw, state, phrases[state.curPhraseIdx], Infinity);
+                _pollSplitPending(state, provider, t, true);
+                // A phrase boundary is the terminal ownership edge. Results
+                // still active/null after the final poll are intentionally
+                // discarded rather than attributed to the following phrase.
+                state.pendingJudgments.clear();
+            }
+            if (!rewound && !jumpedForward && state.curPhraseIdx >= 0 && state.phraseTotal > 0) {
                 if (state.context) recordPhraseAttempt(
                     state.phraseHits / state.phraseTotal, state.context, state, hw
                 );
@@ -2181,37 +2339,13 @@
             }
             state.curPhraseIdx = idx; state.phraseHits = 0; state.phraseTotal = 0;
             state.phraseJudgments = []; state.judgedKeys = new Set();
+            state.pendingJudgments = new Map();
         }
         if (idx < 0) return;
-        var phrase = phrases[idx], cutoff = t - 0.6, windowStart = Math.max(phrase.start_time, t - 2);
-        function score(items, cursorKey, notesOf) {
-            var cursor = state[cursorKey];
-            while (cursor < items.length && items[cursor].t < windowStart) cursor++;
-            // Only discard entries that have fallen out of the lookback
-            // window. Items still in range may be pending ('active'/null) and
-            // need another chance to resolve on a later frame.
-            state[cursorKey] = cursor;
-            for (var scan = cursor; scan < items.length; scan++) {
-                var item = items[scan];
-                if (item.t > cutoff || item.t >= phrase.end_time) break;
-                var notes = notesOf(item);
-                for (var ni = 0; ni < notes.length; ni++) {
-                    var note = notes[ni], key = judgmentKey(item.t, note.s, note.f);
-                    if (state.judgedKeys.has(key)) continue;
-                    var result = provider(note, item.t), name = typeof result === 'string' ? result : result && result.state;
-                    if (name === 'hit' || name === 'miss') {
-                        state.judgedKeys.add(key); state.phraseTotal++;
-                        if (name === 'hit') state.phraseHits++;
-                        state.phraseJudgments.push({
-                            key: key, time: item.t, string: note.s, fret: note.f,
-                            hit: name === 'hit',
-                        });
-                    }
-                }
-            }
-        }
-        score(typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [], 'noteCursor', function (n) { return [n]; });
-        score(typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [], 'chordCursor', function (c) { return c.notes || []; });
+        // eslint-disable-next-line security/detect-object-injection -- idx is bounded by the `idx < 0` guard above and phrases.length
+        var phrase = phrases[idx], cutoff = t - 0.6;
+        _enqueueSplitPhraseEvents(hw, state, phrase, cutoff);
+        _pollSplitPending(state, provider, t, false);
     }
 
     function tickSplitScoring() {
@@ -2814,6 +2948,7 @@
             _applyDifficultyForContext,
             _contextEventPayload,
             _onMasteryApplied,
+            _isForwardScoringDiscontinuity,
          };
         return;
     }

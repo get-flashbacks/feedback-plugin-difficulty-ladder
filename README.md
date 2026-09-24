@@ -116,8 +116,11 @@ claim marker prevents another player sharing that profile from reading it.
   percentage multiplied by the phrase hit rate. This never changes the separate
   current-difficulty target.
 - Only ever changes difficulty at section boundaries — never mid-phrase.
-- Stands down the instant you move the difficulty slider yourself. Manual
-  action always wins; auto-adjust must be explicitly re-enabled afterward.
+- Stands down when the legacy, originless Host API reports an unexpected
+  difficulty change. This conservatively protects manual slider changes, but
+  Host restoration or another plugin can look identical because
+  `window.setMastery` supplies no source metadata. Auto-adjust must be
+  explicitly re-enabled afterward.
 - No-ops entirely for songs without a phrase-level difficulty ladder
   (`highway.hasPhraseData() === false` — GP imports, legacy sloppak).
 
