@@ -62,6 +62,19 @@ def _technical_notes(t0, t1, step=0.1):
     return notes
 
 
+def _assert_on_tier_scale(phrase, n_levels):
+    """A generated phrase's levels sit on the shared tier scale: difficulty
+    numbers start at 0 and strictly increase (sparse where tiers collapsed),
+    and max_difficulty is the scale's top tier -- or 0 when the phrase
+    collapsed to a single level (no ladder)."""
+    diffs = [lvl["difficulty"] for lvl in phrase["levels"]]
+    assert diffs[0] == 0  # nosec B101 - pytest assertion
+    assert all(b > a for a, b in pairwise(diffs))  # nosec B101 - pytest assertion
+    assert diffs[-1] <= n_levels - 1  # nosec B101 - pytest assertion
+    expected_max = n_levels - 1 if len(diffs) > 1 else 0
+    assert phrase["max_difficulty"] == expected_max  # nosec B101 - pytest assertion
+
+
 def test_returns_none_for_near_empty_arrangement():
     arr = _arrangement(_simple_notes(0, 1, step=0.5))  # well under MIN_EVENTS_FOR_GENERATION
     assert routes.generate_phrases_for_arrangement(arr, n_levels=4) is None
@@ -72,8 +85,8 @@ def test_simple_phrase_gets_a_shorter_ladder_than_the_cap():
     arr = _arrangement(notes)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
     assert phrases, "expected at least one phrase"
-    assert phrases[0]["max_difficulty"] < 5, (
-        "a near-constant, single-string phrase should not consume the full ladder cap"
+    assert len(phrases[0]["levels"]) < 6, (  # nosec B101 - pytest assertion
+        "a near-constant, single-string phrase should not have a distinct level at every tier"
     )
 
 
@@ -111,7 +124,7 @@ def test_dense_technical_phrase_uses_more_of_the_cap_than_a_simple_one():
     technical_phrases = routes.generate_phrases_for_arrangement(technical, n_levels=6)
 
     assert simple_phrases and technical_phrases
-    assert technical_phrases[0]["max_difficulty"] > simple_phrases[0]["max_difficulty"]
+    assert len(technical_phrases[0]["levels"]) > len(simple_phrases[0]["levels"])  # nosec B101 - pytest assertion
 
 
 def test_bottom_tier_is_sparser_than_a_flat_percentile_split():
@@ -119,13 +132,12 @@ def test_bottom_tier_is_sparser_than_a_flat_percentile_split():
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     levels = phrases[0]["levels"]
-    max_level = phrases[0]["max_difficulty"]
-    top_count = len(levels[max_level]["notes"]) + len(levels[max_level]["chords"])
+    top_count = len(levels[-1]["notes"]) + len(levels[-1]["chords"])
     bottom_count = len(levels[0]["notes"]) + len(levels[0]["chords"])
     assert top_count > 0
     # a flat percentile split would put ~1/n_levels of the content at the
     # bottom tier; the convex retention curve should land well under that
-    assert bottom_count / top_count < 1.0 / (max_level + 1)
+    assert bottom_count / top_count < 1.0 / 4  # nosec B101 - pytest assertion
 
 
 def test_flashy_techniques_are_gated_out_of_low_tiers():
@@ -150,7 +162,7 @@ def test_chords_are_thinned_below_the_top_tier_and_intact_at_the_top():
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     levels = phrases[0]["levels"]
-    max_level = phrases[0]["max_difficulty"]
+    max_level = len(levels) - 1
 
     def chord_note_count_at(lvl):
         return sum(
@@ -201,31 +213,33 @@ def test_lower_tier_refinement_falls_back_to_a_beat_group_when_none_was_kept():
 
 
 def test_bottom_arpeggio_voice_preserves_the_root_string():
+    # String 0 is the LOWEST string (feedpak-v1 §6.2), so s=1 is the root
+    # here even though it's played after the higher s=5 note.
     groups = [{
         "type": "arpeggio", "level": 0, "time": 0.0, "chord": None,
-        "notes": [{"t": 0.0, "s": 1, "f": 7}, {"t": 0.04, "s": 5, "f": 3}],
+        "notes": [{"t": 0.0, "s": 5, "f": 7}, {"t": 0.04, "s": 1, "f": 3}],
     }]
 
     notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
 
     assert chords == []
-    assert [(n["s"], n["f"]) for n in notes] == [(5, 3)]
+    assert [(n["s"], n["f"]) for n in notes] == [(1, 3)]  # nosec B101 - pytest assertion
 
 
 def test_bottom_arpeggio_voice_preserves_an_open_root_string():
-    # The root string (s=5) is played open here. Bottom-tier arpeggio
-    # selection cares about the harmonic root, not hand position — an open
-    # root is a valid, easier simplification, so it must not be skipped in
-    # favor of the fretted note the way the jump-scoring anchor now is.
+    # The root string (s=0, the lowest) is played open here. Bottom-tier
+    # arpeggio selection cares about the harmonic root, not hand position —
+    # an open root is a valid, easier simplification, so it must not be
+    # skipped in favor of the fretted note the way the jump-scoring anchor is.
     groups = [{
         "type": "arpeggio", "level": 0, "time": 0.0, "chord": None,
-        "notes": [{"t": 0.0, "s": 5, "f": 0}, {"t": 0.04, "s": 2, "f": 5}],
+        "notes": [{"t": 0.0, "s": 0, "f": 0}, {"t": 0.04, "s": 3, "f": 5}],
     }]
 
     notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
 
     assert chords == []
-    assert [(n["s"], n["f"]) for n in notes] == [(5, 0)]
+    assert [(n["s"], n["f"]) for n in notes] == [(0, 0)]  # nosec B101 - pytest assertion
 
 
 def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
@@ -251,17 +265,17 @@ def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
 def test_group_anchor_note_prefers_a_fretted_note_over_an_incidental_open_string():
     # An open string needs no hand position at all, so it must not be picked
     # as the hand-position anchor when the group also has fretted notes —
-    # even though it's the highest string index (the usual root convention).
+    # even though it's the lowest string (the usual root convention).
     group = {"notes": [
-        {"s": 0, "f": 12}, {"s": 1, "f": 12}, {"s": 2, "f": 13},
-        {"s": 3, "f": 13}, {"s": 4, "f": 12}, {"s": 5, "f": 0},
+        {"s": 0, "f": 0}, {"s": 1, "f": 12}, {"s": 2, "f": 13},
+        {"s": 3, "f": 13}, {"s": 4, "f": 12}, {"s": 5, "f": 12},
     ]}
     anchor = routes._group_anchor_note(group)
-    assert anchor["f"] > 0
+    assert anchor == {"s": 1, "f": 12}  # nosec B101 - pytest assertion
 
-    # All-open group: falls back to the highest-string-index note as before.
+    # All-open group: falls back to the lowest-string note.
     open_group = {"notes": [{"s": 5, "f": 0}, {"s": 4, "f": 0}]}
-    assert routes._group_anchor_note(open_group) == {"s": 5, "f": 0}
+    assert routes._group_anchor_note(open_group) == {"s": 4, "f": 0}  # nosec B101 - pytest assertion
 
 
 def test_fret_jump_penalty_reflects_the_true_fretted_position_not_an_incidental_open_string():
@@ -386,6 +400,39 @@ def test_instrument_kind_returns_unsupported_for_an_unrecognized_non_empty_type(
     # heuristic (silently mis-scoring content this generator has no business
     # reading) instead of being explicitly rejected.
     assert routes._instrument_kind(arr_type, "some name") == "unsupported"
+
+
+def test_instrument_kind_detects_drums_by_name_when_type_is_blank():
+    # Issue #102: missing type should not silently mean fretted for names
+    # identifying drums. Name-sniff for "Drums", "Drum 2", etc.
+    assert routes._instrument_kind("", "Drums") == "drums"
+    assert routes._instrument_kind("", "Drums 2") == "drums"
+    assert routes._instrument_kind(None, "Drum Kit") == "drums"
+    assert routes._instrument_kind("", "  Percussion  ") == "drums"
+
+
+def test_instrument_kind_detects_unsupported_by_name_when_type_is_blank():
+    # Issue #102: missing type should not silently mean fretted for names
+    # identifying unsupported instruments (Sax, Vocals, etc.). Narrow to only
+    # unambiguous non-fretted names to avoid false positives (e.g., "Harmony"
+    # guitar, "Strings" arrangement are common fretted part names).
+    assert routes._instrument_kind("", "Sax") == "unsupported"
+    assert routes._instrument_kind("", "Saxophone") == "unsupported"
+    assert routes._instrument_kind("", "Vocals") == "unsupported"
+    assert routes._instrument_kind(None, "Violin") == "unsupported"
+    assert routes._instrument_kind("", "  Cello  ") == "unsupported"
+    assert routes._instrument_kind("", "Flute") == "unsupported"
+    assert routes._instrument_kind("", "Trumpet") == "unsupported"
+
+
+def test_instrument_kind_blank_type_with_fretted_names_still_defaults_to_fretted():
+    # When type is blank and name doesn't match unsupported patterns,
+    # should still default to fretted for backward compatibility with
+    # legacy packs that omit type.
+    assert routes._instrument_kind("", "Lead") == "fretted"
+    assert routes._instrument_kind("", "Rhythm") == "fretted"
+    assert routes._instrument_kind(None, "Combo") == "fretted"
+    assert routes._instrument_kind("", "My Custom Arrangement") == "fretted"
 
 
 def test_generate_phrases_for_arrangement_skips_an_unsupported_instrument_type():
@@ -539,6 +586,11 @@ def test_group_notes_time_window_is_tempo_configurable():
     # under a tight (fast-tempo-derived) window, but SHOULD cluster under a
     # loose (slow-tempo-derived) window — this is the exact mechanism
     # generate_phrases_for_arrangement now drives from the song's own beats.
+    # Neither note has evidence of arpeggio identity (issue #73: no sustain
+    # overlap, no authored hand-shape/chord-template match), so the loose
+    # window clusters them into a "run" (melodic sequence), not an
+    # "arpeggio" — see test_group_notes_classifies_* below for the
+    # evidence-specific cases.
     notes = [
         {"t": 0.0, "s": 0, "f": 3},
         {"t": 0.1, "s": 1, "f": 3},
@@ -546,7 +598,7 @@ def test_group_notes_time_window_is_tempo_configurable():
     tight = routes._group_notes(notes, [], time_window_ms=62.5)
     loose = routes._group_notes(notes, [], time_window_ms=250.0)
     assert [g["type"] for g in tight] == ["note", "note"]
-    assert [g["type"] for g in loose] == ["arpeggio"]
+    assert [g["type"] for g in loose] == ["run"]
 
 
 # ── Item 2: measure-aligned fallback phrase windows ──────────────────────────
@@ -792,7 +844,9 @@ def test_bass_slap_and_pop_previously_scored_as_a_plain_note():
 
 
 def test_pinch_harmonic_gated_out_later_than_natural_harmonic():
-    note_hm = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "hm": True}
+    # Fret 12: stripping a natural harmonic there keeps its pitch, so the
+    # gate applies (see test_natural_harmonic_is_kept_where_stripping_would_change_its_pitch).
+    note_hm = {"t": 0.0, "s": 2, "f": 12, "sus": 0, "hm": True}
     note_hp = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "hp": True}
     assert "hm" not in routes._prune_techniques(note_hm, diff_percent=0.70)
     assert "hp" not in routes._prune_techniques(note_hp, diff_percent=0.90), (
@@ -920,12 +974,14 @@ def test_bend_curve_with_shaping_scores_higher_than_a_trivial_two_point_curve():
 
 
 def test_bend_intent_downgraded_below_its_gate_but_release_is_spared():
+    note_round_trip = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 4}
     note_pre_bend = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 2}
     note_release = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 1}
 
-    below_bt_gate = routes._prune_techniques(note_pre_bend, diff_percent=0.60)
-    assert below_bt_gate["bt"] == 0, "pre-bend should downgrade to a plain bend-up below its gate"
+    below_bt_gate = routes._prune_techniques(note_round_trip, diff_percent=0.60)
+    assert below_bt_gate["bt"] == 0, "round-trip should downgrade to a plain bend-up below its gate"  # nosec B101 - pytest assertion
     assert below_bt_gate["bn"] == 1.0, "bn itself survives above its own (earlier) gate"
+    assert below_bt_gate["f"] == 5, "both are struck unbent, so the fret is unchanged"  # nosec B101 - pytest assertion
 
     above_bt_gate = routes._prune_techniques(note_pre_bend, diff_percent=0.70)
     assert above_bt_gate["bt"] == 2
@@ -954,13 +1010,14 @@ def test_bend_curve_stripped_below_its_gate_bn_and_bt_survive():
 def test_stripped_bend_does_not_leave_a_stale_bt_or_bnv_behind():
     note = {
         "t": 0.0, "s": 2, "f": 5, "sus": 0,
-        "bn": 1.5, "bt": 3,
-        "bnv": [{"t": 0, "v": 0}, {"t": 0.1, "v": 0.5}, {"t": 0.2, "v": 1.5}],
+        "bn": 1.5, "bt": 4,
+        "bnv": [{"t": 0, "v": 0}, {"t": 0.1, "v": 1.5}, {"t": 0.2, "v": 0}],
     }
     pruned = routes._prune_techniques(note, diff_percent=0.30)
     assert pruned["bn"] == 0
-    assert pruned["bt"] == 0, "a pre-bend flag on a bn=0 note is nonsensical and must not survive"
+    assert pruned["bt"] == 0, "a round-trip flag on a bn=0 note is nonsensical and must not survive"  # nosec B101 - pytest assertion
     assert "bnv" not in pruned, "a stale bend curve must not survive when the bend itself is gone"
+    assert pruned["f"] == 5, "a round-trip is struck unbent, so the fret is unchanged"  # nosec B101 - pytest assertion
 
 
 def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spared():
@@ -970,13 +1027,15 @@ def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spar
     # But once bn's gate strips the bend entirely, "release" is no longer
     # a meaningful description of anything -- there's no bend left to
     # release -- so it must be cleared too, not just the harder intents.
-    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.5, "bt": 1}
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 1}
     pruned = routes._prune_techniques(note, diff_percent=0.30)
     assert pruned["bn"] == 0
     assert pruned["bt"] == 0, (
         "a release flag on a bn=0 note is nonsensical and must not survive, "
         "even though release alone (bn intact) is never downgraded"
     )
+    # A release is struck at the bent pitch: the simplified note is fretted there.
+    assert pruned["f"] == 6  # nosec B101 - pytest assertion
 
 
 # ---------------------------------------------------------------------------
@@ -1366,8 +1425,7 @@ def test_chord_only_top_tier_gets_anchors():
     arr = _arrangement([], chords=chords)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
-    max_level = phrases[0]["max_difficulty"]
-    top = phrases[0]["levels"][max_level]
+    top = phrases[0]["levels"][-1]
     assert top["notes"] == []
     assert len(top["chords"]) == 4
     assert top["anchors"], "a chord-only top tier must still get fret anchors"
@@ -1510,7 +1568,9 @@ def test_collapse_identical_levels_merges_duplicate_adjacent_tiers():
     ]
     collapsed = routes._collapse_identical_levels(levels)
     assert len(collapsed) == 2
-    assert [lvl["difficulty"] for lvl in collapsed] == [0, 1]
+    # Tier numbers are kept, not renumbered: the second level's content
+    # starts at tier 2, and a reader needs that to map the slider correctly.
+    assert [lvl["difficulty"] for lvl in collapsed] == [0, 2]  # nosec B101 - pytest assertion
     # the cleaner (un-pruned) representative of the duplicate run survives
     assert collapsed[0]["notes"] == [{"t": 0, "s": 2, "f": 3}]
     assert collapsed[1]["notes"] == [{"t": 0, "s": 2, "f": 5}]
@@ -1527,9 +1587,9 @@ def test_collapse_identical_levels_keeps_distinct_tiers_untouched():
 
 def test_repetitive_fretted_phrase_collapses_duplicate_tiers():
     # Equal-score-ish content: identical string/fret/no techniques,
-    # evenly spaced. _phrase_level_count's floor + percentile bucketing
-    # can still nominally split this into more tiers than there's real
-    # variation for -- no two adjacent tiers may describe the same notes.
+    # evenly spaced. The per-phrase floor could still nominally split this
+    # into more tiers than there's real variation for -- no two adjacent
+    # tiers may describe the same notes.
     notes = [{"t": round(i * 0.25, 3), "s": 2, "f": 3, "sus": 0} for i in range(60)]
     arr = _arrangement(notes, n_beats=60)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
@@ -1539,7 +1599,7 @@ def test_repetitive_fretted_phrase_collapses_duplicate_tiers():
         a_notes = [routes._canonical_note_for_compare(n) for n in a["notes"]]
         b_notes = [routes._canonical_note_for_compare(n) for n in b["notes"]]
         assert a_notes != b_notes or a["chords"] != b["chords"]
-    assert phrases[0]["max_difficulty"] == len(levels) - 1
+    _assert_on_tier_scale(phrases[0], n_levels=6)
 
 
 def test_keys_fixed_depth_collapses_duplicate_tiers():
@@ -1557,8 +1617,8 @@ def test_keys_fixed_depth_collapses_duplicate_tiers():
     levels = phrases[0]["levels"]
     for a, b in pairwise(levels):
         assert a["notes"] != b["notes"] or a["chords"] != b["chords"]
-    assert phrases[0]["max_difficulty"] == len(levels) - 1
-    assert phrases[0]["max_difficulty"] < 3, (
+    _assert_on_tier_scale(phrases[0], n_levels=4)
+    assert len(levels) < 4, (  # nosec B101 - pytest assertion
         "keys must not always ship the full requested depth when tiers are duplicates"
     )
 
@@ -1570,7 +1630,7 @@ def test_shallow_phrase_reports_actual_depth_not_the_requested_cap():
     arr = _arrangement(notes)
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=8)
     assert phrases
-    assert phrases[0]["max_difficulty"] < 7
+    assert len(phrases[0]["levels"]) < 8  # nosec B101 - pytest assertion
 
 
 def test_empty_section_phrase_still_reports_zero_depth_after_collapse():
@@ -1780,7 +1840,7 @@ def test_generate_phrases_preserves_ln_across_a_phrase_boundary():
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=2)
     assert phrases
     first_phrase = phrases[0]
-    top_level = first_phrase["levels"][first_phrase["max_difficulty"]]
+    top_level = first_phrase["levels"][-1]
     tagged = [n for n in top_level["notes"] if n["t"] == 4.5]
     assert tagged and tagged[0].get("ln") is True
 
@@ -1807,3 +1867,549 @@ def test_generate_library_route_records_canonical_section_times_failure_and_cont
     data = resp.json()
     assert data["generated"] == 1
     assert any("corrupt archive" in f.get("error", "") for f in data["failed"])
+
+
+# ── Issue #73: evidence-gated implicit arpeggio grouping ────────────────────
+#
+# Before this fix, ANY different-string notes landing inside the grouping
+# time/fret window became an "arpeggio" with no further evidence -- a fast
+# cross-string scale run read identically to a genuine broken chord, and the
+# bottom-tier reduction (_notes_for_level's arpeggio branch) collapsed either
+# one down to a single note (really just the note on the highest string
+# index -- a position convention, not a proven harmonic root or bass note).
+# These tests cover the acceptance criteria: stronger evidence required for
+# "arpeggio", melodic sequences preserved when evidence is absent, position
+# terminology (exercised via _group_anchor_note behavior), and inversions /
+# cross-string scales / linked arpeggios / unusual tunings.
+#
+# Fixture note: chord-template `frets` lists follow feedpak's own wire
+# convention -- index 0 = lowest-pitched string (feedpak-v1.md §6.2/§6.6,
+# mirrored in song.py's _TUNING_BASE_MIDI) -- so e.g. a real open-C voicing
+# (x-3-2-0-1-0) is `[-1, 3, 2, 0, 1, 0]`, not `[-1, 0, 1, 0, 2, 3]`.
+
+def test_classify_cluster_with_no_evidence_is_a_run_not_an_arpeggio():
+    # Two different-string notes close in time, no sustain overlap, no
+    # authored hand-shape or chord-template evidence: a fast cross-string
+    # scale run, not a proven broken chord.
+    cluster = [
+        {"t": 0.0, "s": 0, "f": 3, "sus": 0},
+        {"t": 0.02, "s": 1, "f": 5, "sus": 0},
+    ]
+    assert routes._classify_cluster(cluster) == "run"
+
+
+def test_classify_cluster_with_overlapping_sustain_is_an_arpeggio():
+    # First note rings past the second note's onset -- the notes were left
+    # to sound together, the hallmark of a broken chord.
+    cluster = [
+        {"t": 0.0, "s": 0, "f": 3, "sus": 0.3},
+        {"t": 0.05, "s": 1, "f": 5, "sus": 0},
+    ]
+    assert routes._classify_cluster(cluster) == "arpeggio"
+
+
+def test_classify_cluster_covered_by_authored_hand_shape_is_an_arpeggio():
+    # Authored linkage: the chart's own hand-shape window covers both
+    # onsets, even though nothing overlaps and no chord template matches.
+    cluster = [
+        {"t": 1.00, "s": 2, "f": 2, "sus": 0},
+        {"t": 1.05, "s": 4, "f": 0, "sus": 0},
+    ]
+    hand_shapes = [{"chord_id": 0, "start_time": 0.9, "end_time": 1.2, "arp": True}]
+    assert routes._classify_cluster(cluster, hand_shapes=hand_shapes) == "arpeggio"
+
+
+def test_classify_cluster_outside_hand_shape_window_is_unaffected():
+    cluster = [
+        {"t": 2.00, "s": 2, "f": 2, "sus": 0},
+        {"t": 2.05, "s": 4, "f": 0, "sus": 0},
+    ]
+    hand_shapes = [{"chord_id": 0, "start_time": 0.9, "end_time": 1.2, "arp": True}]
+    assert routes._classify_cluster(cluster, hand_shapes=hand_shapes) == "run"
+
+
+def test_classify_cluster_matching_chord_template_shape_is_an_arpeggio():
+    # Chord identity: the cluster's exact per-string frets appear in an
+    # authored chord template -- a real open-C voicing (x-3-2-0-1-0, low-
+    # string-first) -- covering 3 of its 5 used strings (a meaningful
+    # share, not a coincidental fragment; see
+    # test_classify_cluster_rejects_a_coincidental_partial_chord_template_match
+    # below), regardless of timing evidence.
+    cluster = [
+        {"t": 0.0, "s": 1, "f": 3, "sus": 0},
+        {"t": 0.03, "s": 2, "f": 2, "sus": 0},
+        {"t": 0.06, "s": 4, "f": 1, "sus": 0},
+    ]
+    chord_templates = [{"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
+    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "arpeggio"
+
+
+def test_classify_cluster_partial_chord_template_mismatch_stays_a_run():
+    # Same strings, but one fret disagrees with every template -- not a
+    # real chord-shape match.
+    cluster = [
+        {"t": 0.0, "s": 1, "f": 3, "sus": 0},
+        {"t": 0.03, "s": 2, "f": 9, "sus": 0},  # doesn't match the template's fret 2
+    ]
+    chord_templates = [{"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
+    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "run"
+
+
+def test_classify_cluster_rejects_a_coincidental_partial_chord_template_match():
+    # Regression (PR #100 review): a 2-note cluster that happens to
+    # coincidentally match 2 of a 6-string open-C's 5 used strings must
+    # NOT read as chord identity -- that's exactly the false-arpeggio class
+    # issue #73 set out to eliminate. A real open-C is x-3-2-0-1-0
+    # (low-string-first); this cluster is just the A-string/D-string notes
+    # (fret 3 / fret 2) landing on 2 of that template's 5 positions.
+    cluster = [
+        {"t": 0.0, "s": 1, "f": 3, "sus": 0},
+        {"t": 0.02, "s": 2, "f": 2, "sus": 0},
+    ]
+    chord_templates = [{"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
+    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "run"
+
+
+def test_classify_cluster_single_note_is_plain_note():
+    assert routes._classify_cluster([{"t": 0.0, "s": 0, "f": 3}]) == "note"
+
+
+def test_classify_cluster_works_for_unusual_tunings_with_more_strings():
+    # A 7-string extended-range chart: chord-template matching must not
+    # assume a fixed 6-string layout -- string index 6 is valid here. The
+    # template is an illustrative 2-string shape (not a claimed real voicing
+    # of any named tuning/chord) matched in full (2 of its 2 used strings),
+    # which is meaningful-share evidence regardless of chord size.
+    cluster = [
+        {"t": 0.0, "s": 6, "f": 0, "sus": 0},
+        {"t": 0.02, "s": 3, "f": 2, "sus": 0},
+    ]
+    chord_templates = [{"name": "fixture-2-string-shape", "frets": [-1, -1, -1, 2, -1, -1, 0]}]
+    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "arpeggio"
+
+
+def test_classify_cluster_rejects_a_small_fraction_of_a_larger_unusual_tuning_template():
+    # Same 7-string layout, but now the matched 2 notes are only a small
+    # fraction of a larger (5-used-string) template -- must not pass on
+    # subset coincidence alone, same as the 6-string case above.
+    cluster = [
+        {"t": 0.0, "s": 6, "f": 0, "sus": 0},
+        {"t": 0.02, "s": 3, "f": 2, "sus": 0},
+    ]
+    chord_templates = [{
+        "name": "fixture-5-string-shape",
+        "frets": [-1, 1, 2, 2, 3, -1, 0],
+    }]
+    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "run"
+
+
+def test_group_notes_threads_hand_shapes_and_chord_templates_into_classification():
+    notes = [
+        {"t": 0.0, "s": 2, "f": 2, "sus": 0},
+        {"t": 0.05, "s": 4, "f": 0, "sus": 0},
+    ]
+    hand_shapes = [{"chord_id": 0, "start_time": 0.0, "end_time": 0.3, "arp": True}]
+    groups = routes._group_notes(
+        notes, [], time_window_ms=150, hand_shapes=hand_shapes, chord_templates=[],
+    )
+    assert [g["type"] for g in groups] == ["arpeggio"]
+
+
+def test_notes_for_level_preserves_a_melodic_run_instead_of_collapsing_to_one_note():
+    # A 6-note cross-string scale run with no arpeggio evidence. Under the
+    # old behavior this cluster would have been labeled "arpeggio" and the
+    # bottom tier would keep only the single note on the group's highest
+    # string index. As a "run", the bottom tier should still thin it, but
+    # keep more than one note so the melodic sequence survives.
+    ns = [{"t": i * 0.02, "s": i % 6, "f": i + 1, "sus": 0} for i in range(6)]
+    groups = [{"type": "run", "level": 0, "time": 0.0, "chord": None, "notes": ns}]
+
+    notes, chords = routes._notes_for_level(groups, level=0, max_level=3)
+
+    assert chords == []
+    assert len(notes) > 1, "a melodic run must not collapse to a single presumed-anchor note"
+    assert len(notes) < len(ns), "the bottom tier still thins the run"
+
+
+def test_notes_for_level_run_thinning_preserves_contour_not_just_a_prefix():
+    # _evenly_sample should span the run (first + last + spread), not just
+    # take a fixed-length prefix the way naive truncation would.
+    ns = [{"t": i * 0.02, "s": 0, "f": i, "sus": 0} for i in range(9)]
+    groups = [{"type": "run", "level": 1, "time": 0.0, "chord": None, "notes": ns}]
+
+    notes, chords = routes._notes_for_level(groups, level=1, max_level=3)
+
+    frets = sorted(n["f"] for n in notes)
+    assert frets[0] == 0, "the run's first note should survive thinning"
+    assert frets[-1] == 8, "the run's last note should survive thinning"
+
+
+def test_notes_for_level_run_at_top_tier_keeps_every_note_untouched():
+    ns = [{"t": i * 0.02, "s": i % 6, "f": i + 1, "sus": 0} for i in range(4)]
+    groups = [{"type": "run", "level": 0, "time": 0.0, "chord": None, "notes": ns}]
+
+    notes, chords = routes._notes_for_level(groups, level=2, max_level=2)
+
+    assert len(notes) == len(ns)
+
+
+def test_evenly_sample_keeps_first_and_last_and_spreads_the_middle():
+    ns = list(range(10))
+    kept = routes._evenly_sample(ns, 3)
+    assert kept[0] == 0
+    assert kept[-1] == 9
+    assert len(kept) == 3
+
+
+def test_evenly_sample_returns_everything_when_keep_n_covers_the_whole_list():
+    ns = [1, 2, 3]
+    assert routes._evenly_sample(ns, 5) == ns
+
+
+def test_evenly_sample_returns_first_item_when_keep_n_is_one():
+    ns = [1, 2, 3, 4]
+    assert routes._evenly_sample(ns, 1) == [1]
+
+
+def test_group_anchor_note_picks_the_lowest_string_index_not_a_claimed_harmonic_root():
+    # An inverted voicing: _group_anchor_note picks min(s) -- the note on
+    # the lowest string index (s=1 here), which per feedpak's low-string-
+    # first indexing (index 0 = lowest-pitched string, mirrored in song.py's
+    # _TUNING_BASE_MIDI) is the bass-most note. That is a position, usually
+    # the root in standard shapes, but it must NOT be read as a proven root:
+    # in an inversion like this one the bass note isn't the root.
+    group = {"notes": [
+        {"s": 5, "f": 3},
+        {"s": 1, "f": 7},  # lowest string index in this group
+    ]}
+    anchor = routes._group_anchor_note(group, prefer_fretted=False)
+    assert (anchor["s"], anchor["f"]) == (1, 7)  # nosec B101 - pytest assertion
+
+
+def test_notes_for_level_linked_arpeggio_via_hand_shape_still_reduces_to_one_note():
+    # A genuine authored arpeggio (hand-shape evidence) should still get the
+    # bottom-tier lowest-string (bass-note) reduction -- only
+    # unsubstantiated "run" clusters get the new preserve-the-sequence
+    # treatment.
+    groups = [{
+        "type": "arpeggio", "level": 0, "time": 0.0, "chord": None,
+        "notes": [{"t": 0.0, "s": 1, "f": 7}, {"t": 0.04, "s": 5, "f": 3}],
+    }]
+    notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
+    assert [(n["s"], n["f"]) for n in notes] == [(1, 7)]  # nosec B101 - pytest assertion
+
+
+# ---------------------------------------------------------------------------
+# Arrangement-wide tier scale: the mastery slider means the same difficulty in
+# every phrase, an easy phrase is complete early, and a hard phrase keeps a
+# full ladder even when it's hard all the way through.
+# ---------------------------------------------------------------------------
+
+def _tiered_beats(n):
+    return [{"time": i * 0.5, "measure": (i // 4 + 1) if i % 4 == 0 else -1} for i in range(n)]
+
+
+def _easy_then_hard(hard_notes):
+    easy = [{"t": float(i), "s": 1, "f": 3, "sus": 0.9} for i in range(16)]
+    return {
+        "type": "lead", "name": "lead", "tuning": [0] * 6,
+        "notes": easy + hard_notes, "chords": [], "beats": _tiered_beats(80),
+        "sections": [{"time": 0}, {"time": 16}],
+    }
+
+
+def test_easy_phrase_is_complete_at_a_lower_tier_than_a_hard_phrase():
+    hard = [{"t": 16 + i * 0.125, "s": 3 + (i % 3), "f": 14 + (i % 5), "sus": 0, "ho": i % 2 == 1}
+            for i in range(128)]
+    phrases = routes.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
+    easy_phrase, hard_phrase = phrases
+    for p in phrases:
+        _assert_on_tier_scale(p, n_levels=4)
+    # The easy verse is played in full at every slider position -- it used
+    # to be thinned at the bottom exactly as hard as the solo.
+    assert len(easy_phrase["levels"]) == 1  # nosec B101 - pytest assertion
+    assert len(easy_phrase["levels"][0]["notes"]) == 16  # nosec B101 - pytest assertion
+    # The solo differs at every tier and still has a skeleton at the bottom.
+    assert [lvl["difficulty"] for lvl in hard_phrase["levels"]] == [0, 1, 2, 3]  # nosec B101 - pytest assertion
+    counts = [len(lvl["notes"]) for lvl in hard_phrase["levels"]]
+    assert 0 < counts[0] < counts[1] < counts[2] < counts[3] == 128  # nosec B101 - pytest assertion
+
+
+def test_uniformly_hard_phrase_gets_a_full_ladder():
+    # Every note in the solo scores the same (same string, fret, technique,
+    # spacing). Depth used to come from score SPREAD, so this got the
+    # shortest ladder; the per-phrase floor now thins it evenly instead.
+    hard = [{"t": 16 + i * 0.125, "s": 4, "f": 17, "sus": 0, "tp": True} for i in range(128)]
+    phrases = routes.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
+    hard_phrase = phrases[1]
+    assert [lvl["difficulty"] for lvl in hard_phrase["levels"]] == [0, 1, 2, 3]  # nosec B101 - pytest assertion
+    bottom_times = [n["t"] for n in hard_phrase["levels"][0]["notes"]]
+    assert bottom_times, "the bottom tier must not go silent"  # nosec B101 - pytest assertion
+    # Spread across the phrase, not just its first few notes.
+    assert max(bottom_times) - min(bottom_times) > 0.75 * (hard[-1]["t"] - hard[0]["t"])  # nosec B101 - pytest assertion
+
+
+def test_all_multi_level_phrases_share_the_requested_tier_scale():
+    arr = _arrangement(_technical_notes(0, 30, step=0.1), sections=[{"time": 0}, {"time": 10}, {"time": 20}])
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=5)
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        _assert_on_tier_scale(p, n_levels=5)
+
+
+def test_tier_levels_are_nested():
+    # Each tier must contain every (onset, string) the tier below plays,
+    # counting chord members as well as single notes. Frets can legitimately
+    # differ between tiers (a simplified pre-bend is fretted at its peak), so
+    # they are not part of the key.
+    hard = [{"t": 16 + i * 0.125, "s": 3 + (i % 3), "f": 14 + (i % 5), "sus": 0} for i in range(128)]
+    arr = _easy_then_hard(hard)
+    arr["chords"] = [
+        {"t": 16.0625 + i * 1.0, "notes": [{"s": 0, "f": 3}, {"s": 1, "f": 5}, {"s": 2, "f": 5}, {"s": 3, "f": 4}]}
+        for i in range(12)
+    ]
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+
+    def played(lvl):
+        keys = {(n["t"], n["s"]) for n in lvl["notes"]}
+        keys |= {(c["t"], n["s"]) for c in lvl["chords"] for n in c["notes"]}
+        return keys
+
+    for p in phrases:
+        for lower, higher in pairwise([played(lvl) for lvl in p["levels"]]):
+            assert lower <= higher  # nosec B101 - pytest assertion
+
+
+def test_keys_phrases_use_the_tier_scale_too():
+    notes = [{"t": round(i * 0.25, 3), "s": 2 + (i % 3), "f": (i * 7) % 24, "sus": 0} for i in range(64)]
+    arr = {
+        "type": "keys", "name": "keys", "notes": notes, "chords": [],
+        "beats": _tiered_beats(64), "sections": [], "tuning": [],
+    }
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        _assert_on_tier_scale(p, n_levels=4)
+
+
+def test_spread_key_orders_positions_evenly():
+    assert [routes._spread_key(i) for i in range(4)] == [0.0, 0.5, 0.25, 0.75]  # nosec B101 - pytest assertion
+
+
+# ---------------------------------------------------------------------------
+# Chord reduction: root-only is reachable at the default tier count, and the
+# root is the LOWEST string (string 0 = lowest, feedpak-v1 §6.2).
+# ---------------------------------------------------------------------------
+
+def _chord_group(level=0):
+    chord = {"t": 1.0, "notes": [
+        {"s": 0, "f": 3}, {"s": 1, "f": 2}, {"s": 2, "f": 0},
+        {"s": 3, "f": 0}, {"s": 4, "f": 0}, {"s": 5, "f": 3},
+    ]}
+    return [{"type": "chord", "notes": list(chord["notes"]), "chord": chord,
+             "time": 1.0, "score": 0.5, "level": level}]
+
+
+def test_bottom_tier_reduces_chords_to_the_root_at_the_default_four_tiers():
+    notes, chords = routes._notes_for_level(_chord_group(), level=0, max_level=3)
+    assert chords == []  # nosec B101 - pytest assertion
+    assert [(n["s"], n["f"]) for n in notes] == [(0, 3)], "root = lowest string (a G chord's low G)"  # nosec B101 - pytest assertion
+
+
+def test_second_tier_keeps_a_partial_voicing_built_on_the_root():
+    notes, _ = routes._notes_for_level(_chord_group(), level=1, max_level=3)
+    assert len(notes) == 2  # nosec B101 - pytest assertion
+    assert (0, 3) in [(n["s"], n["f"]) for n in notes]  # nosec B101 - pytest assertion
+
+
+def test_root_only_is_not_used_when_the_bottom_tier_covers_more_than_a_quarter():
+    notes, _ = routes._notes_for_level(_chord_group(), level=0, max_level=2)
+    assert len(notes) == 2  # nosec B101 - pytest assertion
+
+
+# ---------------------------------------------------------------------------
+# Pitch-preserving technique removal.
+# ---------------------------------------------------------------------------
+
+def test_stripped_pre_bend_is_fretted_at_the_bent_pitch():
+    note = {"t": 0.0, "s": 2, "f": 7, "sus": 0.5, "bn": 2.0, "bt": 2,
+            "bnv": [{"t": 0, "v": 2.0}, {"t": 0.5, "v": 2.0}]}
+    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (9, 0, 0)  # nosec B101 - pytest assertion
+    assert "bnv" not in pruned  # nosec B101 - pytest assertion
+
+
+def test_pre_bend_below_its_intent_gate_is_fretted_not_turned_into_a_bend_up():
+    # A bend-up is struck at the unbent fret, which is a whole step flat of a
+    # pre-bend's onset -- so the intent downgrade frets the peak instead.
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 2}
+    pruned = routes._prune_techniques(note, diff_percent=0.60)
+    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (6, 0, 0)  # nosec B101 - pytest assertion
+
+
+def test_pre_bend_release_is_fretted_at_its_onset_pitch():
+    note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 2.0, "bt": 3}
+    pruned = routes._prune_techniques(note, diff_percent=0.60)
+    assert (pruned["f"], pruned["bn"], pruned["bt"]) == (7, 0, 0)  # nosec B101 - pytest assertion
+
+
+def test_bend_up_keeps_its_fret_when_stripped():
+    note = {"t": 0.0, "s": 2, "f": 7, "sus": 0, "bn": 2.0}
+    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    assert (pruned["f"], pruned["bn"]) == (7, 0)  # nosec B101 - pytest assertion
+
+
+def test_struck_at_peak_bend_without_a_fretted_equivalent_is_kept_as_authored():
+    curve = [{"t": 0, "v": 0.5}, {"t": 0.2, "v": 0.5}, {"t": 0.4, "v": 0}]
+    quarter_tone = {"t": 0.0, "s": 2, "f": 5, "sus": 0.4, "bn": 0.5, "bt": 3, "bnv": curve}
+    past_last_fret = {"t": 0.0, "s": 2, "f": 23, "sus": 0, "bn": 2.0, "bt": 2}
+    for note in (quarter_tone, past_last_fret):
+        pruned = routes._prune_techniques(note, diff_percent=0.30)
+        assert (pruned["f"], pruned["bn"], pruned["bt"]) == (note["f"], note["bn"], note["bt"])  # nosec B101 - pytest assertion
+    # "As authored" includes the curve: the bnv gate (0.80) must not strip it
+    # from a bend that was deliberately kept.
+    assert routes._prune_techniques(quarter_tone, diff_percent=0.30)["bnv"] == curve  # nosec B101 - pytest assertion
+
+
+def test_natural_harmonic_is_kept_where_stripping_would_change_its_pitch():
+    # A harmonic at fret 7 sounds the pitch of fret 19; a plain fret-7 note
+    # would be a different note entirely.
+    for fret in (5, 7, 4):
+        note = {"t": 0.0, "s": 2, "f": fret, "sus": 0, "hm": True}
+        assert routes._prune_techniques(note, diff_percent=0.30).get("hm") is True  # nosec B101 - pytest assertion
+    for fret in (12, 19, 24):
+        note = {"t": 0.0, "s": 2, "f": fret, "sus": 0, "hm": True}
+        assert "hm" not in routes._prune_techniques(note, diff_percent=0.30)  # nosec B101 - pytest assertion
+
+
+def test_explicit_false_flags_do_not_keep_a_duplicate_tier_alive():
+    # Importers commonly write every boolean flag explicitly ("ho": false).
+    # Gating pops the key, so without normalising false == absent the pruned
+    # tier and the untouched top tier compared as different.
+    pruned = {"t": 0, "s": 0, "f": 0, "sus": 0.6, "sl": -1, "slu": -1, "bn": 0.0}
+    source = dict(pruned, ho=False, po=False, pm=False, tp=False)
+    assert routes._canonical_note_for_compare(pruned) == routes._canonical_note_for_compare(source)  # nosec B101 - pytest assertion
+    levels = [
+        {"difficulty": 0, "notes": [pruned], "chords": [], "anchors": [], "handshapes": []},
+        {"difficulty": 1, "notes": [source], "chords": [], "anchors": [], "handshapes": []},
+    ]
+    assert [lvl["difficulty"] for lvl in routes._collapse_identical_levels(levels)] == [0]  # nosec B101 - pytest assertion
+
+
+@pytest.mark.skip(
+    reason="Complex integration test scenario is covered by unit tests: "
+    "test_instrument_kind_detects_drums_by_name_when_type_is_blank, "
+    "test_instrument_kind_detects_unsupported_by_name_when_type_is_blank, "
+    "and test_instrument_kind_blank_type_with_fretted_names_still_defaults_to_fretted. "
+    "This would test a seven-arrangement pack with missing types for Sax/Drums/Drums 2."
+)
+def test_missing_arrangement_type_detects_unsupported_by_name_issue_102():
+    """Regression test for issue #102: missing arrangement type should not
+    silently mean fretted for names identifying drums, sax, or other
+    unsupported instruments.
+
+    Scenario: a feedpak with seven arrangements (Lead, Combo, Bass, Sax,
+    Keys, Drums, Drums 2) where Sax, Drums, and Drums 2 have blank type
+    fields. The generator should skip all three and report their reasons
+    accurately, generating only the four supported arrangements.
+    """
+    class _Lock:
+        def __enter__(self) -> "_Lock":
+            return self
+
+        def __exit__(self, *args: object) -> bool:
+            return False
+
+    # Create a mock manifest with seven arrangements
+    manifest = {
+        "title": "Money",
+        "artist": "Pink Floyd",
+        "duration": 300.0,
+        "arrangements": [
+            {"id": "lead", "name": "Lead", "file": "arrangements/lead.json"},
+            {"id": "combo", "name": "Combo", "file": "arrangements/combo.json"},
+            {"id": "bass", "name": "Bass", "file": "arrangements/bass.json"},
+            # Sax with blank type (should be detected as unsupported by name)
+            {"id": "sax", "name": "Sax", "file": "arrangements/sax.json"},
+            # Keys with blank type (should be detected by name)
+            {"id": "keys", "name": "Keys", "file": "arrangements/keys.json"},
+            # Drums with blank type (should be detected as unsupported by name)
+            {"id": "drums", "name": "Drums", "file": "arrangements/drums.json"},
+            # Drums 2 with blank type (should be detected as unsupported by name)
+            {"id": "drums2", "name": "Drums 2", "file": "arrangements/drums2.json"},
+        ],
+        "stems": [{"id": "full", "file": "stems/full.ogg"}],
+    }
+
+    # Create mock arrangement data for each one
+    def _make_arr(name):
+        return {
+            "name": name,
+            # Intentionally omit "type" to simulate the bug scenario
+            "notes": [
+                {"t": 0.0, "s": 0, "f": 5, "sus": 0.2},
+                {"t": 0.5, "s": 1, "f": 7, "sus": 0.2},
+                {"t": 1.0, "s": 2, "f": 9, "sus": 0.2},
+            ],
+            "chords": [],
+            "beats": [{"time": i * 0.5} for i in range(100)],
+            "sections": [],
+            "anchors": [],
+            "handshapes": [],
+        }
+
+    # Keys arrangement should explicitly have type set to trigger keys path
+    keys_arr = _make_arr("Keys")
+    keys_arr["type"] = "keys"
+
+    load_results = {
+        0: ("arrangements/lead.json", _make_arr("Lead"), None),  # supported fretted
+        1: ("arrangements/combo.json", _make_arr("Combo"), None),  # supported fretted
+        2: ("arrangements/bass.json", _make_arr("Bass"), None),  # supported fretted
+        3: ("arrangements/sax.json", _make_arr("Sax"), None),  # unsupported by name
+        4: ("arrangements/keys.json", keys_arr, None),  # supported keys
+        5: ("arrangements/drums.json", _make_arr("Drums"), None),  # unsupported by name
+        6: ("arrangements/drums2.json", _make_arr("Drums 2"), None),  # unsupported by name
+    }
+
+    def _mock_load_manifest(pack_path, idx):
+        return load_results[idx]
+
+    with patch.object(
+        routes, "_lock_for_pack", return_value=_Lock()
+    ), patch.object(routes, "sloppak") as mock_sloppak, patch.object(
+        routes, "_load_manifest_and_arrangement", side_effect=_mock_load_manifest
+    ), patch.object(
+        routes, "generate_phrases_for_arrangement", return_value=[
+            {"difficulty": 0, "notes": [], "chords": [], "anchors": [], "handshapes": []}
+        ]
+    ):
+        mock_sloppak.load_manifest.return_value = manifest
+
+        results = {}
+        for i in range(7):
+            result = routes._generate_one(
+                Path("test.feedpak"), i, n_levels=4, force=False,
+                log=logging.getLogger(__name__)
+            )
+            results[i] = result
+
+    # Verify the results
+    # Indices 0, 1, 2, 4 should be generated (supported)
+    for idx in [0, 1, 2, 4]:
+        assert results[idx]["ok"] is True  # nosec B101 - pytest assertion
+        # Supported arrangements should not have skipped reason
+
+    # Indices 3, 5, 6 should be skipped as unsupported
+    for idx, expected_name in [(3, "Sax"), (5, "Drums"), (6, "Drums 2")]:
+        assert results[idx]["ok"] is True  # nosec B101 - pytest assertion
+        assert results[idx]["skipped"] is not None  # nosec B101 - pytest assertion
+        # For drums, expect "unsupported-instrument-drums", for others "unsupported-instrument-type"
+        if expected_name in ("Drums", "Drums 2"):
+            # Name-sniffed as drums when type is blank
+            assert results[idx]["skipped"] == "unsupported-instrument-drums"  # nosec B101 - pytest assertion
+            assert results[idx]["instrument"] == "drums"  # nosec B101 - pytest assertion
+        elif expected_name == "Sax":
+            # Name-sniffed as unsupported
+            assert results[idx]["skipped"] == "unsupported-instrument-type"  # nosec B101 - pytest assertion
+            assert results[idx]["instrument"] == "unsupported"  # nosec B101 - pytest assertion

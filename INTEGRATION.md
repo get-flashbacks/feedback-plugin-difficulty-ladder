@@ -84,6 +84,25 @@ there is exactly one place this arithmetic is written. See
 `tests/screen.test.js`'s `_tierFillFrac` and
 `calculateAndEmitSectionDifficulties` tests.
 
+**Tier scale (`top_difficulty`).** Generated ladders put every phrase on one
+arrangement-wide tier scale: `max_difficulty` is the scale's top tier for
+every phrase with a ladder, and a phrase that is complete early has sparse
+level numbers (see README → "One difficulty scale per song"). So
+`max_difficulty` no longer says how hard a phrase is. Core's
+`getPhrases()` also reports `top_difficulty`, the tier from which the phrase
+plays in full, and the glasses use that instead
+(`_phraseTopDifficulty`, falling back to `max_difficulty` on an older core):
+
+- glass height and `glassSize` scale with `top_difficulty`, and the payload's
+  `maxDifficulty` / `avgDifficulty` are `top_difficulty` values;
+- `_tierFillFrac(mastery, max_difficulty, top_difficulty)` picks the tier on
+  the phrase's own scale exactly as before, then fills against the top:
+  `fillFrac = min(1, idxLevel / top_difficulty)` — an easy phrase is full as
+  soon as the slider reaches the tier it is complete at. With
+  `top_difficulty === max_difficulty` (every fully authored ladder) this is
+  the formula above, unchanged.
+- A section's fill uses its hardest overlapping phrase (by `top_difficulty`).
+
 ## Fallback, timing, and stale-event behavior
 
 - **Missing/delayed phrase data:** `calculateAndEmitSectionDifficulties()`

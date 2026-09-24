@@ -174,13 +174,94 @@ test('_tierFillFrac clamps out-of-range mastery instead of over/under-filling', 
     assert.deepEqual(mod._tierFillFrac(2, 3), { idxLevel: 3, fillFrac: 1 });
 });
 
-function stubHighwayForSectionDifficulty({ sections, phrases, mastery }) {
+test('_tierFillFrac fills a phrase that is complete below the top of its tier scale', () => {
+    const mod = freshPlugin();
+    // Generated ladder: 4-tier scale (max 3), phrase complete from tier 1.
+    assert.deepEqual(mod._tierFillFrac(0.1, 3, 1), { idxLevel: 0, fillFrac: 0 });
+    assert.deepEqual(mod._tierFillFrac(0.3, 3, 1), { idxLevel: 1, fillFrac: 1 });
+    assert.deepEqual(mod._tierFillFrac(0.9, 3, 1), { idxLevel: 3, fillFrac: 1 });
+    // top === max behaves exactly like the two-argument form.
+    assert.deepEqual(mod._tierFillFrac(0.74, 3, 3), mod._tierFillFrac(0.74, 3));
+    // A single-level phrase (top 0) on a scale is always full.
+    assert.equal(mod._tierFillFrac(0.0, 3, 0).fillFrac, 1);
+});
+
+test('_phraseTopDifficulty prefers core top_difficulty and falls back to max_difficulty', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._phraseTopDifficulty({ max_difficulty: 3, top_difficulty: 1 }), 1);
+    assert.equal(mod._phraseTopDifficulty({ max_difficulty: 3 }), 3);
+    assert.equal(mod._phraseTopDifficulty({}), 0);
+});
+
+test('calculateAndEmitSectionDifficulties sizes and fills sections by the tier each phrase is complete at', () => {
+    const mod = freshPlugin();
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Solo' }],
+        phrases: [
+            { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 },
+            { start_time: 10, end_time: 20, max_difficulty: 3, top_difficulty: 3 },
+        ],
+        mastery: 0.3,
+    });
+    let emitted = null;
+    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    const [verse, solo] = [emitted.detail.sectionDifficulties[0], emitted.detail.sectionDifficulties[1]];
+    assert.equal(verse.maxDifficulty, 1);
+    assert.equal(verse.fillPercentage, 100, 'the easy verse is already played in full at tier 1');
+    assert.equal(verse.glassSize, 'medium');
+    assert.equal(solo.maxDifficulty, 3);
+    assert.equal(solo.fillPercentage, (1 / 3) * 100);
+    assert.equal(solo.glassSize, 'large');
+});
+
+function stubHighwayForSectionDifficulty({ sections, phrases, mastery, notes, chords }) {
     return {
         getSections: () => sections,
         getPhrases: () => phrases,
         getMastery: () => mastery,
+        getNotes: () => notes || [],
+        getChords: () => chords || [],
     };
 }
+
+test('a section of single-level phrases is full when it has notes and empty when it has none', () => {
+    const mod = freshPlugin();
+    // Generated easy phrases collapse to one level (max_difficulty 0): they
+    // play in full at every slider position, so the section glass is full,
+    // matching drawHud. A silent section with the same shape stays at 0%.
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Break' }, { time: 20, name: 'Solo' }],
+        phrases: [
+            { start_time: 0, end_time: 10, max_difficulty: 0, top_difficulty: 0 },
+            { start_time: 10, end_time: 20, max_difficulty: 0, top_difficulty: 0 },
+            { start_time: 20, end_time: 30, max_difficulty: 3, top_difficulty: 3 },
+        ],
+        notes: [{ t: 1, s: 0, f: 3 }, { t: 22, s: 2, f: 7 }],
+        chords: [{ t: 4, notes: [{ s: 0, f: 3 }] }],
+        mastery: 0.1,
+    });
+    let emitted = null;
+    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    const sections = emitted.detail.sectionDifficulties;
+    assert.equal(sections[0].fillPercentage, 100, 'easy verse with notes is played in full');
+    assert.equal(sections[1].fillPercentage, 0, 'a silent break is not shown as mastered');
+    assert.equal(sections[2].fillPercentage, 0, 'the solo is at its bottom tier at 10%');
+});
+
+test('_chartHasContentIn checks notes and chords in a half-open window', () => {
+    const mod = freshPlugin();
+    const hw = { getNotes: () => [{ t: 5 }], getChords: () => [{ t: 12 }] };
+    assert.equal(mod._chartHasContentIn(hw, 0, 5), false, 'end is exclusive');
+    assert.equal(mod._chartHasContentIn(hw, 5, 6), true);
+    assert.equal(mod._chartHasContentIn(hw, 10, Infinity), true, 'chords count');
+    assert.equal(mod._chartHasContentIn({}, 0, Infinity), false, 'no getters, no content');
+});
 
 test('calculateAndEmitSectionDifficulties fills each section using the same discrete tier drawHud() uses', () => {
     const mod = freshPlugin();
