@@ -116,6 +116,7 @@ def test_canonical_section_times_create_one_phrase_per_section_including_an_empt
     # one-phrase-per-section contract intact.
     assert phrases[2]["max_difficulty"] == 0
     assert phrases[2]["levels"][0]["notes"] == []
+    assert phrases[2]["difficulty_cost"] == 0.0  # nosec B101 - pytest assertion
 
 
 def test_dense_technical_phrase_uses_more_of_the_cap_than_a_simple_one():
@@ -160,15 +161,6 @@ def test_difficulty_cost_is_independent_of_ladder_depth():
     assert easy_phrases[0]["max_difficulty"] == 0  # nosec B101 - pytest assertion
     assert hard_phrases[0]["max_difficulty"] == 0  # nosec B101 - pytest assertion
     assert hard_phrases[0]["difficulty_cost"] > easy_phrases[0]["difficulty_cost"]  # nosec B101
-
-
-def test_empty_section_phrase_reports_zero_difficulty_cost():
-    arr = _arrangement(_simple_notes(0, 2, step=0.2, fret=3))
-    phrases = routes.generate_phrases_for_arrangement(
-        arr, n_levels=4, section_times=[0, 2, 6]
-    ) or []
-    assert phrases[2]["levels"][0]["notes"] == []  # nosec B101 - pytest assertion
-    assert phrases[2]["difficulty_cost"] == 0.0  # nosec B101 - pytest assertion
 
 
 def test_bottom_tier_is_sparser_than_a_flat_percentile_split():
