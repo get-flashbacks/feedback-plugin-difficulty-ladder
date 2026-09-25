@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Read-only Chordr chord-grouping preview for fretted arrangements. Reports
+  identified chord names and continuation/parent indices without changing
+  existing generation behavior or song packs.
+
 ### Fixed
 - Kept generated Keys tiers monotonic by preserving an easier tier's octave
   representative when harder tiers add octave-equivalent middle voices.
