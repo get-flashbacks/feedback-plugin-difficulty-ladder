@@ -418,7 +418,8 @@ def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4,
     for ch in chords:
         groups.append({
             "type": "chord", "notes": list(ch.get("notes", []) or []), "chord": ch,
-            "time": float(ch.get("t", 0)), "score": 0.0, "level": 0,
+            "time": float(ch.get("t", 0)), "cost": 0.0, "value": 0.0,
+            "retention_score": 0.0, "level": 0,
         })
 
     solo = sorted((dict(n) for n in notes), key=lambda n: float(n.get("t", 0)))
@@ -453,7 +454,8 @@ def _group_notes(notes, chords, *, time_window_ms=150, fret_span_max=4,
                 cluster, hand_shapes=hand_shapes, chord_templates=chord_templates,
             ),
             "notes": cluster, "chord": None,
-            "time": float(cluster[0].get("t", 0)), "score": 0.0, "level": 0,
+            "time": float(cluster[0].get("t", 0)), "cost": 0.0, "value": 0.0,
+            "retention_score": 0.0, "level": 0,
         })
 
     groups.sort(key=lambda g: g["time"])
@@ -579,7 +581,9 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
     for gi, g in enumerate(groups):
         ns = g["notes"]
         if not ns:
-            g["score"] = 0.0
+            g["cost"] = 0.0
+            g["value"] = 0.0
+            g["retention_score"] = 0.0
             continue
         avg_fret = sum(n.get("f", 0) for n in ns) / len(ns)
         count_ratio = min(1.0, (len(ns) - 1) / max(n_strings - 1, 1))
@@ -597,25 +601,43 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
                       + _SYNCOPATION_DENSITY_WEIGHT * syncopation)
         max_sus = max(float(n.get("sus", 0)) for n in ns)
         sustain_ease = min(1.0, max_sus / tempo.sustain_ease_norm_seconds)
-        g["score"] = (
+        base_cost = (
             0.35 * fretting + 0.30 * technique + 0.20 * density + 0.15 * (1.0 - sustain_ease)
         )
-        # Easier tiers should retain rhythmic landmarks and avoid introducing
-        # hand jumps that are absent between neighbouring authored groups.
-        if _is_beat_aligned(g["time"], beat_times, tolerance=tempo.beat_tolerance):
-            g["score"] -= 0.12
+        # Cost is purely mechanical. Retention value is tracked separately so
+        # later policies can change what is worth preserving without rewriting
+        # the intrinsic difficulty model.
+        value = float(
+            _is_beat_aligned(g["time"], beat_times, tolerance=tempo.beat_tolerance)
+        )
+        cost = base_cost
+        # Keep the legacy operation order byte-for-byte: base score, beat
+        # discount, jump bonuses, final clamp. Computing this as
+        # `cost - 0.12 * value` after adding the jumps is algebraically equal
+        # but can round to a different float.
+        retention_score = base_cost
+        if value:
+            retention_score -= 0.12
         if gi and float(g["time"]) - float(groups[gi - 1]["time"]) <= tempo.fret_jump_window_seconds:
             prev = _group_anchor_note(groups[gi - 1])
             cur = _group_anchor_note(g)
             if prev and cur:
                 fret_jump = abs(int(cur.get("f", 0)) - int(prev.get("f", 0)))
-                g["score"] += min(0.18, max(0, fret_jump - 5) * 0.03)
+                fret_jump_bonus = min(0.18, max(0, fret_jump - 5) * 0.03)
+                cost += fret_jump_bonus
+                retention_score += fret_jump_bonus
                 string_jump = abs(int(cur.get("s", 0)) - int(prev.get("s", 0)))
-                g["score"] += min(
+                string_jump_bonus = min(
                     _STRING_JUMP_MAX_BONUS,
                     max(0, string_jump - _STRING_JUMP_THRESHOLD) * _STRING_JUMP_COEF,
                 )
-        g["score"] = max(0.0, min(1.0, g["score"]))
+                cost += string_jump_bonus
+                retention_score += string_jump_bonus
+        # `cost` is deliberately left unclamped (it can exceed 1.0) and does
+        # not affect ranking yet — only `retention_score` feeds tiering.
+        g["cost"] = cost
+        g["value"] = value
+        g["retention_score"] = max(0.0, min(1.0, retention_score))
 
 
 # Retention-curve exponent: how sparse the bottom of a ladder is relative to
@@ -684,7 +706,7 @@ def _tier_thresholds(scores, n_tiers, curve_exponent=_RETENTION_CURVE_EXPONENT):
 def _spread_key(index):
     """Van der Corput (base-2 radical inverse) value of `index` — an ordering
     of 0, 1, 2, … that visits positions evenly across the range (0, 0.5,
-    0.25, 0.75, …). Used to break score ties in the per-phrase floor so a
+    0.25, 0.75, …). Used to break retention-score ties in the per-phrase floor so a
     run of equally hard notes is thinned evenly across the phrase rather than
     keeping only its first few notes."""
     result, denom = 0.0, 1.0
@@ -706,11 +728,11 @@ def _assign_tiers(groups, n_tiers, global_thresholds, beat_times=(), *, tempo=No
     total = len(groups)
     in_time_order = sorted(range(total), key=lambda i: groups[i]["time"])
     position = {gi: pos for pos, gi in enumerate(in_time_order)}
-    # Ties in score go to beat-aligned groups first: a thinned tier keeps
-    # its rhythmic landmarks up front (the same bias _score_groups's -0.12
-    # applies), then _spread_key spreads the rest.
+    # Ties in retention score go to beat-aligned groups first: a thinned tier
+    # keeps its rhythmic landmarks up front (the same bias represented by
+    # value applies), then _spread_key spreads the rest.
     ranked = sorted(range(total), key=lambda i: (
-        groups[i]["score"],
+        groups[i]["retention_score"],
         0 if _is_beat_aligned(groups[i]["time"], beat_times, tolerance=tempo.beat_tolerance) else 1,
         _spread_key(position[i]),
     ))
@@ -719,7 +741,7 @@ def _assign_tiers(groups, n_tiers, global_thresholds, beat_times=(), *, tempo=No
     ]
     for rank, gi in enumerate(ranked):
         floor_level = next((k for k, count in enumerate(floor_counts) if rank < count), top)
-        global_level = sum(1 for t in global_thresholds if groups[gi]["score"] > t)
+        global_level = sum(1 for t in global_thresholds if groups[gi]["retention_score"] > t)
         groups[gi]["level"] = min(floor_level, global_level, top)
 
 
@@ -749,7 +771,7 @@ def _best_bridge_candidate(groups_sorted, group_times, left, right, level, beat_
             beat_penalty = 0 if _is_beat_aligned(candidate["time"], beat_times, tolerance=tempo.beat_tolerance) else 1
             candidates.append((
                 worst_jump, worst_string_jump, beat_penalty,
-                candidate["score"], candidate["time"], candidate,
+                candidate["retention_score"], candidate["time"], candidate,
             ))
     return min(candidates, key=lambda item: item[:5])[5] if candidates else None
 
@@ -810,7 +832,7 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
     for level in range(max_level):
         kept = [g for g in groups_sorted if g["level"] <= level]
         if beat_groups and not any(g in beat_groups for g in kept):
-            min(beat_groups, key=lambda g: (g["score"], g["time"]))["level"] = level
+            min(beat_groups, key=lambda g: (g["retention_score"], g["time"]))["level"] = level
             kept = [g for g in groups_sorted if g["level"] <= level]
 
         while _promote_bridge_candidate(kept, groups_sorted, group_times, beat_times, level, max_jump,
@@ -1266,7 +1288,8 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
     for ch in chords:
         groups.append({
             "type": "chord", "notes": list(ch.get("notes", []) or []), "chord": ch,
-            "time": float(ch.get("t", 0)), "score": 0.0, "level": 0,
+            "time": float(ch.get("t", 0)), "cost": 0.0, "value": 0.0,
+            "retention_score": 0.0, "level": 0,
         })
 
     note_list = sorted((dict(n) for n in notes), key=lambda n: float(n.get("t", 0)))
@@ -1282,7 +1305,8 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
         groups.append({
             "type": "chord" if len(cluster) > 1 else "note",
             "notes": cluster, "chord": None,
-            "time": base_t, "score": 0.0, "level": 0,
+            "time": base_t, "cost": 0.0, "value": 0.0,
+            "retention_score": 0.0, "level": 0,
         })
         i = j
 
@@ -1297,7 +1321,9 @@ def _score_groups_keys(groups, *, tempo=None):
     for gi, g in enumerate(groups):
         ns = g["notes"]
         if not ns:
-            g["score"] = 0.0
+            g["cost"] = 0.0
+            g["value"] = 0.0
+            g["retention_score"] = 0.0
             continue
         midis = [_note_midi_keys(n) for n in ns]
 
@@ -1320,10 +1346,13 @@ def _score_groups_keys(groups, *, tempo=None):
         max_sus = max(float(n.get("sus", 0)) for n in ns)
         sustain_ease = min(1.0, max_sus / 2.0)
 
-        g["score"] = (
+        cost = (
             0.30 * poly + 0.25 * span_score + 0.20 * density
             + 0.15 * speed + 0.10 * (1.0 - sustain_ease)
         )
+        g["cost"] = cost
+        g["value"] = 0.0
+        g["retention_score"] = cost
 
 
 def _collapse_octave_duplicates(ns, preferred=()):
@@ -1662,7 +1691,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         link_next_keep_ids = _global_link_next_survivors(groups_all)
 
     top_tier = n_levels - 1
-    global_thresholds = _tier_thresholds([g["score"] for g in groups_all], n_levels)
+    global_thresholds = _tier_thresholds([g["retention_score"] for g in groups_all], n_levels)
 
     phrases_out = []
     for t0, t1 in windows:
@@ -1670,7 +1699,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         if not phrase_groups:
             # Preserve the canonical Section Map boundary in this arrangement.
             # An empty level is intentional: there is no chart content to
-            # score/filter here, but dropping the phrase would shift all later
+            # assign/filter here, but dropping the phrase would shift all later
             # phrases out of one-to-one alignment with the song timeline.
             phrases_out.append({
                 "start_time": round(t0, 3),
@@ -1690,7 +1719,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # at every tier.
         _assign_tiers(phrase_groups, n_levels, global_thresholds, beat_times, tempo=tempo)
         # Per-phrase refinement (promoting beat/bridge anchors) breaks consistent
-        # difficulty mapping: equally-scored groups can end up at different tiers
+        # difficulty mapping: equal-retention groups can end up at different tiers
         # when one phrase's local playability needs trigger promotions that don't
         # occur in another phrase. Disabling it preserves the shared global tier
         # scale. _refine_lower_tier_path and its bridge helpers (routes.py

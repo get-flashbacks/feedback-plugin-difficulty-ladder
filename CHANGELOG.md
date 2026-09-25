@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   representative when harder tiers add octave-equivalent middle voices.
 
 ### Changed
+- Split generated-note mechanical cost from rhythmic retention value internally,
+  while preserving the existing ladder output and ranking behavior.
 - **Generated ladders use one difficulty scale per song.** Levels used to be
   per-phrase percentiles, with each phrase's depth taken from its score
   spread — so an easy verse was thinned at the bottom exactly as hard as the
