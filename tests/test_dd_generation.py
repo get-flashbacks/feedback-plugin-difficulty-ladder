@@ -2192,9 +2192,9 @@ def test_chord_preview_forwards_fretted_data_without_writing(tmp_path):
     assert before == {p.relative_to(pack): p.read_bytes() for p in pack.rglob("*") if p.is_file()}
 
 
-def test_chord_preview_does_not_infer_bass_from_name_fragment(tmp_path):
+def test_chord_preview_does_not_infer_bass_from_an_unrelated_name(tmp_path):
     arr = _arrangement([])
-    arr["name"] = "Ambassador Lead"
+    arr["name"] = "Lead Guitar"
     _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
     client = _client_for(tmp_path)
     contexts = []
@@ -2203,6 +2203,27 @@ def test_chord_preview_does_not_infer_bass_from_name_fragment(tmp_path):
     )
     assert _preview(client).status_code == 200
     assert contexts[0]["isBass"] is False
+
+
+def test_chord_preview_matches_core_substring_semantics_including_surprising_cases(tmp_path):
+    """#106/B5 follow-up (pullfrog): this endpoint's isBass now uses
+    _is_bass_arrangement, matching lib/song.py's arrangement_is_bass()
+    exactly -- a bare case-insensitive "bass" substring in the name, not
+    a \\bbass\\b word-boundary match. That is core's real, if surprising,
+    behavior (not a bug introduced here): "Ambassador" contains "bass"
+    as a substring, so core would already treat an arrangement literally
+    named "Ambassador Lead" as a bass part, and this endpoint must agree
+    with core rather than being more conservative than it."""
+    arr = _arrangement([])
+    arr["name"] = "Ambassador Lead"
+    _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    client = _client_for(tmp_path)
+    contexts = []
+    client.app.state.chordr_analyze_chart_chords_v1 = (
+        lambda chords, *, context, templates: contexts.append(context) or {}
+    )
+    assert _preview(client).status_code == 200  # nosec B101 - pytest assertion
+    assert contexts[0]["isBass"] is True  # nosec B101 - pytest assertion
 
 
 def test_chord_preview_infers_bass_from_legacy_name(tmp_path):

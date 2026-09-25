@@ -2743,24 +2743,21 @@ def setup(app, context):
         # (manifest entry first, embedded fallback) -- a manifest entry
         # authored as a bass part must still select Chordr's bass
         # base-string row even when the embedded arrangement's own
-        # type/name doesn't say so. Deliberately keeps this endpoint's
-        # existing \bbass\b word-boundary match rather than switching to
-        # _is_bass_arrangement's bare substring (core's real semantics,
-        # used for generation's is_bass above): that would also flip
-        # this endpoint's pre-existing, intentional "Ambassador" ==
-        # not-bass behavior (see
-        # test_chord_preview_does_not_infer_bass_from_name_fragment),
-        # a separate, unrelated behavior change this fix doesn't need
-        # to make.
+        # type/name doesn't say so. Now uses _is_bass_arrangement (core's
+        # real substring semantics) for consistency with generation's
+        # is_bass, instead of this endpoint's previous narrower
+        # \bbass\b word-boundary match -- see the updated
+        # test_chord_preview_does_not_infer_bass_from_name_fragment for
+        # the resulting "Ambassador" behavior change (matches core, not
+        # a new bug: core's own arrangement_is_bass() has always used a
+        # bare substring, so this was already surprising there).
         effective_type = (entry.get("type") if entry else None) or arr.get("type", "")
         effective_name = (entry.get("name") if entry else None) or arr.get("name", "")
         analysis_context = {
             "tuning": tuning,
             "capo": arr.get("capo", 0) or 0,
             "stringCount": len(tuning) or 6,
-            "isBass": bool(re.search(
-                r"\bbass\b", f"{effective_type or ''} {effective_name or ''}", re.IGNORECASE
-            )),
+            "isBass": _is_bass_arrangement(effective_type, effective_name),
         }
         try:
             analysis = analyze(

@@ -73,7 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a manifest entry authored as a bass part over a differently-labeled
   embedded arrangement was reading the wrong 5-string interval row. The
   `analyze-chords` preview's own `isBass` Chordr-context field resolves
-  the same effective name/type.
+  the same effective name/type, now also matching feedBack core's exact
+  bass-detection substring semantics (a bare case-insensitive "bass" in
+  the name, not a narrower word-boundary match) for consistency with
+  generation's own `is_bass`.
 
 ### Changed
 - Split generated-note mechanical cost from rhythmic retention value internally,
