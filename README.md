@@ -150,7 +150,18 @@ contract.
   tuning intervals (plus the arrangement's own per-string `tuning`
   offsets) rather than an exact MIDI pitch, since only the rise/fall
   *direction* between neighboring notes matters for finding a turning
-  point, not its precise size.
+  point, not its precise size. Two single-note groups that shouldn't be
+  compared at all — either side of an intervening chord section, or the
+  end of one authored phrase and the start of an unrelated one — are
+  excluded from each other's neighbor comparison when they're more than
+  `tempo.fret_jump_window_seconds` apart (the same tempo-relative "long
+  enough that this isn't one continuous passage" threshold the fret-jump
+  bonus already uses). This is a time-gap heuristic, not true phrase
+  awareness: two genuinely separate phrases close enough in time to fall
+  inside that window can still be compared as if they were one
+  continuous line. A real fix needs the same phrase/section boundaries
+  the generator's windowing already has threaded into this scan, which
+  is a larger change than this item's effort-S scope covers.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
