@@ -696,7 +696,20 @@ def _beat_strength(t, tempo):
             return grid[j][1]
     left_idx = max(0, min(i - 1, len(grid_times) - 1))
     left_t = grid_times[left_idx]
-    frac = ((float(t) - left_t) / tempo.beat_interval) % 1.0
+    right_idx = left_idx + 1
+    # Local interval between the two actual surrounding grid beats, not the
+    # arrangement-wide median -- a tempo change (or a click-track glitch)
+    # would otherwise misclassify subdivisions in the deviating passage
+    # (caught in PR #123 review). Only the trailing edge (t past the last
+    # known beat) has no "next" beat to measure from, so it falls back to
+    # the median as a reasonable extrapolation.
+    local_interval = (
+        grid_times[right_idx] - left_t if right_idx < len(grid_times)
+        else tempo.beat_interval
+    )
+    if not local_interval or local_interval <= 0:
+        return _STRENGTH_OFF_GRID
+    frac = ((float(t) - left_t) / local_interval) % 1.0
     if abs(frac - 0.5) <= _SUBDIVISION_TOLERANCE_FRACTION:
         return _STRENGTH_EIGHTH
     if min(abs(frac - 0.25), abs(frac - 0.75)) <= _SUBDIVISION_TOLERANCE_FRACTION:

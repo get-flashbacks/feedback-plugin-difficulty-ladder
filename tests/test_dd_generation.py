@@ -1038,6 +1038,31 @@ def test_beat_value_grades_metrical_strength_with_a_downbeat_grid():
     assert routes._beat_value(0.0625, beat_times, tempo) == routes._STRENGTH_OFF_GRID  # nosec B101
 
 
+def test_beat_strength_subdivision_uses_the_local_interval_not_the_median():
+    """Regression for a real bug caught in PR #123 review: subdivision
+    classification used the arrangement-wide MEDIAN beat_interval, so a
+    tempo change would misclassify subdivisions in the deviating passage.
+    Here a long slow (0.5s) section sets the median, then a short fast
+    (0.2s) section follows -- the eighth point of the fast section (0.1s
+    past its beat) must classify against the LOCAL 0.2s interval (eighth,
+    frac 0.5) rather than the stale 0.5s median (which reads the same
+    offset as frac 0.2 -- close enough to land on the SIXTEENTH point at
+    0.25, the wrong subdivision entirely)."""
+    beats, t = [], 0.0
+    for i in range(16):
+        beats.append({"time": round(t, 6), "measure": 0 if i % 4 == 0 else -1})
+        t += 0.5
+    for i in range(8):
+        beats.append({"time": round(t, 6), "measure": 0 if i % 4 == 0 else -1})
+        t += 0.2
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    assert tempo.beat_interval == pytest.approx(0.5)  # nosec B101 - the stale median
+    fast_section_start = beats[16]["time"]
+    eighth_point = fast_section_start + 0.1  # frac 0.5 of the local 0.2s interval
+    assert routes._beat_value(eighth_point, beat_times, tempo) == routes._STRENGTH_EIGHTH  # nosec B101
+
+
 def test_syncopation_score_penalizes_a_silent_stronger_position():
     """Longuet-Higgins & Lee (1984)-style: a note on a weak position is more
     syncopated when a stronger position before the next onset stays silent.
