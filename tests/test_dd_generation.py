@@ -176,15 +176,103 @@ def test_bottom_tier_is_sparser_than_a_flat_percentile_split():
     assert bottom_count / top_count < 1.0 / 4  # nosec B101 - pytest assertion
 
 
+def test_downbeat_group_ranks_into_a_lower_tier_than_an_equally_hard_off_grid_group():
+    """#104 acceptance criterion: on a metrically regular fixture, a
+    downbeat is preferentially kept over an equally-hard off-grid group."""
+    beats = _four_four_beats(2)
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    groups = [
+        {"time": 0.0, "notes": [{"s": 0, "f": 5, "sus": 0}]},   # on the downbeat
+        {"time": 0.35, "notes": [{"s": 0, "f": 5, "sus": 0}]},  # off-grid, identical shape
+    ]
+    routes._score_groups(groups, n_strings=6, beat_times=beat_times, tempo=tempo)
+    assert groups[0]["retention_score"] < groups[1]["retention_score"]  # nosec B101 - pytest assertion
+    routes._assign_tiers(groups, n_tiers=4, global_thresholds=[0.2, 0.4, 0.6], beat_times=beat_times, tempo=tempo)
+    assert groups[0]["level"] <= groups[1]["level"]  # nosec B101 - pytest assertion
+
+
+def test_authored_phrase_keeps_its_first_and_last_group_at_the_bottom_tier():
+    """#105 acceptance criterion: on an authored-phrase fixture, the lowest
+    tier keeps the phrase's first and last group whenever the rest of the
+    tier allows it. Notes are well-separated (0.5s) so each is its own
+    group -- the boundary bonus applies at group granularity, not to a
+    specific note inside a multi-note cluster."""
+    technical = [
+        {"t": round(i * 0.5, 3), "s": i % 6, "f": 3 + (i % 10),
+         "bn": 1.0 if i % 3 == 0 else 0, "sus": 0}
+        for i in range(16)
+    ]
+    arr = {
+        "type": "lead", "name": "lead", "notes": technical, "chords": [],
+        "beats": [{"time": i * 0.5} for i in range(20)], "sections": [], "tuning": [0] * 6,
+    }
+    with patch.object(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", 0.9):
+        phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6, section_times=[0, 20])
+    bottom = {float(n["t"]) for n in phrases[0]["levels"][0]["notes"]}
+    assert float(technical[0]["t"]) in bottom  # nosec B101 - pytest assertion
+    assert float(technical[-1]["t"]) in bottom  # nosec B101 - pytest assertion
+
+
+def test_generated_window_bonus_applies_only_at_song_start_and_song_end():
+    """#105 acceptance criterion, refined in PR #123 review: generated
+    windows (no authored sections) don't get the phrase-boundary bonus at
+    an INTERNAL window edge -- but the very first window's start and the
+    very LAST window's end are always genuine song boundaries (both
+    generated-window builders clamp the final window's end to the song's
+    actual duration), so both of those get the bonus even though the
+    windows themselves aren't authored phrases."""
+    hard = {"s": 5, "f": 20, "bn": 1.0, "bt": 3, "tp": True, "sus": 0}
+    easy0 = [{"t": round(i * 0.3, 3), "s": 0, "f": 0, "sus": 0} for i in range(1, 100) if i * 0.3 < 30]
+    easy1 = [{"t": round(30 + i * 0.3, 3), "s": 0, "f": 0, "sus": 0} for i in range(1, 99) if 30 + i * 0.3 < 59.8]
+    notes = (
+        [{**hard, "t": 0.0}] + easy0 + [{**hard, "t": 30.0}] + easy1
+        # A small sustain nudges `duration` past this note's own onset, so
+        # it lands inside the half-open [t0, t1) final window instead of
+        # exactly on its (exclusive) boundary.
+        + [{**hard, "t": 59.8, "sus": 0.05}]
+    )
+    arr = {
+        "type": "lead", "name": "lead", "notes": notes, "chords": [],
+        "beats": [{"time": i * 0.5} for i in range(140)],  # no measure data -> generated windows
+        "sections": [], "tuning": [0] * 6,
+    }
+    with patch.object(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", 0.9):
+        phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+    assert len(phrases) == 2  # nosec B101 - pytest assertion
+    bottom0 = {float(n["t"]) for n in phrases[0]["levels"][0]["notes"]}
+    bottom1 = {float(n["t"]) for n in phrases[1]["levels"][0]["notes"]}
+    assert 0.0 in bottom0  # nosec B101 - the song's start
+    assert 30.0 not in bottom1  # nosec B101 - an internal window edge, not a real boundary
+    assert 59.8 in bottom1  # nosec B101 - the song's actual end
+
+
 def test_flashy_techniques_are_gated_out_of_low_tiers():
     arr = _arrangement(_technical_notes(0, 12, step=0.1))
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
     assert phrases
     levels = phrases[0]["levels"]
     bottom_notes = levels[0]["notes"]
-    assert not any(n.get("tr") or n.get("hm") for n in bottom_notes), (
-        "tremolo/harmonic should not survive into the bottom tier of a technical phrase"
-    )
+    # #103/B3 guarantees the phrase's very first onset survives to the
+    # bottom tier whenever the rest of the tier allows it -- here that's
+    # _technical_notes(seed 7)'s t=0 note, which happens to carry `hm` at
+    # fret 5. _prune_techniques' pitch-preservation rule (routes.py,
+    # _HARMONIC_PITCH_SAFE_FRETS) deliberately does NOT strip `hm` off a
+    # fret outside {12, 19, 24}, since removing it there would change the
+    # struck pitch -- "keeping a technique on a low tier is better than a
+    # wrong pitch" is an intentional, pre-existing rule this test must not
+    # contradict. Exempted by the documented reason itself (hm at a
+    # non-pitch-safe fret), not by absolute time -- tightened per PR #123
+    # review so a *different* flashy note that happened to also land at
+    # t=0 in a future fixture tweak wouldn't silently escape this check.
+    # Every other bottom-tier note must still be gated normally.
+    def _hm_pitch_preserved(n):
+        return bool(n.get("hm")) and int(n.get("f", 0)) not in routes._HARMONIC_PITCH_SAFE_FRETS
+
+    assert not any(
+        (n.get("tr") or n.get("hm")) and not _hm_pitch_preserved(n)
+        for n in bottom_notes
+    ), "tremolo/harmonic should not survive into the bottom tier of a technical phrase"
 
 
 def test_chords_are_thinned_below_the_top_tier_and_intact_at_the_top():
@@ -881,11 +969,17 @@ def test_measure_aligned_fallback_is_skipped_when_beats_carry_no_downbeats():
 # ── Item 3: syncopation-aware density scoring ────────────────────────────────
 
 def test_syncopation_score_zero_on_beat_max_between_beats():
+    # No downbeat grid on any of these tempos (beat_grid defaults to ()),
+    # so _syncopation_score takes its legacy nearest-beat-distance fallback
+    # -- these fixtures predate the #103/B2 graded LH&L measure.
     beat_times = [0.0, 0.5, 1.0]
-    assert routes._syncopation_score(0.5, beat_times, beat_interval=0.5) == 0.0
-    assert routes._syncopation_score(0.75, beat_times, beat_interval=0.5) == 1.0
-    assert routes._syncopation_score(0.5, [], beat_interval=0.5) == 0.0
-    assert routes._syncopation_score(0.5, beat_times, beat_interval=None) == 0.0
+    tempo = routes._TempoParams(beat_interval=0.5)
+    assert routes._syncopation_score(0, [0.5], beat_times, tempo) == 0.0
+    assert routes._syncopation_score(0, [0.75], beat_times, tempo) == 1.0
+    assert routes._syncopation_score(0, [0.5], [], tempo) == 0.0
+    assert routes._syncopation_score(
+        0, [0.5], beat_times, routes._TempoParams(beat_interval=None),
+    ) == 0.0
 
 
 def test_syncopation_term_scores_a_more_off_beat_group_higher():
@@ -902,6 +996,136 @@ def test_syncopation_term_scores_a_more_off_beat_group_higher():
         "landing further from the beat grid (more syncopated) should score "
         "harder even with identical note/fret/technique content"
     )
+
+
+def _four_four_beats(n_measures, beat_interval=0.5):
+    """4/4 beats[] with real measure numbering (feedpak Beat.measure):
+    every 4th beat entry is a downbeat (measure >= 0), the rest are -1."""
+    beats = []
+    for i in range(n_measures * 4):
+        measure = i // 4 if i % 4 == 0 else -1
+        beats.append({"time": round(i * beat_interval, 6), "measure": measure})
+    return beats
+
+
+def test_beat_grid_ranks_downbeat_above_strong_beat_above_other_beat():
+    beats = _four_four_beats(3)
+    grid = dict(routes._beat_grid(beats))
+    # Beat 1 (downbeat), beat 3 (strong beat), beats 2 and 4 (other beat) --
+    # of the first 4/4 measure at 0.0/0.5/1.0/1.5.
+    assert grid[0.0] == routes._STRENGTH_DOWNBEAT  # nosec B101 - pytest assertion
+    assert grid[1.0] == routes._STRENGTH_STRONG_BEAT  # nosec B101 - pytest assertion
+    assert grid[0.5] == routes._STRENGTH_OTHER_BEAT  # nosec B101 - pytest assertion
+    assert grid[1.5] == routes._STRENGTH_OTHER_BEAT  # nosec B101 - pytest assertion
+
+
+def test_beat_grid_empty_without_any_downbeat_data():
+    # No `measure` key at all (matches _arrangement()'s default fixture
+    # beats) -- every entry defaults to -1, so there are no downbeats.
+    beats = [{"time": i * 0.5} for i in range(20)]
+    assert routes._beat_grid(beats) == []  # nosec B101 - pytest assertion
+    assert routes._beat_grid([]) == []  # nosec B101 - pytest assertion
+
+
+def test_beat_value_falls_back_to_binary_when_no_downbeat_grid():
+    """#104 acceptance criterion: a fixture with no downbeat data must
+    produce output identical to the pre-B2 on/off behaviour."""
+    beat_times = [0.0, 0.5, 1.0]
+    tempo = routes._TempoParams(beat_interval=0.5)  # beat_grid=() by default
+    for t in (0.0, 0.03, 0.5, 0.75, 1.0):
+        assert routes._beat_value(t, beat_times, tempo) == float(
+            routes._is_beat_aligned(t, beat_times, tolerance=tempo.beat_tolerance)
+        )
+
+
+def test_beat_value_grades_metrical_strength_with_a_downbeat_grid():
+    beats = _four_four_beats(2)
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    assert tempo.beat_grid, "expected a non-empty grid from real measure data"  # nosec B101
+    assert routes._beat_value(0.0, beat_times, tempo) == routes._STRENGTH_DOWNBEAT  # nosec B101
+    assert routes._beat_value(1.0, beat_times, tempo) == routes._STRENGTH_STRONG_BEAT  # nosec B101
+    assert routes._beat_value(0.5, beat_times, tempo) == routes._STRENGTH_OTHER_BEAT  # nosec B101
+    # Eighth subdivision: halfway between beat 1 (0.0) and beat 2 (0.5).
+    assert routes._beat_value(0.25, beat_times, tempo) == routes._STRENGTH_EIGHTH  # nosec B101
+    # Off the grid entirely -- not close enough to the beat, the eighth
+    # (frac 0.5) or either sixteenth (frac 0.25/0.75) point to match any of
+    # them within _SUBDIVISION_TOLERANCE_FRACTION.
+    assert routes._beat_value(0.0625, beat_times, tempo) == routes._STRENGTH_OFF_GRID  # nosec B101
+
+
+def test_beat_strength_subdivision_uses_the_local_interval_not_the_median():
+    """Regression for a real bug caught in PR #123 review: subdivision
+    classification used the arrangement-wide MEDIAN beat_interval, so a
+    tempo change would misclassify subdivisions in the deviating passage.
+    Here a long slow (0.5s) section sets the median, then a short fast
+    (0.2s) section follows -- the eighth point of the fast section (0.1s
+    past its beat) must classify against the LOCAL 0.2s interval (eighth,
+    frac 0.5) rather than the stale 0.5s median (which reads the same
+    offset as frac 0.2 -- close enough to land on the SIXTEENTH point at
+    0.25, the wrong subdivision entirely)."""
+    beats, t = [], 0.0
+    for i in range(16):
+        beats.append({"time": round(t, 6), "measure": 0 if i % 4 == 0 else -1})
+        t += 0.5
+    for i in range(8):
+        beats.append({"time": round(t, 6), "measure": 0 if i % 4 == 0 else -1})
+        t += 0.2
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    assert tempo.beat_interval == pytest.approx(0.5)  # nosec B101 - the stale median
+    fast_section_start = beats[16]["time"]
+    eighth_point = fast_section_start + 0.1  # frac 0.5 of the local 0.2s interval
+    assert routes._beat_value(eighth_point, beat_times, tempo) == routes._STRENGTH_EIGHTH  # nosec B101
+
+
+def test_beat_strength_degrades_to_off_grid_across_a_missing_beat_gap():
+    """Regression for a real bug caught in PR #123 review: a tempo change
+    and a MISSING beat (a dropped entry in beats[]) are indistinguishable
+    from the grid alone -- a missing beat widens the local cell to span two
+    true intervals, so naively trusting any local interval (the fix for the
+    tempo-change case above) would mis-locate subdivisions across the gap
+    instead of just failing to grade one. Here two consecutive beats are
+    dropped from an otherwise steady 0.5s grid, widening the local cell to
+    1.5s (3x the 0.5s median) -- a point that would be a true sixteenth
+    point on the original, undropped pulse must degrade to off-grid rather
+    than mis-locating against the oversized cell."""
+    times = [0.0, 0.5, 1.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0]
+    beats = [{"time": t, "measure": 0 if i % 4 == 0 else -1} for i, t in enumerate(times)]
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    assert tempo.beat_interval == pytest.approx(0.5)  # nosec B101 - pytest assertion
+    # 1.625 would be a true sixteenth point (frac 0.75 of a 0.5s beat
+    # starting at 1.0) on the original pulse, now inside the 1.5s gap.
+    assert routes._beat_value(1.625, beat_times, tempo) == routes._STRENGTH_OFF_GRID  # nosec B101
+
+
+def test_syncopation_score_penalizes_a_silent_stronger_position():
+    """Longuet-Higgins & Lee (1984)-style: a note on a weak position is more
+    syncopated when a stronger position before the next onset stays silent.
+    A note struck on the off-beat eighth after beat 2 and held through beat
+    3 (silent) is more syncopated than the same off-beat note immediately
+    followed by a note ON beat 3."""
+    beats = _four_four_beats(2)
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    # Beat 2 is at 0.5; the eighth after it (weak) is at 0.75; beat 3
+    # (strong) is at 1.0.
+    held_through_beat_three = [0.75, 2.0]  # next onset well past beat 3
+    followed_by_beat_three = [0.75, 1.0]  # next onset lands ON beat 3
+    held_score = routes._syncopation_score(0, held_through_beat_three, beat_times, tempo)
+    covered_score = routes._syncopation_score(0, followed_by_beat_three, beat_times, tempo)
+    assert held_score > 0.0  # nosec B101 - pytest assertion
+    assert held_score == pytest.approx(routes._STRENGTH_STRONG_BEAT - routes._STRENGTH_EIGHTH)  # nosec B101
+    assert covered_score == 0.0  # nosec B101 - pytest assertion
+
+
+def test_syncopation_score_zero_when_already_on_the_strongest_position():
+    beats = _four_four_beats(2)
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    times_sorted = [0.0, 2.0]  # a downbeat, nothing stronger exists
+    assert routes._syncopation_score(0, times_sorted, beat_times, tempo) == 0.0  # nosec B101
 
 
 def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
@@ -946,9 +1170,7 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
         if group_categories:
             prev_categories = group_categories
         raw_density = routes._sequential_density(times_sorted, gi, tempo)
-        syncopation = routes._syncopation_score(
-            group["time"], beat_times, tempo.beat_interval,
-        )
+        syncopation = routes._syncopation_score(gi, times_sorted, beat_times, tempo)
         density = min(
             1.0,
             (1.0 - routes._SYNCOPATION_DENSITY_WEIGHT) * raw_density
@@ -960,10 +1182,7 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
             0.35 * fretting + 0.30 * technique + 0.20 * density
             + 0.15 * (1.0 - sustain_ease)
         )
-        if routes._is_beat_aligned(
-            group["time"], beat_times, tolerance=tempo.beat_tolerance,
-        ):
-            group["score"] -= 0.12
+        group["score"] -= 0.12 * routes._beat_value(group["time"], beat_times, tempo)
         if gi:
             previous = routes._group_anchor_note(legacy[gi - 1])
             current = routes._group_anchor_note(group)
@@ -1143,9 +1362,13 @@ def test_movement_cost_generates_nested_ladder_fixture():
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=3)
 
     assert phrases is not None  # nosec B101 - pytest assertion
+    # #103/B3: this arrangement's single fallback window (no sections, no
+    # measure data) is both the first AND the last window, so both its
+    # start (0.0) and its end (3.0, the song's actual end -- caught in PR
+    # #123 review) get the boundary-retention bonus at the bottom tier.
     assert [(level["difficulty"], [n["t"] for n in level["notes"]])
             for level in phrases[0]["levels"]] == [
-        (0, [0.0, 0.5]),
+        (0, [0.0, 3.0]),
         (1, [0.0, 0.5, 1.5, 2.0, 3.0]),
         (2, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]),
     ]
