@@ -162,21 +162,37 @@ class _TempoParams:
     fret_jump_window_seconds: float = FRET_JUMP_WINDOW_SECONDS
     sustain_ease_norm_seconds: float = 2.0
     beat_interval: float | None = None
+    # Graded metrical-strength grid (#103/B2) -- (time, strength) pairs from
+    # the arrangement's own beats[] (see _beat_grid), plus a times-only view
+    # for bisect lookups. Both default to () so a bare _TempoParams() or a
+    # from_beats() call with no `beats` argument reproduces the pre-B2
+    # on/off _is_beat_aligned behavior exactly (see _beat_value) -- existing
+    # callers/tests that never pass real beats are unaffected.
+    beat_grid: tuple = ()
+    grid_times: tuple = ()
 
     @classmethod
-    def from_beats(cls, beat_times):
+    def from_beats(cls, beat_times, beats=()):
         """Derive tempo-relative thresholds from a song's own beat grid,
         or fall back to the absolute defaults above when there's no
-        trustworthy tempo signal (see _median_beat_interval)."""
+        trustworthy tempo signal (see _median_beat_interval). `beats` is
+        the arrangement's raw beats[] wire list (time + measure); passing
+        it also builds the graded metrical-strength grid (see _beat_grid)
+        used by _beat_value/_syncopation_score. Omitting it (or passing
+        only beat_times, as pre-B2 callers do) leaves beat_grid empty."""
         beat_interval = _median_beat_interval(beat_times)
+        grid = tuple(_beat_grid(beats)) if beats else ()
+        grid_times = tuple(gt for gt, _ in grid)
         if not beat_interval:
-            return cls()
+            return cls(beat_grid=grid, grid_times=grid_times)
         return cls(
             time_window_ms=beat_interval * 1000 * _GROUP_WINDOW_BEAT_FRACTION,
             beat_tolerance=beat_interval * _BEAT_ALIGN_TOLERANCE_FRACTION,
             fret_jump_window_seconds=beat_interval * _FRET_JUMP_WINDOW_BEATS,
             sustain_ease_norm_seconds=beat_interval * _SUSTAIN_EASE_BEATS,
             beat_interval=beat_interval,
+            beat_grid=grid,
+            grid_times=grid_times,
         )
 
 
@@ -594,21 +610,158 @@ def _is_beat_aligned(t, beat_times, tolerance=0.06):
     return any(abs(float(t) - beat) <= tolerance for beat in beat_times)
 
 
-def _syncopation_score(t, beat_times, beat_interval):
-    """How far a group's onset lands from the nearest beat, as a fraction
-    of a half-beat (landing exactly between two beats — the "and" of an
-    off-beat eighth, the hardest possible offset to internalize — maxes
-    this out at 1.0; landing on the beat is 0.0).
+# Graded metrical strength (#103/B2, Palmer & Krumhansl 1990): a bar
+# downbeat is the strongest position, the mid-bar strong beat (beat 3 of a
+# 4-beat bar) next, other beats weaker still, then eighth- and
+# sixteenth-note subdivisions, then off the grid entirely. The literature
+# supports this ORDER, not these specific numbers -- heuristic weights,
+# not measured player thresholds.
+_STRENGTH_DOWNBEAT = 1.0
+_STRENGTH_STRONG_BEAT = 0.75
+_STRENGTH_OTHER_BEAT = 0.5
+_STRENGTH_EIGHTH = 0.25
+_STRENGTH_SIXTEENTH = 0.1
+_STRENGTH_OFF_GRID = 0.0
+
+# How close (as a fraction of one beat interval) an onset must land to an
+# eighth (0.5) or sixteenth (0.25/0.75) subdivision point to count as that
+# subdivision rather than off-grid.
+_SUBDIVISION_TOLERANCE_FRACTION = 0.12
+
+
+def _beat_grid(beats):
+    """Graded (time, strength) pairs for every entry in the arrangement's
+    own beats[] wire list, ranked by metrical position (#103/B2) -- derived
+    purely from beat spacing and the existing `measure` flag (feedpak-spec
+    Beat.measure: >=0 is a downbeat, -1 is not), no new pack data needed.
+
+    A downbeat is strength 1.0; the beat exactly halfway through a 4-beat
+    bar (beat 3) is next; every other beat entry (including any bar whose
+    beat count isn't 4, since we can't tell where a "beat 3" would fall in
+    an irregular or undetected meter) is a flat, weaker "other beat" --
+    guessing a strong-beat position that may not exist in that meter would
+    be worse than not grading it. Beats before the first downbeat (a
+    pickup) are graded as "other beat" too, since there's no downbeat yet
+    to anchor a position count to.
+
+    Returns [] when `beats` has no entries or no downbeats at all -- the
+    "no usable downbeat grid" case callers (_beat_value, _syncopation_score)
+    fall back from.
+    """
+    entries = sorted(
+        (float(b.get("time", 0)), int(b.get("measure", -1)))
+        for b in beats if isinstance(b, dict)
+    )
+    if not entries:
+        return []
+    downbeat_positions = [i for i, (_, m) in enumerate(entries) if m >= 0]
+    if not downbeat_positions:
+        return []
+    grid = []
+    for seg_i, start in enumerate(downbeat_positions):
+        end = downbeat_positions[seg_i + 1] if seg_i + 1 < len(downbeat_positions) else len(entries)
+        beats_in_measure = end - start
+        for offset in range(beats_in_measure):
+            t = entries[start + offset][0]
+            if offset == 0:
+                strength = _STRENGTH_DOWNBEAT
+            elif beats_in_measure == 4 and offset == 2:
+                strength = _STRENGTH_STRONG_BEAT
+            else:
+                strength = _STRENGTH_OTHER_BEAT
+            grid.append((t, strength))
+    if downbeat_positions[0] > 0:
+        for idx in range(downbeat_positions[0]):
+            grid.append((entries[idx][0], _STRENGTH_OTHER_BEAT))
+    grid.sort()
+    return grid
+
+
+def _beat_strength(t, tempo):
+    """Graded metrical strength of onset time `t` against `tempo.beat_grid`
+    (see _beat_grid): an exact beat match returns that beat's graded
+    strength; otherwise `t` is tested against eighth/sixteenth subdivision
+    points of the surrounding beat interval; otherwise off-grid (0.0).
+    Callers must already know `tempo.beat_grid` is non-empty and
+    `tempo.beat_interval` is truthy (see _beat_value) -- this returns
+    _STRENGTH_OFF_GRID rather than raising if called without them anyway.
+    """
+    grid, grid_times = tempo.beat_grid, tempo.grid_times
+    if not grid or not tempo.beat_interval:
+        return _STRENGTH_OFF_GRID
+    tol = tempo.beat_tolerance
+    i = bisect.bisect_left(grid_times, t)
+    for j in (i - 1, i):
+        if 0 <= j < len(grid_times) and abs(grid_times[j] - t) <= tol:
+            return grid[j][1]
+    left_idx = max(0, min(i - 1, len(grid_times) - 1))
+    left_t = grid_times[left_idx]
+    frac = ((float(t) - left_t) / tempo.beat_interval) % 1.0
+    if abs(frac - 0.5) <= _SUBDIVISION_TOLERANCE_FRACTION:
+        return _STRENGTH_EIGHTH
+    if min(abs(frac - 0.25), abs(frac - 0.75)) <= _SUBDIVISION_TOLERANCE_FRACTION:
+        return _STRENGTH_SIXTEENTH
+    return _STRENGTH_OFF_GRID
+
+
+def _beat_value(t, beat_times, tempo):
+    """Beat-alignment retention value: graded metrical strength (see
+    _beat_strength) when a downbeat grid is available, else the legacy
+    on/off _is_beat_aligned check. The empty-grid path reproduces pre-B2
+    output exactly (#104's fallback acceptance criterion) -- every existing
+    caller/fixture that never threads real beats[] data through
+    _TempoParams.from_beats keeps its old 0.0/1.0 value."""
+    if tempo.beat_grid and tempo.beat_interval:
+        return _beat_strength(t, tempo)
+    return float(_is_beat_aligned(t, beat_times, tolerance=tempo.beat_tolerance))
+
+
+def _syncopation_score(gi, times_sorted, beat_times, tempo):
+    """Syncopation of group `gi`'s onset.
+
+    With a usable downbeat grid (see _beat_grid), this is a
+    Longuet-Higgins & Lee (1984) style measure: a note on a metrically weak
+    position is syncopated when a metrically STRONGER position between it
+    and the next onset falls silent -- e.g. a note struck on the "and" of
+    beat 2 and held through beat 3 is more syncopated than the same
+    off-beat note followed immediately by a note ON beat 3, because beat 3
+    stays silent in the first case. Magnitude is the strength gap between
+    this group's own metrical position and the strongest silent position
+    skipped before the next onset (or one beat interval past this onset,
+    for the last group). 0.0 when nothing stronger is skipped (including a
+    note that already sits on the strongest available position).
+
+    Without a usable grid, falls back to the legacy nearest-beat-distance
+    measure (a fraction of a half-beat; landing between two beats maxes
+    out at 1.0) -- reproduces pre-B2 output exactly for fixtures without
+    downbeat data.
 
     Returns 0.0 (safe no-op) when there's no beat grid or no trustworthy
-    tempo — this is a refinement layered onto the existing note-count
-    density signal, not a replacement, so absent tempo data must not
-    silently zero out density scoring altogether.
+    tempo at all — this is a refinement layered onto the existing
+    note-count density signal, not a replacement, so absent tempo data
+    must not silently zero out density scoring altogether.
     """
-    if not beat_times or not beat_interval:
+    t = float(times_sorted[gi])
+    if tempo.beat_grid and tempo.beat_interval:
+        own_strength = _beat_strength(t, tempo)
+        next_onset = (
+            float(times_sorted[gi + 1]) if gi + 1 < len(times_sorted)
+            else t + tempo.beat_interval
+        )
+        grid, grid_times = tempo.beat_grid, tempo.grid_times
+        start = bisect.bisect_right(grid_times, t + tempo.beat_tolerance)
+        strongest_silent = 0.0
+        for idx in range(start, len(grid)):
+            gt, strength = grid[idx]
+            if gt >= next_onset - tempo.beat_tolerance:
+                break
+            if strength > own_strength:
+                strongest_silent = max(strongest_silent, strength)
+        return max(0.0, strongest_silent - own_strength)
+    if not beat_times or not tempo.beat_interval:
         return 0.0
-    nearest = min(abs(float(t) - b) for b in beat_times)
-    return min(1.0, nearest / (beat_interval / 2.0))
+    nearest = min(abs(t - b) for b in beat_times)
+    return min(1.0, nearest / (tempo.beat_interval / 2.0))
 
 
 # Syncopation blended into the density sub-score at this weight — enough to
@@ -617,6 +770,14 @@ def _syncopation_score(t, beat_times, beat_interval):
 # pedagogy) without letting off-grid-ness alone dominate over actual note
 # count, which stays the primary density signal.
 _SYNCOPATION_DENSITY_WEIGHT = 0.30
+
+# Phrase-boundary retention nudge (#103/B3) applied to a phrase's first and
+# last group, same direction/mechanism as the 0.12 beat-alignment discount
+# above but smaller: GTTM phrase-grouping evidence is moderate ("listeners
+# split music into phrases"), not the strong beat-position evidence B2 has,
+# and that keeping boundary notes specifically helps LEARNING is inferred,
+# not tested. Heuristic weight, not measured against real players.
+_PHRASE_BOUNDARY_RETENTION_BONUS = 0.10
 
 # Spread (how far apart the touched strings are) weighs slightly more than
 # raw string count in the hand-shape sub-score — a wide stretch across few
@@ -734,7 +895,7 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
         if group_categories:
             prev_categories = group_categories
         raw_density = _sequential_density(times_sorted, gi, tempo)
-        syncopation = _syncopation_score(g["time"], beat_times, tempo.beat_interval)
+        syncopation = _syncopation_score(gi, times_sorted, beat_times, tempo)
         density = min(1.0, (1.0 - _SYNCOPATION_DENSITY_WEIGHT) * raw_density
                       + _SYNCOPATION_DENSITY_WEIGHT * syncopation)
         max_sus = max(float(n.get("sus", 0)) for n in ns)
@@ -744,18 +905,17 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
         )
         # Cost is purely mechanical. Retention value is tracked separately so
         # later policies can change what is worth preserving without rewriting
-        # the intrinsic difficulty model.
-        value = float(
-            _is_beat_aligned(g["time"], beat_times, tolerance=tempo.beat_tolerance)
-        )
+        # the intrinsic difficulty model. Graded metrical strength (#103/B2)
+        # when a downbeat grid is available, else the legacy on/off check --
+        # see _beat_value.
+        value = _beat_value(g["time"], beat_times, tempo)
         cost = base_cost
         # Keep the legacy operation order byte-for-byte: base score, beat
-        # discount, jump bonuses, final clamp. Computing this as
-        # `cost - 0.12 * value` after adding the jumps is algebraically equal
-        # but can round to a different float.
-        retention_score = base_cost
-        if value:
-            retention_score -= 0.12
+        # discount, jump bonuses, final clamp. `retention_score -= 0.12 *
+        # value` generalizes the pre-B2 `if value: retention_score -= 0.12`
+        # (value was strictly 0.0/1.0 then) to a graded value without
+        # changing the binary case's result: 0.12*1.0 == 0.12, 0.12*0.0 == 0.0.
+        retention_score = base_cost - 0.12 * value
         if gi:
             prev = _group_anchor_note(groups[gi - 1])
             cur = _group_anchor_note(g)
@@ -868,12 +1028,15 @@ def _assign_tiers(groups, n_tiers, global_thresholds, beat_times=(), *, tempo=No
     total = len(groups)
     in_time_order = sorted(range(total), key=lambda i: groups[i]["time"])
     position = {gi: pos for pos, gi in enumerate(in_time_order)}
-    # Ties in retention score go to beat-aligned groups first: a thinned tier
-    # keeps its rhythmic landmarks up front (the same bias represented by
-    # value applies), then _spread_key spreads the rest.
+    # Ties in retention score go to the metrically strongest groups first
+    # (#103/B2: graded when a downbeat grid is available, else the legacy
+    # on/off check -- see _beat_value): a thinned tier keeps its rhythmic
+    # landmarks up front (the same bias represented by value applies), then
+    # _spread_key spreads the rest. Negated so a stronger beat (higher
+    # value) sorts earlier, same direction as the old 0-before-1 ordering.
     ranked = sorted(range(total), key=lambda i: (
         groups[i]["retention_score"],
-        0 if _is_beat_aligned(groups[i]["time"], beat_times, tolerance=tempo.beat_tolerance) else 1,
+        -_beat_value(groups[i]["time"], beat_times, tempo),
         _spread_key(position[i]),
     ))
     floor_counts = [
@@ -908,7 +1071,11 @@ def _best_bridge_candidate(groups_sorted, group_times, left, right, level, beat_
         worst_jump = max(abs(fret - left_fret), abs(right_fret - fret))
         worst_string_jump = max(abs(string - left_string), abs(right_string - string))
         if worst_jump < original_jump or worst_string_jump < original_string_jump:
-            beat_penalty = 0 if _is_beat_aligned(candidate["time"], beat_times, tolerance=tempo.beat_tolerance) else 1
+            # Graded when a downbeat grid is available (#103/B2), else the
+            # legacy 0/1 penalty -- see _beat_value. 1.0 - value keeps the
+            # same direction (a stronger beat is a smaller penalty) and is
+            # numerically identical to the old 0/1 in the binary case.
+            beat_penalty = 1.0 - _beat_value(candidate["time"], beat_times, tempo)
             candidates.append((
                 worst_jump, worst_string_jump, beat_penalty,
                 candidate["retention_score"], candidate["time"], candidate,
@@ -1818,6 +1985,14 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     if duration <= 0.0:
         duration = 30.0
 
+    # #103/B3: whether `windows` below are AUTHORED phrase/section
+    # boundaries (from the caller's section_times, or the arrangement's own
+    # sections) versus mechanically GENERATED ones (measure-aligned or
+    # blind 30s chunks) -- only authored boundaries are real musical
+    # phrases whose start/end deserve retention value; a generated window
+    # edge is an arbitrary cut point, not a phrase (see the boundary-value
+    # loop below).
+    windows_are_authored = bool(section_times) or bool(sections)
     if section_times:
         # The caller supplies the song-global timeline that feedBack streams
         # through highway.getSections().  Keep an interval for every boundary,
@@ -1859,7 +2034,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         windows = [(0.0, duration)]
 
     beat_times = [float(b.get("time", 0)) for b in beats]
-    tempo = _TempoParams.from_beats(beat_times)
+    tempo = _TempoParams.from_beats(beat_times, beats)
 
     link_next_keep_ids = None
     if is_keys:
@@ -1881,7 +2056,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     global_thresholds = _tier_thresholds([g["retention_score"] for g in groups_all], n_levels)
 
     phrases_out = []
-    for t0, t1 in windows:
+    for widx, (t0, t1) in enumerate(windows):
         phrase_groups = [g for g in groups_all if t0 <= g["time"] < t1]
         if not phrase_groups:
             # Preserve the canonical Section Map boundary in this arrangement.
@@ -1899,6 +2074,31 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
                 }],
             })
             continue
+        # #103/B3: nudge the phrase's first/last group's retention_score
+        # down (same direction/mechanism as the beat-alignment discount
+        # above) so a thinned tier keeps the phrase's opening and closing
+        # material when the rest of the tier allows it -- listeners split
+        # music into phrases and remember boundaries (Lerdahl & Jackendoff
+        # 1983; Knösche et al. 2005), but that keeping boundary notes
+        # specifically helps LEARNING is inferred, not tested (moderate
+        # evidence, see #105). Only for AUTHORED phrase boundaries
+        # (windows_are_authored) -- a generated window's edges are
+        # arbitrary cut points, not real phrase starts/ends -- EXCEPT the
+        # very first window's start, which is always a genuine boundary
+        # (the start of the song itself) regardless of how the windows
+        # were generated. No such unconditional exception on the end side:
+        # unlike the song's start, a generated window's end is never
+        # guaranteed to be the song's actual end (more windows may follow).
+        if windows_are_authored or widx == 0:
+            first = phrase_groups[0]
+            first["retention_score"] = max(
+                0.0, first["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
+            )
+        if windows_are_authored and phrase_groups[-1] is not phrase_groups[0]:
+            last = phrase_groups[-1]
+            last["retention_score"] = max(
+                0.0, last["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
+            )
         # Every phrase is built on the same n_levels-tier scale (see
         # _assign_tiers); how many DISTINCT levels a phrase ends up with
         # follows from how hard its content is, once

@@ -106,6 +106,33 @@ contract.
   per-switch weights themselves are heuristics, not measured player
   thresholds, and stay modest relative to `_tech_score`'s range so
   coordination compounds an existing demand rather than dominating it.
+- **Beat strength is graded, not on/off, and syncopation is metrically
+  aware (#103/B2).** A downbeat outranks the mid-bar strong beat (beat 3 of
+  a 4-beat bar), which outranks other beats, then eighth- and
+  sixteenth-note subdivisions, then off the grid entirely — derived purely
+  from the arrangement's own `beats[]` spacing and `measure` flag, no new
+  pack data. This ranking feeds the retention `value` term (a downbeat is
+  discounted more than a weak subdivision, rather than either getting the
+  same flat discount an on-beat note used to), the tie-break when two
+  groups land at the same score, and bridge-note selection. Syncopation is
+  a Longuet-Higgins & Lee (1984) style measure: a note on a weak position
+  is more syncopated when a *stronger* position before the next onset goes
+  silent, rather than simply measuring distance to the nearest beat.
+  Without a usable downbeat grid (no `measure` data, or no trustworthy
+  tempo), both fall back to the pre-#103 on/off behavior exactly — this is
+  additive on top of real chart data, not a requirement for it.
+- **Phrase starts and endings get retention value (#103/B3).** The first
+  and last note group of each *authored* phrase (from the caller's section
+  timeline, or the arrangement's own sections) gets a modest push toward
+  being kept at low tiers, whenever the rest of the tier's content allows
+  it — listeners split music into phrases and remember their boundaries,
+  though that keeping boundary notes specifically aids learning is
+  inferred, not tested (moderate evidence). Phrases generated from
+  8-bar/30s fallback windows (no authored section data) don't get this at
+  their internal window edges, since those aren't real musical
+  phrases — except the very first window's start, which is always a
+  genuine boundary (the song's own beginning) regardless of how the
+  windows were generated.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
