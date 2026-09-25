@@ -12,9 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `generate-library`'s new `staged_chords` request field, plumbed through
   `generate_phrases_for_arrangement`): a repeated occurrence of a
   Chordr-identified chord is dropped entirely at the bottom tier, keeping
-  only its longest-sustained ("landmark") occurrence per phrase, plus the
-  phrase's own final chord group (protected as a likely resolution
-  regardless of how briefly it's struck). Only chords the chart positively
+  only the longest-sustained occurrence AMONG THE OTHER BOTTOM-TIER
+  OCCURRENCES of that identity ("landmark", scoped to `level == 0` so a
+  higher-tier occurrence can never be picked as the landmark and empty the
+  identity out of the bottom tier), plus the phrase's own final bottom-tier
+  chord group (protected as a likely resolution regardless of how briefly
+  it's struck). Only chords the chart positively
   identifies via a matched `ChordTemplate` name are ever collapsed —
   unnamed/unmatched voicings are never touched. Every tier above the
   bottom one, and every existing caller that doesn't pass `staged_chords`,

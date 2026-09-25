@@ -4056,26 +4056,70 @@ def test_generate_phrases_staged_chords_default_off_is_unaffected():
     assert default_phrases == explicit_off_phrases  # nosec B101 - pytest assertion
 
 
-def test_generate_phrases_staged_chords_drops_repeats_at_bottom_tier_only():
-    """With staged_chords=True, a run of identical named chords collapses to
-    one landmark occurrence at the bottom tier, but every occurrence is
-    still present at the top (authored) tier -- staging augments, it
-    doesn't replace, the existing per-group progression."""
-    notes = [{"t": round(i * 0.5, 3), "s": 0, "f": (i * 3) % 12, "sus": 0.1} for i in range(8)]
+def test_generate_phrases_staged_chords_collapses_repeated_identity_at_bottom_tier_only():
+    """#103/B10 regression (PR #127 review): the previous version of this
+    test only compared COUNTS, which a fully stubbed-out staged_chords
+    path (patched to a no-op) could also satisfy by coincidence on that
+    fixture. This asserts the actual onset SETS at the bottom tier with
+    staged_chords on vs off, and that the top tier is untouched either way.
+
+    _assign_tiers is patched to a no-op so every group keeps its default
+    `level=0` -- this isolates the staged-chords mechanism itself from
+    ordinary retention-score tiering noise, which is irrelevant to what
+    this test checks and would otherwise make the fixture's outcome depend
+    on tuning details unrelated to #121."""
     chords = [
-        {"t": 10.0 + i * 1.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.2}, {"s": 1, "f": 2, "sus": 0.2}]}
-        for i in range(6)
+        {"t": 1.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.05}, {"s": 1, "f": 2, "sus": 0.05}]},
+        {"t": 2.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.05}, {"s": 1, "f": 2, "sus": 0.05}]},
+        {"t": 3.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.5}, {"s": 1, "f": 2, "sus": 0.5}]},  # landmark
+        {"t": 4.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.05}, {"s": 1, "f": 2, "sus": 0.05}]},  # last: protected
     ]
-    arr = _arrangement(notes, chords=chords, n_beats=120)
+    arr = _arrangement([], chords=chords, n_beats=40)
     arr["templates"] = _STAGED_TEMPLATES
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=True)
-    assert phrases  # nosec B101 - pytest assertion
-    phrase_with_chords = next(p for p in phrases if p["levels"][0]["chords"] or p["levels"][0]["notes"])
-    bottom_chord_count = len(phrase_with_chords["levels"][0]["chords"]) + sum(
-        1 for n in phrase_with_chords["levels"][0]["notes"] if n.get("t", 0) >= 10.0
-    )
-    top_level = phrase_with_chords["levels"][-1]
-    top_chord_count = len(top_level["chords"]) + sum(
-        1 for n in top_level["notes"] if n.get("t", 0) >= 10.0
-    )
-    assert bottom_chord_count < top_chord_count  # nosec B101 - repeats collapsed at the bottom tier only
+
+    def _onsets(phrase, lvl_idx):
+        lvl = phrase["levels"][lvl_idx]
+        return {c["t"] for c in lvl["chords"]} | {n["t"] for n in lvl["notes"]}
+
+    with patch.object(routes, "_assign_tiers", lambda *a, **k: None):
+        off_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=False)
+        on_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=True)
+
+    off_phrase = next(p for p in off_phrases if p["levels"][0]["chords"] or p["levels"][0]["notes"])
+    on_phrase = next(p for p in on_phrases if p["levels"][0]["chords"] or p["levels"][0]["notes"])
+
+    assert _onsets(off_phrase, 0) == {1.0, 2.0, 3.0, 4.0}  # nosec B101 - staged off: every occurrence survives
+    assert _onsets(on_phrase, -1) == {1.0, 2.0, 3.0, 4.0}  # nosec B101 - top tier always untouched
+    assert _onsets(on_phrase, 0) == {3.0, 4.0}  # nosec B101 - landmark (3.0) + protected resolution (4.0)
+
+
+def test_resolvable_chord_identity_rejects_a_non_string_name_instead_of_raising():
+    """A hand-edited pack could carry a malformed template `name` (e.g. a
+    list); this must degrade to 'unidentified' rather than raising when the
+    non-string value later flows into a dict key in
+    _staged_chord_drop_ids's best_by_identity (PR #127 review)."""
+    bad_templates = [{"name": ["G"], "frets": [3, 2, 0, 0, 0, 3]}]
+    g = _identified_chord_group(0.0, 0)
+    assert routes._resolvable_chord_identity(g, bad_templates) is None  # nosec B101 - pytest assertion
+    # Must not raise when actually used downstream, either.
+    assert routes._staged_chord_drop_ids([g], bad_templates) == set()  # nosec B101 - pytest assertion
+
+
+def test_staged_chord_drop_ids_only_considers_bottom_tier_occurrences():
+    """#103/B10 regression (PR #127 review): the landmark scan and the
+    protected-resolution lookup must only consider groups already at
+    level 0 -- picking a landmark from a HIGHER-tier occurrence would drop
+    the only level-0 occurrence of that identity with nothing to replace
+    it there, emptying the identity out of the bottom tier entirely."""
+    g1 = _identified_chord_group(0.0, 0, sus=0.05)
+    g1["level"] = 0
+    g2 = _identified_chord_group(1.0, 0, sus=0.5)  # longest sustain overall, but NOT at level 0
+    g2["level"] = 1
+    g3 = _identified_chord_group(2.0, 0, sus=0.05)
+    g3["level"] = 0
+    drop_ids = routes._staged_chord_drop_ids([g1, g2, g3], _STAGED_TEMPLATES)
+    # g2 must never be considered (it's not competing for a level-0 slot),
+    # and the bottom tier must keep at least one occurrence -- g3, as the
+    # phrase's last bottom-tier chord group (protected as a resolution).
+    assert id(g2) not in drop_ids  # nosec B101 - never a candidate: not level 0
+    assert id(g3) not in drop_ids  # nosec B101 - protected as the last level-0 chord group

@@ -1869,7 +1869,7 @@ def _resolvable_chord_identity(g, chord_templates):
     if not (0 <= chord_id < len(chord_templates)):
         return None
     name = chord_templates[chord_id].get("name")
-    return name if name else None
+    return name if isinstance(name, str) and name else None
 
 
 def _chord_group_max_sustain(g):
@@ -1880,14 +1880,28 @@ def _chord_group_max_sustain(g):
 def _staged_chord_drop_ids(phrase_groups, chord_templates):
     """#103/B10: `id()`s of identified-chord groups in `phrase_groups` that
     the opt-in staged-chords bottom tier should drop entirely -- every
-    occurrence of a distinct identified chord EXCEPT its longest-sustained
-    ("landmark") occurrence, and except the phrase's own final chord group
+    BOTTOM-TIER (`level == 0`) occurrence of a distinct identified chord
+    EXCEPT its longest-sustained ("landmark") occurrence among the bottom
+    tier's own occurrences, and except the phrase's own final chord group
     (a likely resolution, which "must never be dropped for being short" --
     issue #121's explicit rule, since a resolution is often struck briefly
     right at a phrase's end). Groups with no resolvable identity (see
-    `_resolvable_chord_identity`) are never in the returned set."""
+    `_resolvable_chord_identity`) are never in the returned set.
+
+    Scoped to `level == 0` groups only (not every occurrence in the whole
+    phrase) -- caller only ever consumes this set when building the level-0
+    tier (see `generate_phrases_for_arrangement`). Picking a landmark from
+    every occurrence in the phrase, including ones `_assign_tiers` placed
+    on a HIGHER tier, could drop the only level-0 occurrence of an identity
+    with nothing to replace it there (that occurrence's own landmark
+    wouldn't show until its own, later tier) -- emptying that identity out
+    of the bottom tier entirely, the opposite of this stage's purpose
+    (caught in PR #127 review, with a 6-in-2592 synthetic-fixture repro).
+    Restricting the scan to groups already competing for a level-0 slot
+    makes an empty bottom tier for an identity structurally unreachable."""
+    bottom_tier_groups = [g for g in phrase_groups if g.get("level") == 0]
     best_by_identity = {}
-    for g in phrase_groups:
+    for g in bottom_tier_groups:
         identity = _resolvable_chord_identity(g, chord_templates)
         if identity is None:
             continue
@@ -1897,14 +1911,14 @@ def _staged_chord_drop_ids(phrase_groups, chord_templates):
             best_by_identity[identity] = (g, sus)
     keep_ids = {id(g) for g, _sus in best_by_identity.values()}
     last_chord = None
-    for g in reversed(phrase_groups):
+    for g in reversed(bottom_tier_groups):
         if g.get("type") == "chord":
             last_chord = g
             break
     if last_chord is not None and _resolvable_chord_identity(last_chord, chord_templates) is not None:
         keep_ids.add(id(last_chord))
     return {
-        id(g) for g in phrase_groups
+        id(g) for g in bottom_tier_groups
         if _resolvable_chord_identity(g, chord_templates) is not None and id(g) not in keep_ids
     }
 

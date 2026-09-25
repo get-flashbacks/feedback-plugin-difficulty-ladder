@@ -383,20 +383,32 @@ change unless a user turns it on.
   strumming pattern entirely — not just thinning each repeat's voicing,
   which the pre-existing per-group reduction already did on its own.
   `_staged_chord_drop_ids` prefers the identity's longest-sustained
-  occurrence as the landmark (usually the first, but not assumed to be —
-  measured, not guessed) and separately, always protects the phrase's own
-  final chord group from being dropped regardless of duration (the
-  resolution-protection rule below). Unnamed/unidentified partial voicings
-  (no matched `ChordTemplate`, or a template with no `name`) are never
-  collapsed — `_resolvable_chord_identity` requires a positively-identified
-  parent chord before a group is even a drop candidate. A short,
-  difficult passing/transition chord (the brief Bmadd11 in *So Far Away*
-  Rhythm is the example) is unaffected unless a LATER occurrence of the
-  exact same identity happens to sustain longer, in which case only the
-  earlier repeat — not this one — is what the landmark rule would ever
-  drop. This lands ONLY the bottom tier's group selection; every tier
-  above it shows every occurrence, going through the same voicing/
-  technique reduction as when the setting is off.
+  occurrence AMONG THE OCCURRENCES ALREADY AT THE BOTTOM TIER as the
+  landmark (usually the first, but not assumed to be — measured, not
+  guessed) — scoped to `level == 0` rather than every occurrence in the
+  whole phrase, since picking a landmark from a higher-tier occurrence
+  could drop the only bottom-tier occurrence of that identity with
+  nothing to replace it there (caught in PR #127 review). Separately,
+  always protects the phrase's own final BOTTOM-TIER chord group from
+  being dropped regardless of duration (the resolution-protection rule
+  below). Unnamed/unidentified partial voicings (no matched
+  `ChordTemplate`, a template with no `name`, or a non-string `name` from
+  a hand-edited pack) are never collapsed — `_resolvable_chord_identity`
+  requires a positively-identified parent chord before a group is even a
+  drop candidate. A short, difficult passing/transition chord (the brief
+  Bmadd11 in *So Far Away* Rhythm is the example) is unaffected unless a
+  LATER bottom-tier occurrence of the exact same identity happens to
+  sustain longer, in which case only the earlier repeat — not this one —
+  is what the landmark rule would ever drop. This lands ONLY the bottom
+  tier's group selection; every tier above it shows every occurrence,
+  going through the same voicing/technique reduction as when the setting
+  is off.
+  **Known approximation:** resolution protection is positional (the
+  phrase's last bottom-tier chord group), not harmonic — a short mid-
+  phrase cadence resolution elsewhere in the phrase isn't specially
+  protected, since the wire data has no way to express "this is a
+  resolution." Flagged as a residual risk to settle before this ever gets
+  a settings.html checkbox, not a defect in this PR's own scope.
 - In a rhythm-led passage such as *Bring Me to Life* guitar, use the staged
   order: chord landmarks; then **every authored strum onset** played as one
   note; then existing easy/intermediate voicing material; then complete
