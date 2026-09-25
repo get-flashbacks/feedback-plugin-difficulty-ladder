@@ -16,9 +16,12 @@
 
 'use strict';
 
-const path = require('node:path');
+let controller = null;
 
+// Loaded once; simulate() resets per-run state via resetPerSongState(),
+// which clears every field commitPhraseResult() reads or writes.
 function loadController() {
+    if (controller) return controller;
     const store = new Map();
     const listeners = new Map();
     global.window = {
@@ -33,9 +36,8 @@ function loadController() {
         getItem: k => (store.has(k) ? store.get(k) : null),
         setItem: (k, v) => { store.set(k, String(v)); },
     };
-    const file = path.join(__dirname, '..', 'screen.js');
-    delete require.cache[require.resolve(file)];
-    return require(file);
+    controller = require('../screen.js');
+    return controller;
 }
 
 // Small seeded PRNG (mulberry32) so runs are reproducible.
