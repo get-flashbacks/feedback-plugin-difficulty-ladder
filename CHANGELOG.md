@@ -71,7 +71,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   EFFECTIVE name/type (a manifest entry's own `name`/`type` override,
   same precedence as `tuning`), not just the embedded arrangement's —
   a manifest entry authored as a bass part over a differently-labeled
-  embedded arrangement was reading the wrong 5-string interval row.
+  embedded arrangement was reading the wrong 5-string interval row. The
+  `analyze-chords` preview's own `isBass` Chordr-context field resolves
+  the same effective name/type.
 
 ### Changed
 - Split generated-note mechanical cost from rhythmic retention value internally,

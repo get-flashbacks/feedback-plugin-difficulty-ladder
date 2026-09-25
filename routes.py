@@ -2739,12 +2739,27 @@ def setup(app, context):
         analyze = getattr(app.state, "chordr_analyze_chart_chords_v1", None)
         if not callable(analyze):
             raise HTTPException(503, "Chordr server analysis is not active")
+        # Same EFFECTIVE name/type resolution as generation's is_bass
+        # (manifest entry first, embedded fallback) -- a manifest entry
+        # authored as a bass part must still select Chordr's bass
+        # base-string row even when the embedded arrangement's own
+        # type/name doesn't say so. Deliberately keeps this endpoint's
+        # existing \bbass\b word-boundary match rather than switching to
+        # _is_bass_arrangement's bare substring (core's real semantics,
+        # used for generation's is_bass above): that would also flip
+        # this endpoint's pre-existing, intentional "Ambassador" ==
+        # not-bass behavior (see
+        # test_chord_preview_does_not_infer_bass_from_name_fragment),
+        # a separate, unrelated behavior change this fix doesn't need
+        # to make.
+        effective_type = (entry.get("type") if entry else None) or arr.get("type", "")
+        effective_name = (entry.get("name") if entry else None) or arr.get("name", "")
         analysis_context = {
             "tuning": tuning,
             "capo": arr.get("capo", 0) or 0,
             "stringCount": len(tuning) or 6,
             "isBass": bool(re.search(
-                r"\bbass\b", f"{arr.get('type') or ''} {arr.get('name') or ''}", re.IGNORECASE
+                r"\bbass\b", f"{effective_type or ''} {effective_name or ''}", re.IGNORECASE
             )),
         }
         try:

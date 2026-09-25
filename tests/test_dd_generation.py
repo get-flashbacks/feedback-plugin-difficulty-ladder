@@ -2218,6 +2218,30 @@ def test_chord_preview_infers_bass_from_legacy_name(tmp_path):
     assert contexts[0]["isBass"] is True
 
 
+def test_chord_preview_resolves_is_bass_from_the_manifest_type_override(tmp_path):
+    """A pullfrog-flagged bug: analyze_chords's `isBass` context field
+    still read only the embedded arrangement's type/name after the
+    generation-side fix, so a manifest entry authored as `type: bass`
+    over an embedded `type: lead` reached Chordr as isBass=False --
+    diverging from what feedBack core (and generation, after the
+    previous fix) actually resolve."""
+    arr = _arrangement([])
+    arr.update(type="lead", name="Lead")
+    pack = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    manifest_path = pack / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["arrangements"][0]["type"] = "bass"
+    manifest_path.write_text(yaml.safe_dump(manifest))
+
+    client = _client_for(tmp_path)
+    contexts = []
+    client.app.state.chordr_analyze_chart_chords_v1 = (
+        lambda chords, *, context, templates: contexts.append(context) or {}
+    )
+    assert _preview(client).status_code == 200  # nosec B101 - pytest assertion
+    assert contexts[0]["isBass"] is True  # nosec B101 - pytest assertion
+
+
 def test_chord_preview_rejects_missing_library_and_invalid_filenames(tmp_path):
     assert _preview(_client_for(None)).status_code == 400
     client = _client_for(tmp_path)
