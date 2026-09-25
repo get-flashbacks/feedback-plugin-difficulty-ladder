@@ -1079,6 +1079,27 @@ def test_beat_strength_subdivision_uses_the_local_interval_not_the_median():
     assert routes._beat_value(eighth_point, beat_times, tempo) == routes._STRENGTH_EIGHTH  # nosec B101
 
 
+def test_beat_strength_degrades_to_off_grid_across_a_missing_beat_gap():
+    """Regression for a real bug caught in PR #123 review: a tempo change
+    and a MISSING beat (a dropped entry in beats[]) are indistinguishable
+    from the grid alone -- a missing beat widens the local cell to span two
+    true intervals, so naively trusting any local interval (the fix for the
+    tempo-change case above) would mis-locate subdivisions across the gap
+    instead of just failing to grade one. Here two consecutive beats are
+    dropped from an otherwise steady 0.5s grid, widening the local cell to
+    1.5s (3x the 0.5s median) -- a point that would be a true sixteenth
+    point on the original, undropped pulse must degrade to off-grid rather
+    than mis-locating against the oversized cell."""
+    times = [0.0, 0.5, 1.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0]
+    beats = [{"time": t, "measure": 0 if i % 4 == 0 else -1} for i, t in enumerate(times)]
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    assert tempo.beat_interval == pytest.approx(0.5)  # nosec B101 - pytest assertion
+    # 1.625 would be a true sixteenth point (frac 0.75 of a 0.5s beat
+    # starting at 1.0) on the original pulse, now inside the 1.5s gap.
+    assert routes._beat_value(1.625, beat_times, tempo) == routes._STRENGTH_OFF_GRID  # nosec B101
+
+
 def test_syncopation_score_penalizes_a_silent_stronger_position():
     """Longuet-Higgins & Lee (1984)-style: a note on a weak position is more
     syncopated when a stronger position before the next onset stays silent.

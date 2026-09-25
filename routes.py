@@ -698,16 +698,28 @@ def _beat_strength(t, tempo):
     left_t = grid_times[left_idx]
     right_idx = left_idx + 1
     # Local interval between the two actual surrounding grid beats, not the
-    # arrangement-wide median -- a tempo change (or a click-track glitch)
-    # would otherwise misclassify subdivisions in the deviating passage
-    # (caught in PR #123 review). Only the trailing edge (t past the last
-    # known beat) has no "next" beat to measure from, so it falls back to
-    # the median as a reasonable extrapolation.
+    # arrangement-wide median -- a tempo change would otherwise misclassify
+    # subdivisions in the deviating passage (caught in PR #123 review).
+    # Only the trailing edge (t past the last known beat) has no "next"
+    # beat to measure from, so it falls back to the median as a reasonable
+    # extrapolation.
     local_interval = (
         grid_times[right_idx] - left_t if right_idx < len(grid_times)
         else tempo.beat_interval
     )
-    if not local_interval or local_interval <= 0:
+    # A tempo change and a MISSING beat (a dropped entry in beats[], a
+    # click-track glitch) are indistinguishable from the grid alone -- a
+    # missing beat doubles (or more) the local cell width, spanning two
+    # true intervals, which would then mis-locate every subdivision in that
+    # cell rather than just failing to grade one (caught in PR #123
+    # review). Bound the local interval to a small multiple of the
+    # arrangement-wide median: within bound, trust it as a real tempo
+    # change (as intended above); an outsized cell degrades to off-grid
+    # (a no-grade) rather than a confidently wrong grade.
+    if (
+        not local_interval or local_interval <= 0
+        or local_interval > 2.0 * tempo.beat_interval
+    ):
         return _STRENGTH_OFF_GRID
     frac = ((float(t) - left_t) / local_interval) % 1.0
     if abs(frac - 0.5) <= _SUBDIVISION_TOLERANCE_FRACTION:
