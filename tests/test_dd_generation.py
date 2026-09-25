@@ -372,6 +372,51 @@ def test_low_position_wide_shape_has_extra_posture_cost():
     assert abs(group[0]["cost"] - without_posture[0]["cost"] - expected_bonus) < 1e-12  # nosec B101
 
 
+def test_technique_coordination_bonus_scores_simultaneous_techniques():
+    """#72/B4: a chord mixing two different single-note techniques scores
+    above the harder of the two alone, even though _tech_score's own
+    max-only term is unchanged (it already reports the same 0.4 for a lone
+    bend either way -- the coordination bonus is the only thing that can
+    tell the two chords apart)."""
+    assert routes._technique_coordination_bonus(set(), set()) == 0.0  # nosec B101
+    assert routes._technique_coordination_bonus({"bend"}, set()) == 0.0  # nosec B101
+    two_techniques = routes._technique_coordination_bonus({"bend", "palm_mute"}, set())
+    assert two_techniques == pytest.approx(routes._COORD_PER_EXTRA_CATEGORY)  # nosec B101
+    assert two_techniques > 0.0  # nosec B101
+
+
+def test_technique_coordination_bonus_scores_a_switch_between_groups():
+    assert routes._technique_coordination_bonus({"bend"}, {"bend"}) == 0.0  # nosec B101
+    switched = routes._technique_coordination_bonus({"palm_mute"}, {"bend"})
+    assert switched == pytest.approx(routes._COORD_SWITCH_BONUS)  # nosec B101
+    # No previous group (start of the phrase) is not a "switch" -- there is
+    # nothing to switch away from.
+    assert routes._technique_coordination_bonus({"bend"}, set()) == 0.0  # nosec B101
+
+
+def test_technique_coordination_bonus_is_capped():
+    many_categories = {"bend", "hopo", "tap", "slide", "trem", "harm_nat"}
+    capped = routes._technique_coordination_bonus(many_categories, {"vibrato"})
+    assert capped == routes._COORD_MAX_BONUS  # nosec B101
+
+
+def test_chord_with_two_different_techniques_scores_above_either_alone():
+    """End-to-end through _score_groups: max(_tech_score) alone can't
+    distinguish a chord using two different techniques from a chord using
+    only the harder of the two -- the coordination bonus is what makes the
+    two-technique chord cost more."""
+    single = [{"time": 0.0, "notes": [
+        {"s": 0, "f": 5, "bn": 1.0, "sus": 0}, {"s": 1, "f": 5, "sus": 0},
+    ]}]
+    mixed = [{"time": 0.0, "notes": [
+        {"s": 0, "f": 5, "bn": 1.0, "sus": 0}, {"s": 1, "f": 5, "pm": True, "sus": 0},
+    ]}]
+    routes._score_groups(single, n_strings=6)
+    routes._score_groups(mixed, n_strings=6)
+    expected_bonus = 0.30 * routes._COORD_PER_EXTRA_CATEGORY
+    assert abs(mixed[0]["cost"] - single[0]["cost"] - expected_bonus) < 1e-12  # nosec B101
+
+
 def test_lower_tier_refinement_does_not_insert_a_needless_bridge_for_an_open_anchor():
     groups = [
         {"time": 0.0, "cost": 0.1, "value": 0.0, "retention_score": 0.1,

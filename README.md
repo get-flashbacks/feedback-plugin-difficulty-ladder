@@ -85,6 +85,19 @@ contract.
   the path-refinement helper but that helper remains disabled in normal
   generation until arrangement-wide refinement can preserve the shared
   tier scale.
+- **Technique difficulty counts coordination demand, not only the hardest
+  single technique.** `_tech_score`'s max-over-notes term still picks out
+  the single hardest technique in a group, but two things it can't see are
+  scored on top of it: a group using more than one distinct technique at
+  once (a chord mixing a bend and a palm mute, rather than a single
+  technique repeated) and a group whose technique differs from the group
+  immediately before it (switching from palm-muting into a slide costs more
+  than repeating the same technique). Both bonuses are 0 for the common
+  case — a group using at most one technique, unchanged from the group
+  before — so single-technique passages score exactly as before. The
+  per-extra-technique and per-switch weights are heuristics, not measured
+  player thresholds, and are capped well below `_tech_score`'s own 0–1
+  range so a single very hard technique still dominates.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
@@ -95,7 +108,7 @@ contract.
 
 | Instrument | Supported? | Notes |
 |---|---|---|
-| Guitar / bass (fretted) | ✅ | Fret complexity, low-position stretch posture, time-aware hand shifts, string-skip/hand-shape distance, tempo/syncopation-aware density, sustain-ease. Technique scoring covers bend (base + pre-bend/round-trip/shaped-curve difficulty, `bt`/`bnv`), slide, hammer-on/pull-off, tremolo, natural vs. pinch harmonic (scored independently), palm/string mute, vibrato, fret-hand mute, and bass slap/pop (scored independently, slap weighted harder). Timing thresholds (grouping window, beat tolerance, movement time scale) scale with the song's own tempo instead of fixed wall-clock constants. |
+| Guitar / bass (fretted) | ✅ | Fret complexity, low-position stretch posture, time-aware hand shifts, string-skip/hand-shape distance, tempo/syncopation-aware density, sustain-ease. Technique scoring covers bend (base + pre-bend/round-trip/shaped-curve difficulty, `bt`/`bnv`), slide, hammer-on/pull-off, tremolo, natural vs. pinch harmonic (scored independently), palm/string mute, vibrato, fret-hand mute, and bass slap/pop (scored independently, slap weighted harder), plus a coordination bonus for a group using more than one distinct technique at once or switching technique from the group before (a chord mixing a bend and a palm mute scores above either alone; see "Technique difficulty counts coordination demand" below). Timing thresholds (grouping window, beat tolerance, movement time scale) scale with the song's own tempo instead of fixed wall-clock constants. |
 | Keys / piano | ✅ | Separate pitch-based heuristic (polyphony, hand-span, density, sustain-ease) — keys notes encode `midi = string*24 + fret`, so the fretted heuristic doesn't apply and never runs against them. No fret anchors/hand-shapes generated (the piano renderer doesn't consume them). |
 | Drums | ❌ | Drum parts are a `drum_tab.json` pointer, not a `notes`/`chords` file — outside this generator's data model entirely. Detected and skipped cleanly (`unsupported-instrument-drums`), never mis-scored. |
 | Anything else (vocals, harmony, notation-only, …) | ❌ | An arrangement whose `type` is a specific, non-empty value this generator doesn't recognize is rejected explicitly (`unsupported-instrument-type`) rather than silently treated as fretted. |

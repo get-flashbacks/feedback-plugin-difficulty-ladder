@@ -306,6 +306,88 @@ def _tech_score(n):
     return min(1.0, score)
 
 
+# Category names mirror _tech_score's own groupings, so a note's set of
+# active categories is exactly the set of terms that contributed to its
+# _tech_score. ho/po (hammer-on/pull-off) share one category, as do
+# sl/slu (slide/slide-up) -- _tech_score itself scores each of those pairs
+# identically and doesn't distinguish them, so treating them as one
+# category avoids reporting a coordination hit that _tech_score doesn't
+# actually recognize as two different techniques.
+def _technique_categories(n):
+    """The set of distinct technique categories active on note `n` (see
+    _tech_score) -- used by _technique_coordination_bonus (#72/B4) to score
+    coordination demand separately from _tech_score's own max-single-note
+    difficulty. Bend intent/curve (bt/bnv) refine the 'bend' category's
+    _tech_score weight but don't add a category of their own -- they can't
+    occur without `bn`, so they'd never contribute a category _tech_score
+    doesn't already count."""
+    cats = set()
+    if n.get("bn"):
+        cats.add("bend")
+    if n.get("ho") or n.get("po"):
+        cats.add("hopo")
+    if n.get("tp"):
+        cats.add("tap")
+    if n.get("sl", -1) >= 0 or n.get("slu", -1) >= 0:
+        cats.add("slide")
+    if n.get("tr"):
+        cats.add("trem")
+    if n.get("hm"):
+        cats.add("harm_nat")
+    if n.get("hp"):
+        cats.add("harm_pinch")
+    if n.get("plk"):
+        cats.add("pluck")
+    if n.get("slp"):
+        cats.add("slap")
+    if n.get("pm"):
+        cats.add("palm_mute")
+    if n.get("mt"):
+        cats.add("string_mute")
+    if n.get("vb"):
+        cats.add("vibrato")
+    if n.get("fhm"):
+        cats.add("fret_mute")
+    return cats
+
+
+# Per extra simultaneous technique category beyond the hardest one already
+# counted by _tech_score's max, and per switch to a different technique set
+# than the immediately preceding group. Heuristic weights (not measured
+# against real players), capped low relative to _tech_score's own 0-1 range
+# so a single very hard technique (_tech_score's max term) still dominates
+# over coordination alone -- coordination compounds an existing demand, it
+# doesn't replace judging which demand is hardest.
+_COORD_PER_EXTRA_CATEGORY = 0.08
+_COORD_SWITCH_BONUS = 0.06
+_COORD_MAX_BONUS = 0.20
+
+
+def _technique_coordination_bonus(group_categories, prev_categories):
+    """Coordination-demand bonus on top of _tech_score's max-only term
+    (#72/B4): planning and linking movements is harder than any one of them
+    alone (motor-sequence literature; see #103's B4 entry), so a chord
+    mixing a bend, a palm mute and a slide should score above a lone bend,
+    and a passage that keeps switching technique between neighbouring
+    groups should score above one that repeats the same technique.
+
+    `group_categories` is this group's union of _technique_categories(n)
+    across its notes (simultaneous demand); `prev_categories` is the same
+    for the immediately preceding non-empty group (sequential demand), or
+    an empty set if there is none. Returns 0.0 whenever a group uses at
+    most one technique and doesn't change it from the group before --
+    the common case -- so single-technique passages are unaffected."""
+    if not group_categories:
+        return 0.0
+    simultaneous = max(0, len(group_categories) - 1) * _COORD_PER_EXTRA_CATEGORY
+    switched = (
+        _COORD_SWITCH_BONUS
+        if prev_categories and group_categories != prev_categories
+        else 0.0
+    )
+    return min(_COORD_MAX_BONUS, simultaneous + switched)
+
+
 def _cluster_covered_by_hand_shape(cluster, hand_shapes):
     """True when an authored `HandShape` window (wire keys `start_time`/
     `end_time`) covers every note's onset in `cluster` — the chart's own
@@ -619,6 +701,7 @@ def _sequential_density(times_sorted, gi, tempo):
 def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
     tempo = tempo or _TempoParams()
     times_sorted = [float(g["time"]) for g in groups]
+    prev_categories = set()
     for gi, g in enumerate(groups):
         ns = g["notes"]
         if not ns:
@@ -636,7 +719,13 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
             + 0.25 * string_shape
             + 0.15 * _posture_score(ns)
         )
-        technique = max(_tech_score(n) for n in ns)
+        group_categories = set().union(*(_technique_categories(n) for n in ns))
+        technique = min(1.0,
+            max(_tech_score(n) for n in ns)
+            + _technique_coordination_bonus(group_categories, prev_categories)
+        )
+        if group_categories:
+            prev_categories = group_categories
         raw_density = _sequential_density(times_sorted, gi, tempo)
         syncopation = _syncopation_score(g["time"], beat_times, tempo.beat_interval)
         density = min(1.0, (1.0 - _SYNCOPATION_DENSITY_WEIGHT) * raw_density

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Score technique coordination demand: a group using more than one distinct
+  technique at once, or switching technique from the group before, now
+  scores above `_tech_score`'s previous max-single-technique-only term.
+  0 for the common single-technique, unchanged-from-before case, so
+  existing single-technique passages are unaffected (#72).
 - Report a per-phrase `difficulty_cost` (mean of the internal mechanical
   `cost` score across a phrase's full, untiered content), independent of
   `max_difficulty`/ladder depth. Additive wire field — consumers that don't
