@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this at the very start and very end of the song (both are genuine
   boundaries even when the windows aren't authored phrases), not at
   internal window edges (#105).
+- Give a modest retention push to each local pitch high or low in a
+  single-note line, so a thinned tier still traces the melody's shape
+  instead of just its hardest notes. Chord/cluster groups never qualify,
+  so chord-heavy passages are unaffected (#106).
 - Score technique coordination demand: a group using more than one distinct
   technique at once, or switching technique from the last technique-bearing
   group before it, now scores above `_tech_score`'s previous

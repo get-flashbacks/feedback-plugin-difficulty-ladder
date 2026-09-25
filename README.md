@@ -136,6 +136,21 @@ contract.
   generated-window builders clamp their final window's end to the song's
   actual duration, so unlike an internal edge, that one really is the
   song's end.
+- **A single-note line's turning points get retention value (#103/B5).**
+  Beginners remember a melody's rising-and-falling shape before its exact
+  intervals (Dowling, 1978) — strong as a perception finding, though that
+  keeping the shape specifically aids learning is inferred, not tested
+  (moderate evidence). Each note that is a strict local high or low among
+  the arrangement's single-note groups gets the same modest retention push
+  a downbeat or phrase boundary gets, so a thinned tier still traces the
+  melody's contour instead of collapsing to whichever notes happened to
+  score hardest. Chord and multi-note cluster groups never participate —
+  chord-heavy passages are unaffected by construction, not by a special
+  case. Pitch direction is approximated from string/fret using standard
+  tuning intervals (plus the arrangement's own per-string `tuning`
+  offsets) rather than an exact MIDI pitch, since only the rise/fall
+  *direction* between neighboring notes matters for finding a turning
+  point, not its precise size.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty

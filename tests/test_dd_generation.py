@@ -192,6 +192,81 @@ def test_downbeat_group_ranks_into_a_lower_tier_than_an_equally_hard_off_grid_gr
     assert groups[0]["level"] <= groups[1]["level"]  # nosec B101 - pytest assertion
 
 
+def test_melody_turning_points_identifies_local_highs_and_lows_only():
+    """#106/B5: a strict local high or low among the single-note sequence
+    is a turning point; a monotonic run and a repeated pitch are not."""
+    groups = [
+        {"time": 0.0, "notes": [{"s": 5, "f": 0, "sus": 0}]},   # rising ->
+        {"time": 0.5, "notes": [{"s": 5, "f": 2, "sus": 0}]},   # rising ->
+        {"time": 1.0, "notes": [{"s": 5, "f": 5, "sus": 0}]},   # local high (peak)
+        {"time": 1.5, "notes": [{"s": 5, "f": 2, "sus": 0}]},   # falling
+        {"time": 2.0, "notes": [{"s": 5, "f": 0, "sus": 0}]},   # local low (valley)
+        {"time": 2.5, "notes": [{"s": 5, "f": 3, "sus": 0}]},   # rising into a plateau
+        {"time": 3.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},   # repeated pitch, not a turn
+    ]
+    turning = routes._melody_turning_points(groups, tuning=(), n_strings=6)
+    assert turning == {1: False, 2: True, 3: False, 4: True, 5: False}  # nosec B101 - pytest assertion
+
+
+def test_melody_turning_point_survives_thinning_over_an_equally_hard_neighbor():
+    """#106/B5 acceptance criterion: on a single-note fixture, a local high
+    or low note earns a lower retention_score than an equally hard note
+    that isn't one. group[1] (f=6, at t=0.5) is mechanically identical in
+    both fixtures -- same own fretting, same neighbor jump from group[0],
+    same onset times feeding density/syncopation -- so the only thing that
+    can move its retention_score is whether group[2]'s pitch makes it a
+    turning point (a peak, in `turn`) or not (a monotonic rise, in
+    `no_turn`)."""
+    turn = [
+        {"time": 0.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+        {"time": 0.5, "notes": [{"s": 5, "f": 6, "sus": 0}]},  # local high -> turning point
+        {"time": 1.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+    ]
+    no_turn = [
+        {"time": 0.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+        {"time": 0.5, "notes": [{"s": 5, "f": 6, "sus": 0}]},  # monotonic rise -> not a turn
+        {"time": 1.0, "notes": [{"s": 5, "f": 9, "sus": 0}]},
+    ]
+    routes._score_groups(turn, n_strings=6)
+    routes._score_groups(no_turn, n_strings=6)
+    assert turn[1]["cost"] == no_turn[1]["cost"], (  # nosec B101 - pytest assertion
+        "group[1] must be mechanically identical in both fixtures; only "
+        "the turning-point retention nudge should tell them apart"
+    )
+    assert turn[1]["retention_score"] < no_turn[1]["retention_score"]  # nosec B101 - pytest assertion
+    assert (
+        no_turn[1]["retention_score"] - turn[1]["retention_score"]
+        == pytest.approx(routes._MELODY_TURNING_POINT_RETENTION_BONUS)
+    )  # nosec B101 - pytest assertion
+
+
+def test_melody_turning_point_bonus_never_applies_to_a_chord_or_cluster_group():
+    """#106/B5 acceptance criterion: chord-heavy passages are unaffected --
+    a group with more than one note never earns the turning-point bonus,
+    even at a time/pitch position that would otherwise be a local high in
+    a single-note line."""
+    single_note_peak = [
+        {"time": 0.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+        {"time": 0.5, "notes": [{"s": 5, "f": 6, "sus": 0}]},  # a real turning point
+        {"time": 1.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+    ]
+    chord_at_same_position = [
+        {"time": 0.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+        {"time": 0.5, "notes": [  # same pitch, but a chord -- must not qualify
+            {"s": 5, "f": 6, "sus": 0}, {"s": 4, "f": 6, "sus": 0},
+        ]},
+        {"time": 1.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+    ]
+    routes._score_groups(single_note_peak, n_strings=6)
+    routes._score_groups(chord_at_same_position, n_strings=6)
+    assert single_note_peak[1]["retention_score"] < chord_at_same_position[1]["retention_score"], (  # nosec B101
+        "the chord group's retention_score must not receive the "
+        "single-note turning-point discount"
+    )
+    turning = routes._melody_turning_points(chord_at_same_position, tuning=(), n_strings=6)
+    assert 1 not in turning  # nosec B101 - pytest assertion, the chord group never qualifies
+
+
 def test_authored_phrase_keeps_its_first_and_last_group_at_the_bottom_tier():
     """#105 acceptance criterion: on an authored-phrase fixture, the lowest
     tier keeps the phrase's first and last group whenever the rest of the
@@ -1128,11 +1203,12 @@ def test_syncopation_score_zero_when_already_on_the_strongest_position():
     assert routes._syncopation_score(0, times_sorted, beat_times, tempo) == 0.0  # nosec B101
 
 
-def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
+def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None, tuning=()):
     """Independent oracle for the current fretted retention formula."""
     tempo = tempo or routes._TempoParams()
     legacy = deepcopy(groups)
     times_sorted = [float(g["time"]) for g in legacy]
+    turning_points = routes._melody_turning_points(legacy, tuning, n_strings)
     prev_categories = set()
     for gi, group in enumerate(legacy):
         notes = group["notes"]
@@ -1183,6 +1259,8 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
             + 0.15 * (1.0 - sustain_ease)
         )
         group["score"] -= 0.12 * routes._beat_value(group["time"], beat_times, tempo)
+        if turning_points.get(gi):
+            group["score"] -= routes._MELODY_TURNING_POINT_RETENTION_BONUS
         if gi:
             previous = routes._group_anchor_note(legacy[gi - 1])
             current = routes._group_anchor_note(group)
@@ -1366,10 +1444,14 @@ def test_movement_cost_generates_nested_ladder_fixture():
     # measure data) is both the first AND the last window, so both its
     # start (0.0) and its end (3.0, the song's actual end -- caught in PR
     # #123 review) get the boundary-retention bonus at the bottom tier.
+    # #103/B5: this is also a genuine single-note melodic line (fret 3-4-5
+    # repeating), so t=1.5 (fret 3, a local low between the fret-5 groups on
+    # either side of it) is a real turning point and earns the bottom tier
+    # too, alongside the two phrase boundaries.
     assert [(level["difficulty"], [n["t"] for n in level["notes"]])
             for level in phrases[0]["levels"]] == [
-        (0, [0.0, 3.0]),
-        (1, [0.0, 0.5, 1.5, 2.0, 3.0]),
+        (0, [0.0, 1.5, 3.0]),
+        (1, [0.0, 1.0, 1.5, 2.5, 3.0]),
         (2, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]),
     ]
 

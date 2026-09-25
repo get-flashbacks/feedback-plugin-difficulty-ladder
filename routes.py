@@ -880,9 +880,65 @@ def _sequential_density(times_sorted, gi, tempo):
     return min(1.0, (hi - lo) / _DENSITY_SATURATION_ONSETS)
 
 
-def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
+# #103/B5 (Dowling, 1978): beginners remember a melody's rising-and-falling
+# shape before its exact intervals, so thinning a single-note line can erase
+# that shape even when none of its individual notes are otherwise "hard" by
+# the cost model below. This nudges each local high or low note in a
+# single-note passage to survive thinning a little longer, the same weight
+# a downbeat gets from `value` (see _beat_value). Chord/cluster groups
+# (`len(notes) != 1`) never participate — chord-heavy passages are
+# unaffected by construction, not by a special case.
+_MELODY_TURNING_POINT_RETENTION_BONUS = 0.12
+
+# Approximate semitone offsets for a standard tuning, low string to high,
+# keyed by string count. This ranks pitch DIRECTION (rising vs falling) for
+# melody-shape retention -- not an exact pitch. It ignores capo and treats
+# every string as standard-interval-spaced, which is wrong for drop/altered
+# tunings and any non-standard interval between two particular strings, but
+# a wrong interval size still preserves note-to-note direction almost
+# always (a fret difference big enough to flip apparent direction across a
+# wrongly-sized interval is the rare case), which is all a turning point
+# needs. The arrangement's own per-string `tuning` offsets (already
+# available at every call site) are added on top where given.
+_STANDARD_STRING_INTERVALS = {
+    4: (0, 5, 10, 15),
+    5: (0, 5, 10, 15, 19),
+    6: (0, 5, 10, 15, 19, 24),
+    7: (-5, 0, 5, 10, 15, 19, 24),
+    8: (-10, -5, 0, 5, 10, 15, 19, 24),
+}
+
+
+def _approx_pitch(note, tuning, n_strings):
+    s = int(note.get("s", 0))
+    f = int(note.get("f", 0))
+    intervals = _STANDARD_STRING_INTERVALS.get(n_strings, _STANDARD_STRING_INTERVALS[6])
+    base = intervals[s] if 0 <= s < len(intervals) else s * 5
+    offset = int(tuning[s]) if 0 <= s < len(tuning) else 0
+    return base + offset + f
+
+
+def _melody_turning_points(groups, tuning, n_strings):
+    """Map group index -> True for each single-note group (`len(notes) ==
+    1`) that is a strict local high or low among the OTHER single-note
+    groups in the arrangement -- chords/clusters are skipped when looking
+    for neighbors, since they aren't part of the single-note melodic line.
+    A repeated pitch (equal to a neighbor) is not a turning point: the
+    contour hasn't changed direction there."""
+    singles = [i for i, g in enumerate(groups) if len(g["notes"]) == 1]
+    pitches = {i: _approx_pitch(groups[i]["notes"][0], tuning, n_strings) for i in singles}
+    turning = {}
+    for k in range(1, len(singles) - 1):
+        i, prev_i, next_i = singles[k], singles[k - 1], singles[k + 1]
+        p, prev_p, next_p = pitches[i], pitches[prev_i], pitches[next_i]
+        turning[i] = (p > prev_p and p > next_p) or (p < prev_p and p < next_p)
+    return turning
+
+
+def _score_groups(groups, n_strings, beat_times=(), *, tempo=None, tuning=()):
     tempo = tempo or _TempoParams()
     times_sorted = [float(g["time"]) for g in groups]
+    turning_points = _melody_turning_points(groups, tuning, n_strings)
     prev_categories = set()
     for gi, g in enumerate(groups):
         ns = g["notes"]
@@ -941,6 +997,8 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
         # (value was strictly 0.0/1.0 then) to a graded value without
         # changing the binary case's result: 0.12*1.0 == 0.12, 0.12*0.0 == 0.0.
         retention_score = base_cost - 0.12 * value
+        if turning_points.get(gi):
+            retention_score -= _MELODY_TURNING_POINT_RETENTION_BONUS
         if gi:
             prev = _group_anchor_note(groups[gi - 1])
             cur = _group_anchor_note(g)
@@ -2070,7 +2128,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             notes, chords, time_window_ms=tempo.time_window_ms,
             hand_shapes=hand_shapes, chord_templates=chord_templates,
         )
-        _score_groups(groups_all, n_strings, beat_times, tempo=tempo)
+        _score_groups(groups_all, n_strings, beat_times, tempo=tempo, tuning=tuning)
         # A phrase-local ln check alone can't tell "the target was pruned
         # away" apart from "the target is simply in the next phrase" --
         # compute cross-phrase survivorship once up front (issue #68
