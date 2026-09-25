@@ -231,21 +231,46 @@ def test_melody_turning_points_does_not_cross_a_chord_section_between_phrases():
 
 
 def test_five_string_bass_uses_bass_intervals_not_guitar_intervals():
-    """A pullfrog-flagged bug: the 5-string row must be bass-tuned
-    (standard B-E-A-D-G, all perfect fourths -> 0,5,10,15,20), not the
-    guitar row's one-major-third shape (…,19,24). On a standard 5-string
-    bass, D-open (string 3, ->15) to G-open (string 4, ->20 real / 19
-    under the old guitar-derived table) to F# (string 3 fret 4, ->19) is a
-    genuine local high on the middle note -- but the old table's 19/19
-    tie between the peak and the next note made the strict `>` comparison
-    reject it outright, not just misjudge its size."""
+    """A pullfrog-flagged bug: on a 5-string BASS, the row must be
+    bass-tuned (standard B-E-A-D-G, all perfect fourths ->
+    0,5,10,15,20), not the guitar row's one-major-third shape (…,19,24).
+    D-open (string 3, ->15) to G-open (string 4, ->20 bass / 19 guitar) to
+    F# (string 3 fret 4, ->19) is a genuine local high on the middle
+    note -- but the guitar-shaped table's 19/19 tie between the peak and
+    the next note made the strict `>` comparison reject it outright, not
+    just misjudge its size."""
     groups = [
         _single(0.0, 0, s=3),  # D open -> 15
-        _single(0.5, 0, s=4),  # G open -> 20 (bass) / 19 (old guitar-shaped table)
+        _single(0.5, 0, s=4),  # G open -> 20 (bass) / 19 (guitar-shaped table)
         _single(1.0, 4, s=3),  # F# -> 19
     ]
-    turning = routes._melody_turning_points(groups, tuning=(), n_strings=5, tempo=routes._TempoParams())
+    turning = routes._melody_turning_points(
+        groups, tuning=(), n_strings=5, tempo=routes._TempoParams(), is_bass=True,
+    )
     assert turning == {1}  # nosec B101 - pytest assertion
+
+
+def test_five_string_non_bass_uses_the_guitar_shaped_row():
+    """A pullfrog-flagged bug (round 2): feedBack core's own
+    `base_open_string_midis(5, is_bass)` explicitly supports a non-bass
+    5-string arrangement by borrowing the 6-string guitar's low strings
+    (…,15,19), not the bass shape (…,15,20). Applying the bass row
+    unconditionally to every 5-string chart -- `is_bass` defaults to
+    False, so this is exactly what a caller gets without opting in --
+    turns a real tie into a false turning point: string 3 fret 4 (F#) and
+    string 4 fret 0 (G) are BOTH 19 under the correct guitar-shaped row
+    (a genuine plateau, not a turn), but 19 and 20 under the wrongly-
+    applied bass row, which breaks the tie into a false local high."""
+    groups = [
+        _single(0.0, 4, s=3),  # F# -> 19 (both rows agree; string 3 is unaffected)
+        _single(0.5, 0, s=4),  # G open -> 19 (guitar-shaped, correct) / 20 (bass-shaped, wrong)
+        _single(1.0, 2, s=3),  # E -> 17 (both rows agree)
+    ]
+    turning = routes._melody_turning_points(groups, tuning=(), n_strings=5, tempo=routes._TempoParams())
+    assert turning == set(), (  # nosec B101 - pytest assertion
+        "a real tie (19, 19) under the guitar-shaped row must not become "
+        "a false turning point by wrongly applying the bass row"
+    )
 
 
 def _single(t, f, s=5):
@@ -2036,7 +2061,12 @@ def test_generate_one_scores_the_manifest_tuning_but_persists_the_embedded_one(t
     ending up written back into the pack's arrangement file."""
     embedded_tuning = [0, 0, 0, 0, 0, 0]
     manifest_tuning = [-2, 0, 0, 0, 0, 0]
-    arr = _arrangement(_simple_notes(0, 2), n_beats=8)
+    # At least MIN_EVENTS_FOR_GENERATION (8) events, or _generate_one skips
+    # before ever reaching arr["phrases"] = phrases / the write-back below
+    # -- a real gap in an earlier version of this test (caught in review):
+    # a 4-event arrangement "passed" this test without ever exercising the
+    # write path it claims to cover.
+    arr = _arrangement(_simple_notes(0, 4), n_beats=16)
     arr["tuning"] = embedded_tuning
     pack_dir = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
     manifest_path = pack_dir / "manifest.yaml"
@@ -2055,8 +2085,15 @@ def test_generate_one_scores_the_manifest_tuning_but_persists_the_embedded_one(t
         result = routes._generate_one(pack_dir, 0, n_levels=4, force=False, log=_TEST_LOG)
 
     assert result["ok"] is True  # nosec B101 - pytest assertion
+    assert result.get("phrases", 0) > 0, (  # nosec B101 - pytest assertion
+        "must actually generate (and therefore write back) phrases -- "
+        "otherwise this test never reaches the code path it's testing"
+    )
     assert seen_tuning == [manifest_tuning]  # nosec B101 - pytest assertion
     persisted = json.loads((pack_dir / "arrangements/lead.json").read_text())
+    assert persisted.get("phrases"), (  # nosec B101 - pytest assertion
+        "phrases must actually have been written to the pack"
+    )
     assert persisted["tuning"] == embedded_tuning, (  # nosec B101 - pytest assertion
         "the manifest override must never be written back into the "
         "arrangement file -- only used for this generation run's scoring"

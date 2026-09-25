@@ -901,35 +901,45 @@ _MELODY_TURNING_POINT_RETENTION_BONUS = 0.12
 # needs. The arrangement's own per-string `tuning` offsets (already
 # available at every call site) are added on top where given.
 #
-# The 5-string row is bass-tuned (0,5,10,15,20 — standard B-E-A-D-G, all
-# perfect fourths), not a guitar row: standard 6-string guitar's one major
-# third (B-string) makes its own top interval 19 rather than 20, but a real
-# 5-string *guitar* essentially doesn't exist, while 5-string bass is
-# common and `_instrument_kind` doesn't distinguish bass from guitar (both
-# are "fretted"). Getting this one wrong isn't just imprecise the way a
-# wrong interval size usually is (see above): a 1-semitone error here can
-# turn a genuine turning point into an exact tie, which the strict `>`/`<`
-# comparison below then rejects outright, rather than just misjudging its
-# size.
+# Only the 5-string row is instrument-dependent, matching feedBack core's
+# own `base_open_string_midis(string_count, is_bass)` contract (lib/song.py):
+# a 5-string BASS is all perfect fourths (B-E-A-D-G -> 0,5,10,15,20), while
+# a 5-string NON-bass (a guitar voicing) borrows the low strings of the
+# 6-string base instead -- so its top interval is 19, same as 6-string
+# guitar's own major-third B-string, not 20. (4-string is instrument-
+# independent: both the bass base and the borrowed 6-string prefix give
+# the same (0,5,10,15) shape, since the major third only appears between
+# strings 5 and 6.) Getting the 5-string case wrong isn't just imprecise
+# the way a wrong interval size usually is (see above): a 1-semitone error
+# here can turn a genuine turning point into an exact tie, which the
+# strict `>`/`<` comparison below then rejects outright, rather than just
+# misjudging its size.
 _STANDARD_STRING_INTERVALS = {
     4: (0, 5, 10, 15),
-    5: (0, 5, 10, 15, 20),
     6: (0, 5, 10, 15, 19, 24),
     7: (-5, 0, 5, 10, 15, 19, 24),
     8: (-10, -5, 0, 5, 10, 15, 19, 24),
 }
+_STANDARD_STRING_INTERVALS_5_BASS = (0, 5, 10, 15, 20)
+_STANDARD_STRING_INTERVALS_5_GUITAR = (0, 5, 10, 15, 19)
 
 
-def _approx_pitch(note, tuning, n_strings):
+def _string_intervals(n_strings, is_bass):
+    if n_strings == 5:
+        return _STANDARD_STRING_INTERVALS_5_BASS if is_bass else _STANDARD_STRING_INTERVALS_5_GUITAR
+    return _STANDARD_STRING_INTERVALS.get(n_strings, _STANDARD_STRING_INTERVALS[6])
+
+
+def _approx_pitch(note, tuning, n_strings, is_bass):
     s = int(note.get("s", 0))
     f = int(note.get("f", 0))
-    intervals = _STANDARD_STRING_INTERVALS.get(n_strings, _STANDARD_STRING_INTERVALS[6])
+    intervals = _string_intervals(n_strings, is_bass)
     base = intervals[s] if 0 <= s < len(intervals) else s * 5
     offset = int(tuning[s]) if 0 <= s < len(tuning) else 0
     return base + offset + f
 
 
-def _melody_turning_points(groups, tuning, n_strings, tempo):
+def _melody_turning_points(groups, tuning, n_strings, tempo, is_bass=False):
     """Return the set of group indices among single-note groups
     (`len(notes) == 1`) that are a strict local high or low among the
     OTHER single-note groups in the arrangement -- chords/clusters are
@@ -945,7 +955,7 @@ def _melody_turning_points(groups, tuning, n_strings, tempo):
     phrase, could sit next to each other in `singles` and look like a
     contour turn that was never actually played that way."""
     singles = [i for i, g in enumerate(groups) if len(g["notes"]) == 1]
-    pitches = {i: _approx_pitch(groups[i]["notes"][0], tuning, n_strings) for i in singles}
+    pitches = {i: _approx_pitch(groups[i]["notes"][0], tuning, n_strings, is_bass) for i in singles}
     times = {i: float(groups[i]["time"]) for i in singles}
     max_gap = tempo.fret_jump_window_seconds
     turning = set()
@@ -959,10 +969,10 @@ def _melody_turning_points(groups, tuning, n_strings, tempo):
     return turning
 
 
-def _score_groups(groups, n_strings, beat_times=(), *, tempo=None, tuning=()):
+def _score_groups(groups, n_strings, beat_times=(), *, tempo=None, tuning=(), is_bass=False):
     tempo = tempo or _TempoParams()
     times_sorted = [float(g["time"]) for g in groups]
-    turning_points = _melody_turning_points(groups, tuning, n_strings, tempo)
+    turning_points = _melody_turning_points(groups, tuning, n_strings, tempo, is_bass)
     prev_categories = set()
     for gi, g in enumerate(groups):
         ns = g["notes"]
@@ -2152,7 +2162,14 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             notes, chords, time_window_ms=tempo.time_window_ms,
             hand_shapes=hand_shapes, chord_templates=chord_templates,
         )
-        _score_groups(groups_all, n_strings, beat_times, tempo=tempo, tuning=tuning)
+        # Same bass sniff analyze_chords already uses (issue: melody-shape
+        # pitch approximation, #103/B5) -- only the 5-string interval row
+        # is instrument-dependent (see _string_intervals), matching
+        # feedBack core's own base_open_string_midis(n, is_bass) contract.
+        is_bass = bool(re.search(
+            r"\bbass\b", f"{arr.get('type') or ''} {arr.get('name') or ''}", re.IGNORECASE
+        ))
+        _score_groups(groups_all, n_strings, beat_times, tempo=tempo, tuning=tuning, is_bass=is_bass)
         # A phrase-local ln check alone can't tell "the target was pruned
         # away" apart from "the target is simply in the next phrase" --
         # compute cross-phrase survivorship once up front (issue #68
@@ -2655,7 +2672,7 @@ def setup(app, context):
             raise HTTPException(400, "no DLC library configured")
         pack_path = _resolve_pack(Path(dlc_root), body.filename.strip())
         try:
-            _, arr, _entry, skip_reason = _load_manifest_and_arrangement(
+            _, arr, entry, skip_reason = _load_manifest_and_arrangement(
                 pack_path, body.arrangement_index
             )
         except HTTPException:
@@ -2669,7 +2686,11 @@ def setup(app, context):
         if _instrument_kind(arr.get("type", ""), arr.get("name", "")) != "fretted":
             raise HTTPException(400, "chord grouping requires a fretted arrangement")
         chords = arr.get("chords", [])
-        tuning = arr.get("tuning", [])
+        # Resolve the EFFECTIVE tuning (manifest entry override, when
+        # present) here too, same as generation -- this endpoint is
+        # read-only (never writes the pack), so applying it directly is
+        # safe; it just needs to match what playback actually resolves to.
+        tuning = list(entry["tuning"]) if entry and "tuning" in entry else arr.get("tuning", [])
         templates = arr.get("templates") or arr.get("chordTemplates") or []
         if not all(isinstance(value, list) for value in (chords, tuning, templates)):
             raise HTTPException(400, "malformed arrangement")

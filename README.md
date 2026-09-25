@@ -151,7 +151,13 @@ contract.
   direction is approximated from string/fret using standard tuning
   intervals, rather than an exact MIDI pitch, since only the rise/fall
   *direction* between neighboring notes matters for finding a turning
-  point, not its precise size. The offset added on top is the EFFECTIVE
+  point, not its precise size. Only the 5-string row is instrument-
+  dependent, matching feedBack core's own `base_open_string_midis`
+  contract: a 5-string bass is all perfect fourths, while a 5-string
+  non-bass borrows the 6-string guitar's low strings instead (one major
+  third higher up) — a name/type sniff for "bass" (the same one
+  `analyze-chords` already uses) picks the right row. The offset added on
+  top is the EFFECTIVE
   tuning — a manifest entry's own `tuning`, when the pack's manifest
   declares one, takes precedence over the embedded arrangement JSON's,
   mirroring `lib/sloppak.py`'s `load_song()`; this is resolved for

@@ -27,7 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   melody's shape instead of just its hardest notes — and so a note at the
   end of one phrase isn't compared against the start of an unrelated one
   across an intervening chord section or long rest. Chord/cluster groups
-  never qualify, so chord-heavy passages are unaffected (#106).
+  never qualify, so chord-heavy passages are unaffected. A 5-string
+  arrangement's pitch approximation now distinguishes bass (all perfect
+  fourths) from non-bass (borrows the 6-string guitar's low strings,
+  matching feedBack core's own `base_open_string_midis` contract) via a
+  name/type sniff (#106).
 - Score technique coordination demand: a group using more than one distinct
   technique at once, or switching technique from the last technique-bearing
   group before it, now scores above `_tech_score`'s previous
@@ -59,7 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (matching `lib/sloppak.py`'s `load_song()`), instead of always reading
   the embedded value. Resolved on a copy for the generation run only —
   never written back into the arrangement file, so authored data isn't
-  silently normalized to the manifest's value.
+  silently normalized to the manifest's value. The read-only
+  `analyze-chords` preview resolves the same effective tuning for its
+  Chordr context.
 
 ### Changed
 - Split generated-note mechanical cost from rhythmic retention value internally,
