@@ -2094,6 +2094,12 @@ class GenerateIn(BaseModel):
     force: StrictBool = False
 
 
+class AnalyzeChordsIn(BaseModel):
+    """Read-only chord grouping preview for one arrangement."""
+    filename: str
+    arrangement_index: int = Field(ge=0)
+
+
 class GenerateLibraryIn(BaseModel):
     """Body for POST .../generate-library — same strictness as GenerateIn,
     plus a bounds-checked max_songs and a bounds-checked processing-time
@@ -2119,6 +2125,43 @@ def setup(app, context):
         if not safe.exists():
             raise HTTPException(404, "song not found")
         return safe
+
+    @app.post(f"/api/plugins/{PLUGIN_ID}/analyze-chords")
+    def analyze_chords(body: AnalyzeChordsIn):
+        """Preview Chordr identities and parent groups; never write a pack."""
+        dlc_root = get_dlc_dir()
+        if dlc_root is None:
+            raise HTTPException(400, "no DLC library configured")
+        pack_path = _resolve_pack(Path(dlc_root), body.filename.strip())
+        _, arr, skip_reason = _load_manifest_and_arrangement(
+            pack_path, body.arrangement_index
+        )
+        if skip_reason or not isinstance(arr, dict):
+            raise HTTPException(400, skip_reason or "malformed arrangement")
+        if _instrument_kind(arr.get("type", ""), arr.get("name", "")) != "fretted":
+            raise HTTPException(400, "chord grouping requires a fretted arrangement")
+        analyze = getattr(app.state, "chordr_analyze_chart_chords_v1", None)
+        if not callable(analyze):
+            raise HTTPException(503, "Chordr server analysis is not active")
+        chords = arr.get("chords", []) or []
+        tuning = arr.get("tuning", []) or []
+        analysis_context = {
+            "tuning": tuning,
+            "capo": arr.get("capo", 0) or 0,
+            "stringCount": len(tuning) or 6,
+            "isBass": "bass" in f"{arr.get('type') or ''} {arr.get('name') or ''}".lower(),
+        }
+        try:
+            analysis = analyze(
+                chords, context=analysis_context,
+                templates=arr.get("templates") or arr.get("chordTemplates") or [],
+            )
+        except Exception as exc:
+            log.exception("difficulty_ladder: Chordr analysis failed for %s", pack_path.name)
+            raise HTTPException(503, "Chordr analysis failed") from exc
+        return {"ok": True, "filename": body.filename,
+                "arrangement_index": body.arrangement_index,
+                "chord_count": len(chords), **analysis}
 
     @app.post(f"/api/plugins/{PLUGIN_ID}/generate")
     def generate(body: GenerateIn):

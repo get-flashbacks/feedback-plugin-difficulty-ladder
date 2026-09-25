@@ -189,9 +189,66 @@ All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 
 ## Possible Upgrades
 
-Design notes only — not yet implemented. Each item should ship as an
+Chordr now supplies a read-only grouping preview at
+`POST /api/plugins/difficulty_ladder/analyze-chords` with body
+`{"filename":"Song.feedpak","arrangement_index":0}`. It reports each chord
+event's Chordr identity and parent group; a played subset of the preceding
+full chord stays in that chord's group. Chordr must be active for this route.
+The preview does not rewrite the pack or change generated tiers. Inspect its
+grouping on real arrangements before enabling a chord-led generator stage.
+
+Design notes for the general generator — not yet implemented as a plugin
+setting. The one-off *Bring Me to Life* preview in the library tests this
+staging on that song only. Each general feature should ship as an
 independent, opt-in setting so existing behavior doesn't change unless a
 user turns it on.
+
+**Musically staged fretted ladders (design decision; not implemented):**
+
+- Add meaningful stages to the current density, voicing, and technique
+  progression rather than replacing the existing generator or silently
+  changing existing packs. More tiers (within the supported depth cap), or
+  intermediate tiers between current stages, are appropriate when each tier
+  makes a distinct, playable change. Preserve the full authored chart at the
+  highest tier; do not preserve a defective generated tier merely to keep its
+  number.
+- In a chord-led passage, the basic tier should retain the harmonic path:
+  normally one **full chord** per chord group, without its repeated strumming
+  pattern. Prefer the group's longest-sustained sounding occurrence (often
+  its first) as the representative. Do not confuse unnamed partial voicings
+  with new harmony: chordr should identify their parent chord before grouping
+  or grading them. A short, difficult passing/transition chord can enter at
+  a later tier (the brief Bmadd11 in *So Far Away* Rhythm is the example),
+  but a resolution chord must not be omitted just because it is short or
+  difficult. Where harmonic function is uncertain, require review rather
+  than removing a possible resolution by duration alone.
+- In a rhythm-led passage such as *Bring Me to Life* guitar, use the staged
+  order: chord landmarks; then **every authored strum onset** played as one
+  note; then existing easy/intermediate voicing material; then complete
+  rhythm and fingering without bends, vibrato, or harmonic effects; then
+  vibrato; then bends; then the unchanged authored performance (which adds
+  harmonics). Omit a technique stage when no notes in that phrase use it.
+  The one-note rhythm stage must preserve onset timing; it must not thin
+  away the groove. Keep full landmark chords at their selected onsets in
+  later rhythm stages so the ladder does not discard earlier content.
+- Bend-free practice must preserve the pitch struck at note onset: ordinary
+  bend-ups/round trips can lose the bend, while a pre-bend or release struck
+  at the peak needs an equivalent higher fret when one exists. If no fret
+  can produce that onset pitch, keep the authored bend instead of making a
+  wrong-pitched easy note. Vibrato may be removed independently without
+  changing the onset pitch. In the *Bring Me to Life* preview, Lead has
+  vibrato but no bends; Rhythm has both, so only Rhythm receives a distinct
+  bend-introduction tier.
+- The harmonic-fingering stage removes only natural/pinch harmonic effects
+  (`hm`/`hp`), retaining their authored string, fret, and onset. A different
+  sounding pitch is acceptable **at this specific practice stage** so the
+  player can learn the fingering before the effect. This does not relax the
+  pitch-preserving rule for bend, slide, or other simplifications, and the
+  highest tier always retains the original harmonic effects.
+- Whether silent/muted `X` strums should form their own stage remains open;
+  do not automatically drop them from an existing ladder on this proposal's
+  authority. Chordr output, group boundaries, resolution protection, and
+  the audible/playable result need fixtures and review before implementation.
 
 **Also considered:**
 
