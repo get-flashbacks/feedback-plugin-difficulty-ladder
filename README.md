@@ -321,7 +321,11 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 as a settings.html checkbox. Pass it explicitly in the request body to
 enable the chord-landmark bottom tier (see "Possible Upgrades" below for
 what it does); the acceptance criteria for a full UI toggle is broader
-validation against real (not just one) arrangements first.
+validation against real (not just one) arrangements first. Like
+`levels`, it only takes effect while generating: it has no effect on an
+arrangement that already has phrases unless the request also sets
+`force`, matching `/generate`'s existing regenerate-only-on-request
+behavior.
 
 **Library card badge** — songs with a remembered per-song difficulty (see above) show a small
 indicator on their library card via `window.feedBack.libraryCardActions` (`placement: 'overlay'`,
