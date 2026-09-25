@@ -155,13 +155,20 @@ contract.
   dependent, matching feedBack core's own `base_open_string_midis`
   contract: a 5-string bass is all perfect fourths, while a 5-string
   non-bass borrows the 6-string guitar's low strings instead (one major
-  third higher up) — a name/type sniff for "bass" (the same one
-  `analyze-chords` already uses) picks the right row. The offset added on
-  top is the EFFECTIVE
+  third higher up) — a name/type sniff for "bass" picks the right row,
+  mirroring `lib/song.py`'s `arrangement_is_bass()` (a case-insensitive
+  "bass" substring in the name, or an exact `type == "bass"`). The sniff
+  runs against the EFFECTIVE name/type — a manifest entry's own
+  `name`/`type`, when it declares one, takes precedence over the
+  embedded arrangement JSON's, same as `tuning` below — so a manifest
+  entry authored as a bass part still gets the bass row even when the
+  embedded arrangement's own name/type doesn't say so. The offset added
+  on top is the EFFECTIVE
   tuning — a manifest entry's own `tuning`, when the pack's manifest
-  declares one, takes precedence over the embedded arrangement JSON's,
-  mirroring `lib/sloppak.py`'s `load_song()`; this is resolved for
-  scoring only, on a copy, and is never written back into the arrangement
+  declares one (and is actually a list; a malformed override is ignored
+  rather than raising), takes precedence over the embedded arrangement
+  JSON's, mirroring `lib/sloppak.py`'s `load_song()`; this is resolved
+  for scoring only, on a copy, and is never written back into the arrangement
   file. Two single-note groups that shouldn't be
   compared at all — either side of an intervening chord section, or the
   end of one authored phrase and the start of an unrelated one — are

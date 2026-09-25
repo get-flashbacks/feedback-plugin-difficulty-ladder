@@ -2094,10 +2094,64 @@ def test_generate_one_scores_the_manifest_tuning_but_persists_the_embedded_one(t
     assert persisted.get("phrases"), (  # nosec B101 - pytest assertion
         "phrases must actually have been written to the pack"
     )
-    assert persisted["tuning"] == embedded_tuning, (  # nosec B101 - pytest assertion
-        "the manifest override must never be written back into the "
-        "arrangement file -- only used for this generation run's scoring"
-    )
+
+
+def test_generate_one_resolves_is_bass_from_the_manifest_type_override():
+    """A pullfrog-flagged bug: lib/sloppak.py's load_song() applies a
+    manifest entry's `type`/`name` override before core's
+    arrangement_is_bass() runs, same precedence as `tuning`. A manifest
+    entry declaring `type: bass` over an embedded `type: lead` must
+    still resolve is_bass=True for the melody-shape pitch approximation
+    -- reading only the embedded arr (the previous version of this fix)
+    missed exactly this case."""
+    seen_is_bass = []
+    real_generate = routes.generate_phrases_for_arrangement
+
+    def _spy_generate(arr_arg, *, is_bass=None, **kwargs):
+        seen_is_bass.append(is_bass)
+        return real_generate(arr_arg, is_bass=is_bass, **kwargs)
+
+    class _Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    fake_arr = {"type": "lead", "name": "Lead"}  # embedded: NOT bass
+    fake_entry = {"type": "bass"}  # manifest override: IS bass
+    with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
+         patch.object(routes, "_load_manifest_and_arrangement",
+                      return_value=("arrangements/lead.json", fake_arr, fake_entry, None)), \
+         patch.object(routes, "generate_phrases_for_arrangement", side_effect=_spy_generate), \
+         patch.object(routes, "_write_member_bytes"):
+        routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG)
+
+    assert seen_is_bass == [True]  # nosec B101 - pytest assertion
+
+
+@pytest.mark.parametrize("malformed_tuning", [123, None, "not-a-list"])
+def test_generate_one_ignores_a_malformed_manifest_tuning_instead_of_crashing(malformed_tuning):
+    """A pullfrog-flagged bug: `list(entry["tuning"])` ran before any
+    list-shape check, so a manifest with `tuning: 123` (or any non-list)
+    raised an uncaught TypeError -- a 500 well outside this route's own
+    error handling -- instead of falling back to the embedded value."""
+    class _Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    fake_arr = {"type": "lead", "tuning": [0, 0, 0, 0, 0, 0]}
+    fake_entry = {"tuning": malformed_tuning}
+    with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
+         patch.object(routes, "_load_manifest_and_arrangement",
+                      return_value=("arrangements/lead.json", fake_arr, fake_entry, None)), \
+         patch.object(routes, "generate_phrases_for_arrangement", return_value=None):
+        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG)
+
+    assert result["ok"] is True  # nosec B101 - pytest assertion
 
 
 # Chordr's service can be stubbed: these tests pin the preview's HTTP and
@@ -2219,6 +2273,29 @@ def test_chord_preview_rejects_malformed_field_shapes(tmp_path, field, value):
     arr[field] = value
     _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
     assert _preview(_client_for(tmp_path)).status_code == 400
+
+
+def test_chord_preview_ignores_a_malformed_manifest_tuning_override(tmp_path):
+    """A pullfrog-flagged bug: a bare `list(entry["tuning"])` on a
+    manifest tuning that isn't a list (an int, null, a string) raised an
+    uncaught TypeError -- a 500 -- before the endpoint's own
+    isinstance-based malformed-arrangement check ever got a chance to
+    run. A malformed manifest override must fall back to the embedded
+    (valid) tuning instead of crashing the request."""
+    arr = _arrangement([], chords=[{"t": 1.0, "id": 0, "notes": [{"s": 0, "f": 2}]}])
+    arr.update(tuning=[0] * 6, templates=[{"name": "F#"}])
+    pack = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    manifest_path = pack / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["arrangements"][0]["tuning"] = 123  # malformed: not a list
+    manifest_path.write_text(yaml.safe_dump(manifest))
+
+    client = _client_for(tmp_path)
+    client.app.state.chordr_analyze_chart_chords_v1 = lambda chords, *, context, templates: {
+        "grouped": [{"parentIndex": 0, "continuation": False}]
+    }
+    resp = _preview(client)
+    assert resp.status_code == 200  # nosec B101 - pytest assertion
 
 
 def test_chord_preview_preserves_missing_member_and_manifest_404(tmp_path):

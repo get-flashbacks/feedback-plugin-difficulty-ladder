@@ -65,7 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never written back into the arrangement file, so authored data isn't
   silently normalized to the manifest's value. The read-only
   `analyze-chords` preview resolves the same effective tuning for its
-  Chordr context.
+  Chordr context. A malformed manifest `tuning` (not a list) is now
+  ignored rather than crashing the request.
+- The melody-shape bass/non-bass sniff (#106) now resolves the
+  EFFECTIVE name/type (a manifest entry's own `name`/`type` override,
+  same precedence as `tuning`), not just the embedded arrangement's —
+  a manifest entry authored as a bass part over a differently-labeled
+  embedded arrangement was reading the wrong 5-string interval row.
 
 ### Changed
 - Split generated-note mechanical cost from rhythmic retention value internally,

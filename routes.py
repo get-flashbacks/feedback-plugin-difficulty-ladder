@@ -109,6 +109,21 @@ def _instrument_kind(arr_type: str, arr_name: str) -> str:
     return "unsupported"
 
 
+def _is_bass_arrangement(arr_type: str, arr_name: str) -> bool:
+    """Mirrors lib/song.py's `arrangement_is_bass()`: an editor-authored
+    `type == "bass"` (exact match) first, then a case-insensitive "bass"
+    substring in the name (so "Bassline" counts, unlike a `\\bbass\\b`
+    word-boundary match). `path_bass` -- core's third, most-authoritative
+    signal -- isn't part of the wire dict this generator reads and so has
+    no equivalent here; the other two are the ones available to a chart
+    without that XML-only flag anyway. Callers should pass the EFFECTIVE
+    type/name (after any manifest entry override), not necessarily the
+    embedded arrangement's own."""
+    if (arr_type or "").strip().lower() == "bass":
+        return True
+    return "bass" in (arr_name or "").lower()
+
+
 # ── Tempo-relative constants ─────────────────────────────────────────────────
 #
 # A wall-clock constant (150ms, 0.06s, 1.0s, 2.0s) behaves completely
@@ -2046,7 +2061,8 @@ def _collapse_identical_levels(levels_out):
     return collapsed
 
 
-def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[float] | None = None):
+def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[float] | None = None,
+                                      is_bass: bool | None = None):
     """Build a phrase-level difficulty ladder for one arrangement's raw wire
     dict (as stored in a sloppak's arrangements/*.json).
 
@@ -2063,6 +2079,14 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     _phrase_mechanical_cost). The two are independent: `max_difficulty`
     answers "how much does this phrase get thinned across the ladder",
     `difficulty_cost` answers "how hard is this phrase to play at all" (#72/B1).
+
+    `is_bass`, when given, overrides the bass/non-bass name-sniff used to
+    pick the melody-shape pitch approximation's 5-string interval row
+    (#103/B5) -- pass the EFFECTIVE value (after any manifest entry
+    override; see _generate_one) when the caller has one. `None` (the
+    default) falls back to sniffing `arr`'s own type/name, matching
+    lib/sloppak.py's arrangement_is_bass() but over only the embedded
+    values -- correct for a caller with no manifest context.
     """
     kind = _instrument_kind(arr.get("type", ""), arr.get("name", ""))
     if kind == "drums":
@@ -2162,14 +2186,18 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             notes, chords, time_window_ms=tempo.time_window_ms,
             hand_shapes=hand_shapes, chord_templates=chord_templates,
         )
-        # Same bass sniff analyze_chords already uses (issue: melody-shape
-        # pitch approximation, #103/B5) -- only the 5-string interval row
-        # is instrument-dependent (see _string_intervals), matching
-        # feedBack core's own base_open_string_midis(n, is_bass) contract.
-        is_bass = bool(re.search(
-            r"\bbass\b", f"{arr.get('type') or ''} {arr.get('name') or ''}", re.IGNORECASE
-        ))
-        _score_groups(groups_all, n_strings, beat_times, tempo=tempo, tuning=tuning, is_bass=is_bass)
+        # is_bass, when the caller passed one (the EFFECTIVE value, after
+        # any manifest entry override -- see _generate_one), overrides the
+        # embedded-only fallback so the 5-string interval row (#103/B5,
+        # see _string_intervals) matches what core would actually resolve.
+        effective_is_bass = (
+            is_bass if is_bass is not None
+            else _is_bass_arrangement(arr.get("type", ""), arr.get("name", ""))
+        )
+        _score_groups(
+            groups_all, n_strings, beat_times, tempo=tempo, tuning=tuning,
+            is_bass=effective_is_bass,
+        )
         # A phrase-local ln check alone can't tell "the target was pruned
         # away" apart from "the target is simply in the next phrase" --
         # compute cross-phrase survivorship once up front (issue #68
@@ -2458,16 +2486,24 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
                 "arrangement_index": arrangement_index, "instrument": instrument,
             }
 
-        # Score against the EFFECTIVE tuning (manifest entry override, when
-        # present) on a shallow copy, so the override -- read purely for
-        # scoring -- never ends up written back into the pack below via
-        # `arr["phrases"] = phrases`. The arrangement file's own `tuning`
-        # is left exactly as authored.
+        # Score against the EFFECTIVE tuning/name/type (manifest entry
+        # override, when present) on a shallow copy, so the override --
+        # read purely for scoring -- never ends up written back into the
+        # pack below via `arr["phrases"] = phrases`. The arrangement
+        # file's own fields are left exactly as authored. A malformed
+        # manifest `tuning` (not a list -- e.g. an int or null) is
+        # ignored rather than raising: `list(...)` on a non-list would
+        # otherwise surface as an uncaught 500 well past this route's
+        # normal error handling.
         scoring_arr = arr
-        if entry and "tuning" in entry:
-            scoring_arr = dict(arr, tuning=list(entry["tuning"]))
+        effective_tuning = entry.get("tuning") if entry else None
+        if isinstance(effective_tuning, list):
+            scoring_arr = dict(arr, tuning=list(effective_tuning))
+        effective_type = (entry.get("type") if entry else None) or arr.get("type", "")
+        effective_name = (entry.get("name") if entry else None) or arr.get("name", "")
+        is_bass = _is_bass_arrangement(effective_type, effective_name)
         phrases = generate_phrases_for_arrangement(
-            scoring_arr, n_levels=n_levels, section_times=section_times
+            scoring_arr, n_levels=n_levels, section_times=section_times, is_bass=is_bass,
         )
         if phrases is None:
             return {
@@ -2690,7 +2726,13 @@ def setup(app, context):
         # present) here too, same as generation -- this endpoint is
         # read-only (never writes the pack), so applying it directly is
         # safe; it just needs to match what playback actually resolves to.
-        tuning = list(entry["tuning"]) if entry and "tuning" in entry else arr.get("tuning", [])
+        # A malformed manifest `tuning` (not a list) falls through to the
+        # embedded value instead of raising -- the isinstance check below
+        # would otherwise never get a chance to catch it as a 400: a bare
+        # `list(entry["tuning"])` on a non-list raises TypeError, an
+        # uncaught 500, before that check ever runs.
+        manifest_tuning = entry.get("tuning") if entry else None
+        tuning = list(manifest_tuning) if isinstance(manifest_tuning, list) else arr.get("tuning", [])
         templates = arr.get("templates") or arr.get("chordTemplates") or []
         if not all(isinstance(value, list) for value in (chords, tuning, templates)):
             raise HTTPException(400, "malformed arrangement")
