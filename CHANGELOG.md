@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Developer tool `tools/settle_points.js` (not loaded by the plugin):
+  simulates synthetic players against the real auto-adjust controller
+  (`commitPhraseResult`) and reports where accuracy settles for each
+  sensitivity / reaction-speed / drop-resistance setting. No behaviour
+  change; results are posted to #55.
 - Opt-in "staged chords" bottom tier (off by default; `generate`/
   `generate-library`'s new `staged_chords` request field, plumbed through
   `generate_phrases_for_arrangement`): a repeated occurrence of a
