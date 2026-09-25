@@ -90,14 +90,22 @@ contract.
   the single hardest technique in a group, but two things it can't see are
   scored on top of it: a group using more than one distinct technique at
   once (a chord mixing a bend and a palm mute, rather than a single
-  technique repeated) and a group whose technique differs from the group
-  immediately before it (switching from palm-muting into a slide costs more
-  than repeating the same technique). Both bonuses are 0 for the common
-  case — a group using at most one technique, unchanged from the group
-  before — so single-technique passages score exactly as before. The
-  per-extra-technique and per-switch weights are heuristics, not measured
-  player thresholds, and are capped well below `_tech_score`'s own 0–1
-  range so a single very hard technique still dominates.
+  technique repeated) and a group whose technique differs from the last
+  technique-bearing group before it — not necessarily the physically
+  adjacent group, so switching from palm-muting into a slide still counts
+  as a switch even with a plain-picked note in between (switching costs
+  more than repeating the same technique). Both bonuses are 0 for the
+  common case — a group using at most one technique, unchanged from the
+  last technique-bearing group — so single-technique passages score
+  exactly as before. The coordination bonus is deliberately **not**
+  re-clamped against `_tech_score`'s own per-note 0–1 range: `_tech_score`
+  already saturates at 1.0 the moment a single note stacks enough
+  techniques (e.g. a tapped, round-trip bend), so re-clamping the combined
+  technique score would silently swallow the coordination bonus in exactly
+  the peak-demand passages it exists to score. The per-extra-technique and
+  per-switch weights themselves are heuristics, not measured player
+  thresholds, and stay modest relative to `_tech_score`'s range so
+  coordination compounds an existing demand rather than dominating it.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty

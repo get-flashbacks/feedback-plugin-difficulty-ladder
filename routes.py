@@ -361,10 +361,18 @@ def _technique_coordination_bonus(group_categories, prev_categories):
 
     `group_categories` is this group's union of _technique_categories(n)
     across its notes (simultaneous demand); `prev_categories` is the same
-    for the immediately preceding non-empty group (sequential demand), or
-    an empty set if there is none. Returns 0.0 whenever a group uses at
-    most one technique and doesn't change it from the group before --
-    the common case -- so single-technique passages are unaffected."""
+    for the immediately preceding TECHNIQUE-BEARING group (sequential
+    demand) -- not necessarily the physically adjacent group -- or an empty
+    set if there is none yet. The caller (_score_groups) only updates its
+    carried `prev_categories` when a group actually uses a technique, so a
+    plain-picked or defensively-empty group in between doesn't count as
+    "the group before": [bend] -> [plain] -> [palm_mute] still registers as
+    a switch (the player changed technique since the last time one was
+    active), while comparing against literally-adjacent-only would miss
+    that switch whenever anything plain sits between the two technique
+    passages. Returns 0.0 whenever a group uses at most one technique and
+    doesn't change it from the last technique-bearing group -- the common
+    case -- so single-technique passages are unaffected."""
     if not group_categories:
         return 0.0
     simultaneous = max(0, len(group_categories) - 1) * _COORD_PER_EXTRA_CATEGORY
@@ -708,7 +716,18 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
             + 0.15 * _posture_score(ns)
         )
         group_categories = set().union(*(_technique_categories(n) for n in ns))
-        technique = min(1.0,
+        # Deliberately NOT re-clamped to 1.0 here: _tech_score already clamps
+        # each note to [0,1] on its own (routes.py's _tech_score), so a
+        # single note stacking techniques (e.g. tap + a round-trip bend)
+        # routinely saturates max(_tech_score) at exactly 1.0 -- clamping
+        # `technique` again would silently swallow the coordination bonus in
+        # exactly the peak-demand regime #72/B4 exists to score (a real bug
+        # caught in PR #120 review: a chord mixing a palm mute into an
+        # already-saturated tapped-bend scored identically to the tapped-bend
+        # alone). `cost` (which this feeds) is already documented as
+        # deliberately unclamped below; only `retention_score`, the value
+        # that actually drives tiering, gets re-clamped to [0,1] there.
+        technique = (
             max(_tech_score(n) for n in ns)
             + _technique_coordination_bonus(group_categories, prev_categories)
         )

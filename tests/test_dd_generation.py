@@ -417,6 +417,31 @@ def test_chord_with_two_different_techniques_scores_above_either_alone():
     assert abs(mixed[0]["cost"] - single[0]["cost"] - expected_bonus) < 1e-12  # nosec B101
 
 
+def test_coordination_bonus_survives_an_already_saturated_technique():
+    """Regression for a real bug caught in PR #120 review: _tech_score
+    clamps each note to [0, 1] on its own, so max(_tech_score(n) for n in
+    ns) routinely saturates at exactly 1.0 the moment a single note stacks
+    enough techniques (e.g. tap + a round-trip bend, as here). Re-clamping
+    `technique` to 1.0 on top of that silently swallows the coordination
+    bonus in exactly the peak-demand regime #72/B4 exists to score -- a
+    chord mixing a palm mute into an already-saturated tapped-bend must
+    still cost more than the tapped-bend alone."""
+    saturated_note = {"s": 0, "f": 5, "tp": True, "bn": 1.0, "bt": 3, "sus": 0}
+    assert routes._tech_score(saturated_note) == 1.0  # nosec B101 - pytest assertion
+
+    alone = [{"time": 0.0, "notes": [saturated_note, {"s": 1, "f": 5, "sus": 0}]}]
+    with_extra_technique = [{"time": 0.0, "notes": [
+        saturated_note, {"s": 1, "f": 5, "pm": True, "sus": 0},
+    ]}]
+    routes._score_groups(alone, n_strings=6)
+    routes._score_groups(with_extra_technique, n_strings=6)
+    assert with_extra_technique[0]["cost"] > alone[0]["cost"]  # nosec B101 - pytest assertion
+    expected_bonus = 0.30 * routes._COORD_PER_EXTRA_CATEGORY
+    assert abs(  # nosec B101 - pytest assertion
+        with_extra_technique[0]["cost"] - alone[0]["cost"] - expected_bonus
+    ) < 1e-12
+
+
 def test_technique_switch_bonus_survives_a_defensive_empty_group():
     """_score_groups's `if not ns: continue` guard (a malformed zero-note
     chord -- _group_notes never produces one from real chart data, but the
@@ -884,6 +909,7 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
     tempo = tempo or routes._TempoParams()
     legacy = deepcopy(groups)
     times_sorted = [float(g["time"]) for g in legacy]
+    prev_categories = set()
     for gi, group in enumerate(legacy):
         notes = group["notes"]
         if not notes:
@@ -908,7 +934,17 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
             + 0.25 * string_shape
             + 0.15 * posture
         )
-        technique = max(routes._tech_score(n) for n in notes)
+        group_categories = set().union(*(routes._technique_categories(n) for n in notes))
+        # Not re-clamped to 1.0, matching _score_groups -- see its inline
+        # comment on why re-clamping here would swallow the coordination
+        # bonus whenever the hardest note's own _tech_score already
+        # saturates at 1.0.
+        technique = (
+            max(routes._tech_score(n) for n in notes)
+            + routes._technique_coordination_bonus(group_categories, prev_categories)
+        )
+        if group_categories:
+            prev_categories = group_categories
         raw_density = routes._sequential_density(times_sorted, gi, tempo)
         syncopation = routes._syncopation_score(
             group["time"], beat_times, tempo.beat_interval,
