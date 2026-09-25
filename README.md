@@ -57,6 +57,20 @@ contract.
   numbers (e.g. `difficulty` 0, 1, 3 with `max_difficulty` 3). feedBack core
   maps the slider through those numbers; an older core still plays the
   ladder, just scaled per phrase.
+- **Ladder depth and mechanical difficulty are reported separately.** Each
+  generated phrase carries `max_difficulty` (how many tiers the ladder has —
+  purely about how much this phrase's content gets thinned) alongside
+  `difficulty_cost` (the mean of the internal, purely-mechanical `cost` score
+  — fretting/technique/density/sustain/hand-shift, see `_score_groups` — across
+  the phrase's full, untiered content). The two can diverge: a short phrase
+  built from one hard chord and a long, easy phrase can both collapse to
+  `max_difficulty: 0` (nothing to thin) while having very different
+  `difficulty_cost`. `difficulty_cost` is unclamped, like the internal `cost`
+  field it averages — a phrase stacking several hand-shift/posture penalties
+  can read above `1.0`. It's additive: an older reader that doesn't know the
+  key simply ignores it. Weights feeding into `cost` remain heuristic (see
+  the fretting-movement note below), so treat `difficulty_cost` as a relative
+  ranking signal within one song, not a calibrated absolute score.
 - **Simplifications keep the pitch the note is struck at.** A pre-bend or
   release (struck already bent) is simplified to a fretted note at the bent
   pitch rather than an unbent one; a natural harmonic is only turned into a

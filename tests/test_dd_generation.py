@@ -116,6 +116,7 @@ def test_canonical_section_times_create_one_phrase_per_section_including_an_empt
     # one-phrase-per-section contract intact.
     assert phrases[2]["max_difficulty"] == 0
     assert phrases[2]["levels"][0]["notes"] == []
+    assert phrases[2]["difficulty_cost"] == 0.0  # nosec B101 - pytest assertion
 
 
 def test_dense_technical_phrase_uses_more_of_the_cap_than_a_simple_one():
@@ -127,6 +128,39 @@ def test_dense_technical_phrase_uses_more_of_the_cap_than_a_simple_one():
 
     assert simple_phrases and technical_phrases
     assert len(technical_phrases[0]["levels"]) > len(simple_phrases[0]["levels"])  # nosec B101 - pytest assertion
+
+
+def test_difficulty_cost_reflects_mechanical_difficulty_of_full_phrase_content():
+    """difficulty_cost (#72/B1) is the mean of the internal, purely-mechanical
+    `cost` field across a phrase's full, untiered content -- it should rank a
+    technically harder phrase above a simple one independent of, and by a
+    wider margin than, ladder depth alone."""
+    simple = _arrangement(_simple_notes(0, 10, step=0.5, fret=3))
+    technical = _arrangement(_technical_notes(0, 10, step=0.1))
+
+    simple_phrases = routes.generate_phrases_for_arrangement(simple, n_levels=6)
+    technical_phrases = routes.generate_phrases_for_arrangement(technical, n_levels=6)
+
+    assert simple_phrases and technical_phrases
+    assert "difficulty_cost" in simple_phrases[0]  # nosec B101 - pytest assertion
+    assert technical_phrases[0]["difficulty_cost"] > simple_phrases[0]["difficulty_cost"]  # nosec B101
+
+
+def test_difficulty_cost_is_independent_of_ladder_depth():
+    """Two phrases that both collapse to a single level (max_difficulty 0 --
+    nothing to thin) can still report very different difficulty_cost: ladder
+    depth answers 'how much does this get thinned', difficulty_cost answers
+    'how hard is this to play at all' -- they must not be conflated."""
+    easy = _arrangement(_simple_notes(0, 5, step=0.5, fret=0))
+    hard_but_flat = _arrangement(_technical_notes(0, 2, step=0.1))
+
+    easy_phrases = routes.generate_phrases_for_arrangement(easy, n_levels=1)
+    hard_phrases = routes.generate_phrases_for_arrangement(hard_but_flat, n_levels=1)
+
+    assert easy_phrases and hard_phrases
+    assert easy_phrases[0]["max_difficulty"] == 0  # nosec B101 - pytest assertion
+    assert hard_phrases[0]["max_difficulty"] == 0  # nosec B101 - pytest assertion
+    assert hard_phrases[0]["difficulty_cost"] > easy_phrases[0]["difficulty_cost"]  # nosec B101
 
 
 def test_bottom_tier_is_sparser_than_a_flat_percentile_split():
