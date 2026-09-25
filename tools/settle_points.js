@@ -12,7 +12,9 @@
 // quantization is ignored (the slider maps straight to p), skill is constant
 // within a run, and every phrase has the same note count.
 //
-// Usage: node tools/settle_points.js [--json]
+// Usage: node tools/settle_points.js [--json] [--sens=1,2,3] [--react=1,2,3]
+//        [--drop=0,1] [--slopes=0.05,0.1,0.2] [--notes=16] [--start=50]
+//        [--down-ratio=1]   (see main() for the commands behind each #55 table)
 
 'use strict';
 
@@ -107,51 +109,92 @@ function quantile(sorted, q) {
     return a + ((b - a) * (i - lo));
 }
 
+const mean = xs => xs.reduce((s, x) => s + x, 0) / xs.length;
+
+// Two different spreads, deliberately kept apart:
+// - runMin/runMax: range of each run's mean true accuracy, i.e. how precisely
+//   a setting settles.
+// - p10/p90 (true accuracy) and obsP10/obsP90 (the Binomial rate the
+//   controller actually sees): per-phrase swing pooled across runs. Moves and
+//   reversals are driven mostly by that per-phrase noise, so they scale with
+//   notes per phrase; the model has no exploration jitter of its own.
 function summarize(runs) {
     const all = runs.flatMap(r => r.trueP).sort((a, b) => a - b);
-    const mean = all.reduce((s, x) => s + x, 0) / all.length;
+    const obs = runs.flatMap(r => r.observed).sort((a, b) => a - b);
+    const runMeans = runs.map(r => mean(r.trueP));
     const phrases = runs.reduce((s, r) => s + r.n, 0);
     return {
-        mean,
+        mean: mean(all),
+        runMin: Math.min(...runMeans),
+        runMax: Math.max(...runMeans),
         p10: quantile(all, 0.1),
         median: quantile(all, 0.5),
         p90: quantile(all, 0.9),
+        obsP10: quantile(obs, 0.1),
+        obsP90: quantile(obs, 0.9),
         movesPer100: 100 * runs.reduce((s, r) => s + r.moves, 0) / phrases,
         reversalsPer100: 100 * runs.reduce((s, r) => s + r.reversals, 0) / phrases,
     };
 }
 
+// --name=a,b,c -> [a, b, c] as numbers; falls back to the default list.
+function listArg(name, fallback) {
+    const hit = process.argv.find(a => a.startsWith(`--${name}=`));
+    if (!hit) return fallback;
+    const vals = hit.slice(name.length + 3).split(',').map(Number);
+    if (!vals.length || vals.some(v => !Number.isFinite(v))) {
+        throw new Error(`--${name} expects comma-separated numbers`);
+    }
+    return vals;
+}
+
+// Reproducing the tables posted to #55:
+//   main grid:        node tools/settle_points.js
+//   note-count table: node tools/settle_points.js --notes=6,16,40 --react=2 --slopes=0.1 --drop=0
+//   start points:     node tools/settle_points.js --start=10,30,50,70 --react=2 --drop=0
+//   down-step ratio:  node tools/settle_points.js --down-ratio=1,2 --react=2 --drop=0
+// (seed sets differ from the ad-hoc runs quoted in #55, so values match
+// within 20-seed sampling noise rather than to the digit.)
 function main() {
     const asJson = process.argv.includes('--json');
-    const base = {
-        downStepRatio: 1, dropResistance: false,
-        skill: 50, notesPerPhrase: 16, phrases: 400, burnIn: 100, startPct: 50,
+    const grid = {
+        drop: listArg('drop', [0, 1]),
+        sens: listArg('sens', [1, 2, 3]),
+        react: listArg('react', [1, 2, 3]),
+        slopes: listArg('slopes', [0.05, 0.1, 0.2]),
+        notes: listArg('notes', [16]),
+        start: listArg('start', [50]),
+        downRatio: listArg('down-ratio', [1]),
     };
-    const slopes = [0.05, 0.1, 0.2];
+    const base = { skill: 50, phrases: 400, burnIn: 100 };
     const seeds = Array.from({ length: 20 }, (_, i) => 1000 + i);
     const rows = [];
-    for (const dropResistance of [false, true]) {
-        for (const sensitivity of [1, 2, 3]) {
-            for (const reactionSpeed of [1, 2, 3]) {
-                for (const slope of slopes) {
-                    const runs = seeds.map(seed => simulate({
-                        ...base, dropResistance, sensitivity, reactionSpeed, slope, seed,
-                    }));
-                    rows.push({ dropResistance, sensitivity, reactionSpeed, slope, ...summarize(runs) });
-                }
-            }
-        }
+    for (const drop of grid.drop) for (const sensitivity of grid.sens)
+    for (const reactionSpeed of grid.react) for (const slope of grid.slopes)
+    for (const notesPerPhrase of grid.notes) for (const startPct of grid.start)
+    for (const downStepRatio of grid.downRatio) {
+        const cfg = {
+            ...base, dropResistance: drop === 1, sensitivity, reactionSpeed, slope,
+            notesPerPhrase, startPct, downStepRatio,
+        };
+        const runs = seeds.map(seed => simulate({ ...cfg, seed }));
+        rows.push({
+            dropResistance: cfg.dropResistance, sensitivity, reactionSpeed, slope,
+            notesPerPhrase, startPct, downStepRatio, ...summarize(runs),
+        });
     }
     if (asJson) {
         process.stdout.write(JSON.stringify(rows, null, 2) + '\n');
         return;
     }
     const f = x => x.toFixed(2);
-    console.log('dropRes sens react slope | mean  p10   med   p90  | moves/100 rev/100');
+    console.log('drop sens react slope notes start dRatio | mean  runMin runMax | p10   p90  | obsP10 obsP90 | moves/100 rev/100');
     for (const r of rows) {
         console.log(
-            `${r.dropResistance ? 'on ' : 'off'}     ${r.sensitivity}    ${r.reactionSpeed}     ${r.slope.toFixed(2)}  | `
-            + `${f(r.mean)}  ${f(r.p10)}  ${f(r.median)}  ${f(r.p90)} | `
+            `${r.dropResistance ? 'on ' : 'off'}   ${r.sensitivity}    ${r.reactionSpeed}    ${r.slope.toFixed(2)} `
+            + `${String(r.notesPerPhrase).padStart(5)} ${String(r.startPct).padStart(5)} ${r.downStepRatio.toFixed(1).padStart(6)} | `
+            + `${f(r.mean)}  ${f(r.runMin)}   ${f(r.runMax)}  | ${f(r.p10)}  ${f(r.p90)} | `
+            + `${f(r.obsP10)}   ${f(r.obsP90)}   | `
             + `${r.movesPer100.toFixed(1).padStart(8)} ${r.reversalsPer100.toFixed(1).padStart(7)}`);
     }
 }
