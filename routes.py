@@ -1603,6 +1603,26 @@ def _canonical_note_for_compare(note):
     }
 
 
+def _phrase_mechanical_cost(phrase_groups):
+    """Mean of `g["cost"]` (the purely mechanical difficulty from
+    _score_groups/_score_groups_keys — see #72/B1) across every note group
+    in a phrase, regardless of which tier(s) a group survives to.
+
+    This is deliberately independent of `max_difficulty`/`levels`: those
+    report how DEEP the ladder is (how many distinct tiers this phrase's
+    content splits into), not how HARD the phrase's full content is to
+    play. A short phrase with one very hard chord and a long, easy phrase
+    can both collapse to a single level (max_difficulty 0) while having
+    very different mechanical cost — this field is what lets a consumer
+    tell those two apart. Unclamped, like `cost` itself (see _score_groups):
+    a phrase dominated by several stacked jump/posture penalties can exceed
+    1.0.
+    """
+    if not phrase_groups:
+        return 0.0
+    return sum(g["cost"] for g in phrase_groups) / len(phrase_groups)
+
+
 def _collapse_identical_levels(levels_out):
     """Merge adjacent tiers whose generated content is identical (issue #70),
     keeping each surviving level's `difficulty` as the tier where its content
@@ -1656,6 +1676,13 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     (an ambient/silent arrangement, or one already effectively empty), or
     when the arrangement's instrument isn't one this generator supports
     (currently: fretted guitar/bass and keys/piano — see _instrument_kind).
+
+    Each returned phrase carries `max_difficulty` (how many tiers the
+    ladder has — see _assign_tiers) and `difficulty_cost` (how mechanically
+    hard the phrase's full, untiered content is — see
+    _phrase_mechanical_cost). The two are independent: `max_difficulty`
+    answers "how much does this phrase get thinned across the ladder",
+    `difficulty_cost` answers "how hard is this phrase to play at all" (#72/B1).
     """
     kind = _instrument_kind(arr.get("type", ""), arr.get("name", ""))
     if kind == "drums":
@@ -1769,6 +1796,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
                 "start_time": round(t0, 3),
                 "end_time": round(t1, 3),
                 "max_difficulty": 0,
+                "difficulty_cost": 0.0,
                 "levels": [{
                     "difficulty": 0, "notes": [], "chords": [],
                     "anchors": [], "handshapes": [],
@@ -1824,6 +1852,11 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             # level has no ladder at all, reported as 0 (the same convention
             # core uses for a single-level phrase).
             "max_difficulty": top_tier if len(levels_out) > 1 else 0,
+            # Mechanical difficulty of the phrase's full content, independent
+            # of ladder depth — see _phrase_mechanical_cost. Additive: absent
+            # is not a valid state a reader needs to handle differently, but
+            # older readers that don't know the key simply ignore it.
+            "difficulty_cost": round(_phrase_mechanical_cost(phrase_groups), 4),
             "levels": levels_out,
         })
     return phrases_out if phrases_out else None

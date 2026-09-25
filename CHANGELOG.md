@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Report a per-phrase `difficulty_cost` (mean of the internal mechanical
+  `cost` score across a phrase's full, untiered content), independent of
+  `max_difficulty`/ladder depth. Additive wire field — consumers that don't
+  read it are unaffected (#72).
 - Score wide low-position fretted shapes as an extra hand-posture cost.
 - Prioritize phrase-boundary, then bar-boundary bridges in the lower-tier
   path-refinement helper (not yet enabled in production generation).
