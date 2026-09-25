@@ -16,9 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same category) and give the most tonally-stable note in a group a modest
   retention push — deliberately weighted below beat/metrical strength and
   melody-turning-point retention, per the guard that a heuristic key
-  estimate shouldn't outweigh measured beat position. Disabled per-phrase
-  when the key estimate correlates poorly (blues/modal/heavily chromatic
-  material). Also: chord and arpeggio reduction now try a real harmonic
+  estimate shouldn't outweigh measured beat position. Applied per-window
+  before the tier scale is frozen, so it participates in tier-cutoff
+  construction rather than re-labeling an already-frozen scale. Disabled
+  per-window when the key estimate correlates poorly (near-uniform/atonal
+  pitch-class content — ordinary diatonic, modal, and blues material all
+  clear the threshold and get the weighting). Also: chord and arpeggio reduction now try a real harmonic
   root parsed from the matched `ChordTemplate`'s authored name (e.g.
   "Am7", "G/B") before falling back to the lowest-string-index heuristic
   (#108).

@@ -3766,11 +3766,16 @@ def test_pitch_class_stability_rank_gives_a_chord_tone_bonus_over_a_passing_tone
 
 
 def test_key_stability_bonus_weight_is_below_beat_strength_weight():
-    """#103/B7's explicit guard: key-stability weight must sit below beat/
-    metrical strength's weight (_beat_value's 0.12 coefficient, the same
-    weight _MELODY_TURNING_POINT_RETENTION_BONUS already matches for
-    melodic shape) -- key estimation is a weaker, more heuristic signal
-    than measured beat position."""
+    """#103/B7's explicit guard, at the per-group constant level: key-
+    stability weight must sit below beat/metrical strength's weight
+    (_beat_value's 0.12 coefficient, the same weight
+    _MELODY_TURNING_POINT_RETENTION_BONUS already matches for melodic
+    shape) -- key estimation is a weaker, more heuristic signal than
+    measured beat position. This alone doesn't prove the AGGREGATE effect
+    stays smaller (the bonus can still apply to more groups than the
+    melody bonus does) -- see
+    test_key_stability_bonus_does_not_collapse_a_tier_on_diatonic_material
+    for the end-to-end structural guarantee (PR #125 review)."""
     assert routes._KEY_STABILITY_RETENTION_BONUS < 0.12  # nosec B101 - pytest assertion
     assert routes._KEY_STABILITY_RETENTION_BONUS < routes._MELODY_TURNING_POINT_RETENTION_BONUS  # nosec B101 - pytest assertion
 
@@ -3845,7 +3850,13 @@ def test_notes_for_level_chord_reduction_prefers_the_parsed_root_over_lowest_str
     templates = [{"name": "C", "frets": [-1, -1, -1, 9, -1, 2]}]
 
     def _chord_group(chord_id=None):
-        chord = {"t": 0.0, "chord_id": chord_id, "notes": list(chord_notes)}
+        # Real feedpak wire key is "id" (song.py's chord_to_wire/
+        # chord_from_wire) -- "chord_id" is the Chord dataclass's own
+        # attribute name and, separately, the wire key for a HandShape's
+        # chord reference. Using the real wire key here is deliberate: a
+        # hand-built "chord_id"-keyed fixture would pass even if the
+        # implementation read the wrong key (PR #125 review).
+        chord = {"t": 0.0, "id": chord_id, "notes": list(chord_notes)}
         return {
             "type": "chord", "chord": chord, "notes": chord["notes"],
             "time": 0.0, "cost": 0.0, "value": 0.0, "retention_score": 0.0, "level": 0,
@@ -3883,3 +3894,88 @@ def test_notes_for_level_arpeggio_reduction_prefers_the_parsed_root_over_lowest_
         [group_no_name], level=0, max_level=3, tuning=(), n_strings=6, is_bass=False,
     )
     assert notes_fallback and notes_fallback[0].get("s") == 0  # nosec B101 - pytest assertion
+
+
+def test_key_stability_bonus_does_not_collapse_a_tier_on_diatonic_material():
+    """#103/B7 regression (PR #125 review): the key-stability discount must
+    be applied BEFORE `global_thresholds` is computed, exactly like the B2
+    beat-value and B5 melody-turning-point terms already are inside
+    `_score_groups` -- applying it AFTER the tier scale is frozen (the bug
+    this pins) re-labels a whole phrase's groups against cutoffs that never
+    saw the discount, which can silently collapse a tier ("_collapse_
+    identical_levels" merging what should be two distinct rungs) on
+    perfectly ordinary tonal material. Comparing against the same
+    generation with the bonus coefficient zeroed out (feature effectively
+    off) on a strongly diatonic, mechanically-varied run must yield the
+    SAME max_difficulty, and must not empty out any tier that has content
+    without the bonus -- individual notes can still cross a cutoff (the
+    bonus does shift retention scores, that's the point), but it must not
+    collapse a whole rung the way applying it post-threshold did."""
+    notes = []
+    t = 0.0
+    # A two-octave C-major scale, back and forth, on string 0 (pc == fret
+    # % 12 under the default tuning -- see _pc_group) with varying fret/
+    # sustain/onset spacing so the phrase has real mechanical variety and
+    # doesn't collapse to one tier regardless of the key-stability feature.
+    c_major_frets = [0, 2, 4, 5, 7, 9, 11, 12, 11, 9, 7, 5, 4, 2]
+    for i in range(24):
+        f = c_major_frets[i % len(c_major_frets)]
+        notes.append({"t": round(t, 3), "s": 0, "f": f, "sus": 0.1 if i % 3 else 0.3})
+        t += 0.22 if i % 2 else 0.31
+    arr = _arrangement(notes, n_beats=200)
+
+    phrases_on = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    with patch.object(routes, "_KEY_STABILITY_RETENTION_BONUS", 0.0):
+        phrases_off = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+
+    assert phrases_on and phrases_off  # nosec B101 - pytest assertion
+    for on, off in zip(phrases_on, phrases_off):
+        assert on["max_difficulty"] == off["max_difficulty"]  # nosec B101 - pytest assertion
+        on_counts = [len(lvl["notes"]) + len(lvl["chords"]) for lvl in on["levels"]]
+        off_counts = [len(lvl["notes"]) + len(lvl["chords"]) for lvl in off["levels"]]
+        assert len(on_counts) == len(off_counts)  # nosec B101 - pytest assertion
+        for on_count, off_count in zip(on_counts, off_counts):
+            assert (on_count == 0) == (off_count == 0)  # nosec B101 - pytest assertion
+        # A single note nudged across a cutoff by the bonus is expected;
+        # a whole rung's worth of content moving is the collapse this
+        # regression pins.
+        assert max(abs(o - f) for o, f in zip(on_counts, off_counts)) <= 1  # nosec B101 - pytest assertion
+
+
+def test_group_key_stability_bonus_uses_the_arrangements_chord_track_for_non_chord_groups():
+    """#103/B7 fix (PR #125 review): a single-note group landing under a
+    SUSTAINED chord must pick up that chord's pitch classes for the
+    chord-tone bonus via `chord_windows` -- before the fix, only an
+    explicit `"chord"`-type group's own (self-referential, and therefore
+    always-true) notes fed `chord_pcs`, so a passing single note could
+    never be ranked as a chord tone at all."""
+    # Key of C major, tonic pc 0. A scale-tone note (pc 2, "D") that is
+    # NOT in the C-major triad {0, 4, 7}.
+    note_group = _pc_group(2, s=0)
+    chord_windows_present = [(0.0, 1.0, {0, 2, 7})]  # a Dsus2-ish sonority sounding here
+    bonus_with_chord_context = routes._group_key_stability_bonus(
+        note_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
+        chord_windows=chord_windows_present,
+    )
+    bonus_without_chord_context = routes._group_key_stability_bonus(
+        note_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
+        chord_windows=None,
+    )
+    assert bonus_with_chord_context > bonus_without_chord_context  # nosec B101 - pytest assertion
+
+
+def test_chord_pcs_at_time_finds_the_covering_window_or_none():
+    windows = [(0.0, 1.0, {0, 4, 7}), (2.0, 3.0, {2, 5, 9})]
+    assert routes._chord_pcs_at_time(windows, 0.5) == {0, 4, 7}  # nosec B101 - pytest assertion
+    assert routes._chord_pcs_at_time(windows, 2.5) == {2, 5, 9}  # nosec B101 - pytest assertion
+    assert routes._chord_pcs_at_time(windows, 1.5) is None  # nosec B101 - pytest assertion
+
+
+def test_chord_pitch_class_windows_covers_each_chords_sustain():
+    chords = [{"t": 0.0, "notes": [{"s": 0, "f": 0, "sus": 0.5}, {"s": 1, "f": 4, "sus": 0.2}]}]
+    windows = routes._chord_pitch_class_windows(chords, tuning=(), n_strings=6, is_bass=False)
+    assert len(windows) == 1  # nosec B101 - pytest assertion
+    start, end, pcs = windows[0]
+    assert start == 0.0  # nosec B101 - pytest assertion
+    assert end == 0.5  # nosec B101 - pytest assertion
+    assert 0 in pcs  # nosec B101 - pytest assertion

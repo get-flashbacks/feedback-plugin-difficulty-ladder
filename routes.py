@@ -624,7 +624,8 @@ def _group_anchor_note(group, *, prefer_fretted=True):
     that is usually the chord's root, which is why reductions keep it —
     but it is a positional heuristic, not a proven harmonic root: an
     inversion's or slash chord's bass is not its root, and without an
-    authored chord identity (a matching `ChordTemplate`/`chord_id`, or —
+    authored chord identity (a matching `ChordTemplate` via the chord
+    event's wire `id`, or —
     for a solo cluster — the evidence `_classify_cluster` checks, issue
     #73) there's no way to tell. (Before PR #101 this took `max(s)`, the
     treble-most note.)
@@ -1066,10 +1067,20 @@ _KS_MAJOR_PROFILE = (6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66,
 _KS_MINOR_PROFILE = (6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17)
 
 # Guard (#103/B7's own acceptance criterion): a section whose best-fit key
-# correlation falls below this is a poor tonal fit (blues, modal, heavily
-# chromatic material) -- the key-stability weighting is disabled for that
-# section entirely rather than confidently ranking notes against a key
-# estimate the data doesn't actually support.
+# correlation falls below this is disabled from the key-stability
+# weighting entirely, rather than confidently ranking notes against a key
+# estimate the data doesn't actually support. Measured against synthetic
+# uniform-weight pitch-class-set histograms, this threshold only rejects
+# NEAR-UNIFORM/atonal content -- whole-tone (~0.07) and fully chromatic
+# (0.0) correlate far below it. Ordinary diatonic, modal, and even blues
+# content (corr ~0.59-0.76 depending on mode) clears it easily, so despite
+# this guard's name it is NOT a "blues/modal detector" -- those are
+# expected to pass and get the weighting like any other tonal material.
+# What it mainly catches in practice is a section with too little content
+# to estimate a key from at all (very short/sparse phrases can still
+# report a misleadingly high correlation for an essentially arbitrary
+# tonic -- a real limitation of a single correlation threshold with no
+# minimum-support term, left as a known gap rather than in scope here).
 _KEY_FIT_MIN_CORRELATION = 0.55
 
 # Deliberately smaller than _MELODY_TURNING_POINT_RETENTION_BONUS (0.12) --
@@ -1160,22 +1171,71 @@ def _pitch_class_stability_rank(pc, tonic_pc, is_major, chord_pcs=None):
     return rank
 
 
-def _group_key_stability_bonus(g, tonic_pc, is_major, tuning, n_strings, is_bass):
+def _chord_pitch_class_windows(chords, tuning, n_strings, is_bass):
+    """Precompute each explicit chord event's [start, end) sounding window
+    and pitch-class set, sorted by start time -- the "a chord is currently
+    sounding" signal `_group_key_stability_bonus` needs to tell a chord
+    tone apart from a passing tone for a NON-chord group (a single-note or
+    arpeggio/run group whose notes happen to fall under a sustained chord).
+    `end` falls back to a nominal 0.05s window when a chord's constituent
+    notes carry no `sus` at all, so a zero-duration/undampened chord event
+    still covers its own onset instant."""
+    windows = []
+    for c in chords:
+        c_notes = c.get("notes", []) or []
+        if not c_notes:
+            continue
+        start = float(c.get("t", 0))
+        max_sus = max((float(n.get("sus", 0)) for n in c_notes), default=0.0)
+        end = start + max(max_sus, 0.05)
+        pcs = {_approx_pitch(n, tuning, n_strings, is_bass) % 12 for n in c_notes}
+        windows.append((start, end, pcs))
+    windows.sort(key=lambda w: w[0])
+    return windows
+
+
+def _chord_pcs_at_time(chord_windows, t):
+    """Pitch classes of whichever precomputed chord window (see
+    `_chord_pitch_class_windows`) covers time `t`, or None when no chord is
+    sounding there. Chord counts per arrangement are small relative to a
+    song's note count, so a linear scan is fine -- no bisect needed."""
+    for start, end, pcs in chord_windows:
+        if start <= t < end:
+            return pcs
+        if start > t:
+            break
+    return None
+
+
+def _group_key_stability_bonus(g, tonic_pc, is_major, tuning, n_strings, is_bass,
+                                chord_windows=None):
     """Retention-score discount (0..`_KEY_STABILITY_RETENTION_BONUS`) for
     `g`'s most tonally-stable note -- mirrors the melody-turning-point
     bonus's shape (a flat subtraction gated by an arrangement-level
     signal), just keyed on harmonic stability instead of melodic contour.
-    A chord group's own constituent notes are treated as "sounding
-    together" for the chord-tone bonus; a single-note/run group has no
-    `chord_pcs` context, so it only ever ranks on the plain tonic/triad/
-    scale/chromatic ladder."""
+
+    A `"chord"`-type group's own constituent notes are, by construction,
+    each other's "chord currently sounding" context (every note in an
+    explicit chord event is a chord tone of that same chord) -- so no
+    external lookup is needed there. Any OTHER group (single note, run,
+    arpeggio) has no such built-in context: without `chord_windows`, it
+    only ever ranks on the plain tonic/triad/scale/chromatic ladder, with
+    no chord-tone bonus, since there's nothing to check it against. Pass
+    `chord_windows` (see `_chord_pitch_class_windows`) so those groups can
+    pick up the chord-tone bonus when they land under a sustained chord —
+    this is what actually lets a chord tone rank above a passing tone
+    played alongside it, rather than the bonus only ever comparing a
+    chord's notes against themselves (caught in PR #125 review)."""
     notes = g.get("notes", []) or []
     if not notes:
         return 0.0
     is_chord = g.get("type") == "chord"
-    chord_pcs = None
     if is_chord and len(notes) > 1:
         chord_pcs = {_approx_pitch(n, tuning, n_strings, is_bass) % 12 for n in notes}
+    elif chord_windows:
+        chord_pcs = _chord_pcs_at_time(chord_windows, float(g.get("time", 0)))
+    else:
+        chord_pcs = None
     best_rank = max(
         _pitch_class_stability_rank(
             _approx_pitch(n, tuning, n_strings, is_bass) % 12, tonic_pc, is_major,
@@ -1640,12 +1700,15 @@ def _prune_techniques(note, diff_percent):
 
 
 def _pick_partial_voicing(ranked, n):
-    """Pick `n` notes from a chord's notes (already sorted by ascending
-    string index — see _notes_for_level's comment on that convention)
-    for a reduced voicing. Always keeps the lowest-string-index (bass)
-    note (ranked[0]), then greedily adds whichever remaining note keeps the
-    voicing's own fret span (_fret_span) smallest. An open string (f=0)
-    contributes nothing to the span, so it's always a free, no-stretch add.
+    """Pick `n` notes from a chord's notes for a reduced voicing. `ranked`
+    is ordered by ascending string index (see _notes_for_level's comment
+    on that convention) UNLESS #103/B7's root-parsing found a real
+    harmonic root elsewhere in the chord, in which case `ranked[0]` is
+    that root note instead — not necessarily the lowest string. Either
+    way, `ranked[0]` is always kept, then this greedily adds whichever
+    remaining note keeps the voicing's own fret span (_fret_span)
+    smallest. An open string (f=0) contributes nothing to the span, so
+    it's always a free, no-stretch add.
 
     Deliberately diverges from the keys path's outer-voice selection
     (_notes_for_level_keys picks by pitch extremes, since a piano hand
@@ -1818,14 +1881,27 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None,
                 # #103/B7: prefer a REAL harmonic root, parsed from the
                 # matched ChordTemplate's authored name, over the lowest-
                 # string guess above -- only when the chart actually
-                # references a template (chord_id) and that template's
-                # name parses to a recognizable root pitch class present
-                # among this chord's own notes. Falls back to `ranked`
-                # (the lowest-string heuristic) unparseable/unmatched.
+                # references a template and that template's name parses to
+                # a recognizable root pitch class present among this
+                # chord's own notes. Falls back to `ranked` (the lowest-
+                # string heuristic) when unparseable/unmatched.
+                #
+                # Wire key is `id` (song.py's chord_to_wire/chord_from_wire:
+                # {"t", "id", "hd", "notes"}) -- `chord_id` is the Chord
+                # dataclass's own attribute name and, separately, the wire
+                # key for a HandShape's chord reference (hand_shape_to_wire).
+                # Reading `ch.get("chord_id")` here would always be None on
+                # a real pack; mirror song.py's own `int(d.get("id", 0))`
+                # reader rather than a strict isinstance check, so a
+                # hand-edited pack's `"id": "0"` or `0.0` still resolves the
+                # way core itself would.
                 root_pc = None
                 if chord_templates:
-                    chord_id = ch.get("chord_id")
-                    if isinstance(chord_id, int) and 0 <= chord_id < len(chord_templates):
+                    try:
+                        chord_id = int(ch.get("id", 0))
+                    except (TypeError, ValueError):
+                        chord_id = 0
+                    if 0 <= chord_id < len(chord_templates):
                         root_pc = _parse_chord_root_pitch_class(
                             chord_templates[chord_id].get("name"),
                         )
@@ -2440,6 +2516,36 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # compute cross-phrase survivorship once up front (issue #68
         # review follow-up) rather than per phrase/level.
         link_next_keep_ids = _global_link_next_survivors(groups_all)
+        # #103/B7: per-SECTION key estimate (a song can modulate). Applied
+        # PRE-threshold, over `windows` (the same section/phrase boundaries
+        # used below), so the discount participates in `global_thresholds`
+        # construction below exactly like the B2 beat-value and B5 melody-
+        # turning-point terms already do inside _score_groups -- applying
+        # it AFTER the tier scale is frozen would re-label a whole
+        # phrase's groups against cutoffs that never saw the discount,
+        # which can silently collapse a tier on ordinary tonal material
+        # (caught in PR #125 review). Gated per-window on the correlation
+        # guard (a poor tonal fit -- near-uniform/atonal pitch-class
+        # content -- disables the weighting for that window rather than
+        # ranking notes against an estimate the data doesn't support) and
+        # skipped entirely for keys (no tuning/string model to approximate
+        # pitch from there).
+        chord_windows = _chord_pitch_class_windows(chords, tuning, n_strings, effective_is_bass)
+        for (win_t0, win_t1) in windows:
+            window_groups = [g for g in groups_all if win_t0 <= g["time"] < win_t1]
+            if not window_groups:
+                continue
+            key_est = _estimate_key(window_groups, tuning, n_strings, effective_is_bass)
+            if key_est is None or key_est[2] < _KEY_FIT_MIN_CORRELATION:
+                continue
+            tonic_pc, is_major, _corr = key_est
+            for g in window_groups:
+                bonus = _group_key_stability_bonus(
+                    g, tonic_pc, is_major, tuning, n_strings, effective_is_bass,
+                    chord_windows=chord_windows,
+                )
+                if bonus:
+                    g["retention_score"] = max(0.0, g["retention_score"] - bonus)
 
     top_tier = n_levels - 1
     global_thresholds = _tier_thresholds([g["retention_score"] for g in groups_all], n_levels)
@@ -2491,23 +2597,6 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             last["retention_score"] = max(
                 0.0, last["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
             )
-        # #103/B7: per-SECTION key estimate (a song can modulate) --
-        # applied here, per phrase, rather than once arrangement-wide.
-        # Gated on the correlation guard (poor tonal fit -- blues, modal,
-        # heavily chromatic material -- disables the weighting for this
-        # section instead of ranking notes against an estimate the data
-        # doesn't support) and skipped entirely for keys (no tuning/string
-        # model to approximate pitch from there).
-        if not is_keys:
-            key_est = _estimate_key(phrase_groups, tuning, n_strings, effective_is_bass)
-            if key_est is not None and key_est[2] >= _KEY_FIT_MIN_CORRELATION:
-                tonic_pc, is_major, _corr = key_est
-                for pg in phrase_groups:
-                    bonus = _group_key_stability_bonus(
-                        pg, tonic_pc, is_major, tuning, n_strings, effective_is_bass,
-                    )
-                    if bonus:
-                        pg["retention_score"] = max(0.0, pg["retention_score"] - bonus)
         # Every phrase is built on the same n_levels-tier scale (see
         # _assign_tiers); how many DISTINCT levels a phrase ends up with
         # follows from how hard its content is, once
