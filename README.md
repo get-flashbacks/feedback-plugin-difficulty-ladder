@@ -355,6 +355,17 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 | Min / Max % | Hard bounds auto-adjust will never cross. |
 | Generate ladder depth cap (2-8) | Maximum difficulty tiers "⚙️ Generate Difficulties" can give a phrase when building a ladder for a song that doesn't have one yet — threaded into `/generate`'s existing `levels` parameter. |
 
+`staged_chords` (#103/B10) is an additional opt-in `/generate` and
+`/generate-library` request field — `false` by default — not yet exposed
+as a settings.html checkbox. Pass it explicitly in the request body to
+enable the chord-landmark bottom tier (see "Possible Upgrades" below for
+what it does); the acceptance criteria for a full UI toggle is broader
+validation against real (not just one) arrangements first. Like
+`levels`, it only takes effect while generating: it has no effect on an
+arrangement that already has phrases unless the request also sets
+`force`, matching `/generate`'s existing regenerate-only-on-request
+behavior.
+
 **Library card badge** — songs with a remembered per-song difficulty (see above) show a small
 indicator on their library card via `window.feedBack.libraryCardActions` (`placement: 'overlay'`,
 never a `MutationObserver`). The exact saved percentage is available via the action's click
@@ -388,13 +399,19 @@ full chord stays in that chord's group. Chordr must be active for this route.
 The preview does not rewrite the pack or change generated tiers. Inspect its
 grouping on real arrangements before enabling a chord-led generator stage.
 
-Design notes for the general generator — not yet implemented as a plugin
-setting. The one-off *Bring Me to Life* preview in the library tests this
-staging on that song only. Each general feature should ship as an
-independent, opt-in setting so existing behavior doesn't change unless a
-user turns it on.
+Design notes for the general generator. **The chord-landmark stage below is
+now implemented** (#103/B10, `staged_chords` — see the Settings section),
+off by default; everything else in this section (strum-onset/voicing/
+technique staging beyond what the existing continuous difficulty curve
+already does, and the "enable a chord-led stage by default" step — see
+issue #121's acceptance criteria) remains a design note, not implemented.
+The one-off *Bring Me to Life* preview in the library tests Chordr grouping
+on that song only — not the broad, multi-arrangement validation #121
+requires before any of this could default to on. Each general feature
+should ship as an independent, opt-in setting so existing behavior doesn't
+change unless a user turns it on.
 
-**Musically staged fretted ladders (design decision; not implemented):**
+**Musically staged fretted ladders:**
 
 - Add meaningful stages to the current density, voicing, and technique
   progression rather than replacing the existing generator or silently
@@ -403,16 +420,46 @@ user turns it on.
   makes a distinct, playable change. Preserve the full authored chart at the
   highest tier; do not preserve a defective generated tier merely to keep its
   number.
-- In a chord-led passage, the basic tier should retain the harmonic path:
-  normally one **full chord** per chord group, without its repeated strumming
-  pattern. Prefer the group's longest-sustained sounding occurrence (often
-  its first) as the representative. Do not confuse unnamed partial voicings
-  with new harmony: chordr should identify their parent chord before grouping
-  or grading them. A short, difficult passing/transition chord can enter at
-  a later tier (the brief Bmadd11 in *So Far Away* Rhythm is the example),
-  but a resolution chord must not be omitted just because it is short or
-  difficult. Where harmonic function is uncertain, require review rather
-  than removing a possible resolution by duration alone.
+- **Implemented (#103/B10, opt-in via `staged_chords`):** in a chord-led
+  passage, the bottom tier now retains the harmonic path: one **full
+  chord landmark** per identified chord identity, dropping its repeated
+  strumming pattern entirely — not just thinning each repeat's voicing,
+  which the pre-existing per-group reduction already did on its own.
+  `_staged_chord_drop_ids` prefers the identity's longest-sustained
+  occurrence, among the occurrences already at the bottom tier, as the
+  landmark (usually the first, but not assumed to be — measured, not
+  guessed) — scoped to `level == 0` rather than every occurrence in the
+  whole phrase, since picking a landmark from a higher-tier occurrence
+  could drop the only bottom-tier occurrence of that identity with
+  nothing to replace it there (caught in PR #127 review). A chord group
+  that resolves to a named identity but carries no notes (a `notes: []`
+  chord, reachable from a GP import with an out-of-range chord id or a
+  fully-muted template) is excluded from landmark/resolution candidacy
+  entirely, so it can never silently occupy an identity's kept slot while
+  contributing nothing to the tier (also caught in review). Separately,
+  always protects the phrase's own final, note-bearing bottom-tier chord
+  group from being dropped regardless of duration (the resolution-
+  protection rule below). Unnamed/unidentified partial voicings (no
+  matched `ChordTemplate`, a template with no `name`, or a non-string
+  `name` from a hand-edited pack) are never collapsed —
+  `_resolvable_chord_identity` requires a positively-identified parent
+  chord before a group is even a drop candidate. A short, difficult
+  passing/transition chord (the brief Bmadd11 in *So Far Away* Rhythm is
+  the example) is a drop candidate whenever another bottom-tier
+  occurrence of the same identity sustains as long or longer — including
+  when the short chord is the LATER of the two, and including an exact
+  sustain tie, which the landmark rule gives to the earlier occurrence.
+  The only group besides that landmark that is never dropped is the
+  phrase's own final, note-bearing bottom-tier chord group. This lands
+  only the bottom tier's group selection;
+  every tier above it shows every occurrence, going through the same
+  voicing/technique reduction as when the setting is off.
+  **Known approximation:** resolution protection is positional (the
+  phrase's last bottom-tier chord group), not harmonic — a short mid-
+  phrase cadence resolution elsewhere in the phrase isn't specially
+  protected, since the wire data has no way to express "this is a
+  resolution." Flagged as a residual risk to settle before this ever gets
+  a settings.html checkbox, not a defect in this PR's own scope.
 - In a rhythm-led passage such as *Bring Me to Life* guitar, use the staged
   order: chord landmarks; then **every authored strum onset** played as one
   note; then existing easy/intermediate voicing material; then complete

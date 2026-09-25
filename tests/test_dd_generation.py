@@ -3980,6 +3980,212 @@ def test_chord_pitch_class_windows_covers_each_chords_sustain():
     assert end == 0.5  # nosec B101 - pytest assertion
     assert 0 in pcs  # nosec B101 - pytest assertion
 
+# ── #103/B10: opt-in staged-chords bottom tier (chord landmarks) ───────────
+
+
+def _identified_chord_group(t, template_id, sus=0.2, s_base=0):
+    chord = {"t": t, "id": template_id, "notes": [
+        {"s": s_base, "f": 3, "sus": sus}, {"s": s_base + 1, "f": 2, "sus": sus},
+    ]}
+    return {
+        "type": "chord", "notes": list(chord["notes"]), "chord": chord,
+        "time": t, "cost": 0.5, "value": 0.0, "retention_score": 0.5, "level": 0,
+    }
+
+
+_STAGED_TEMPLATES = [{"name": "G", "frets": [3, 2, 0, 0, 0, 3]}, {"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
+
+
+def test_resolvable_chord_identity_requires_a_named_template():
+    named = _identified_chord_group(0.0, 0)
+    assert routes._resolvable_chord_identity(named, _STAGED_TEMPLATES) == "G"  # nosec B101 - pytest assertion
+    unmatched = _identified_chord_group(0.0, 99)  # out of range
+    assert routes._resolvable_chord_identity(unmatched, _STAGED_TEMPLATES) is None  # nosec B101 - pytest assertion
+    assert routes._resolvable_chord_identity(unmatched, []) is None  # nosec B101 - pytest assertion
+
+
+def test_staged_chord_drop_ids_keeps_only_the_landmark_occurrence():
+    """Three repeats of the same identified chord ("G") -- the middle one
+    (longest sustain) is the landmark; the shorter first occurrence gets
+    dropped. The last occurrence is protected as the phrase's resolution
+    regardless of its own sustain."""
+    g1 = _identified_chord_group(0.0, 0, sus=0.1)
+    g2 = _identified_chord_group(1.0, 0, sus=0.5)  # landmark: longest sustain
+    g3 = _identified_chord_group(2.0, 0, sus=0.1)  # resolution: last chord group
+    phrase_groups = [g1, g2, g3]
+    drop_ids = routes._staged_chord_drop_ids(phrase_groups, _STAGED_TEMPLATES)
+    assert drop_ids == {id(g1)}  # nosec B101 - pytest assertion
+
+
+def test_staged_chord_drop_ids_never_touches_unidentified_chords():
+    """An unresolvable-identity group can never appear in the drop set,
+    whatever else is in the phrase -- here BOTH identified groups also
+    happen to survive (the sustain-based landmark and, separately, the
+    phrase's last-group resolution protection), so nothing is dropped."""
+    unmatched = _identified_chord_group(0.0, 99)  # unresolvable identity
+    landmark = _identified_chord_group(1.0, 0, sus=0.5)
+    last_group = _identified_chord_group(2.0, 0, sus=0.1)  # protected: phrase's final chord group
+    drop_ids = routes._staged_chord_drop_ids([unmatched, landmark, last_group], _STAGED_TEMPLATES)
+    assert id(unmatched) not in drop_ids  # nosec B101 - pytest assertion
+    assert drop_ids == set()  # nosec B101 - landmark kept by sustain, last_group kept as resolution
+
+
+def test_notes_for_level_drops_groups_in_chord_stage_drop_ids():
+    g1 = _identified_chord_group(0.0, 0)
+    g2 = _identified_chord_group(1.0, 0)
+    notes, chords = routes._notes_for_level(
+        [g1, g2], level=0, max_level=3, chord_stage_drop_ids={id(g1)},
+    )
+    all_times = {n["t"] for n in notes} | {c["t"] for c in chords}
+    assert 0.0 not in all_times  # nosec B101 - g1 was dropped
+    assert any(abs(t - 1.0) < 1e-9 for t in all_times)  # nosec B101 - g2 survived
+
+
+def test_generate_phrases_staged_chords_default_off_is_unaffected():
+    """staged_chords defaults False -- output must be byte-identical to
+    calling generate_phrases_for_arrangement without the parameter at all."""
+    notes = [{"t": round(i * 0.5, 3), "s": 0, "f": (i * 3) % 12, "sus": 0.1} for i in range(20)]
+    chords = [
+        {"t": 10.0 + i * 1.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.3}, {"s": 1, "f": 2, "sus": 0.3}]}
+        for i in range(6)
+    ]
+    arr = _arrangement(notes, chords=chords, n_beats=120)
+    arr["templates"] = _STAGED_TEMPLATES
+    default_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    explicit_off_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=False)
+    assert default_phrases == explicit_off_phrases  # nosec B101 - pytest assertion
+
+
+def test_generate_phrases_staged_chords_collapses_repeated_identity_at_bottom_tier_only():
+    """#103/B10 regression (PR #127 review): the previous version of this
+    test only compared COUNTS, which a fully stubbed-out staged_chords
+    path (patched to a no-op) could also satisfy by coincidence on that
+    fixture. This asserts the actual onset SETS at the bottom tier with
+    staged_chords on vs off, and that the top tier is untouched either way.
+
+    _assign_tiers is patched to a no-op so every group keeps its default
+    `level=0` -- this isolates the staged-chords mechanism itself from
+    ordinary retention-score tiering noise, which is irrelevant to what
+    this test checks and would otherwise make the fixture's outcome depend
+    on tuning details unrelated to #121."""
+    chords = [
+        {"t": 1.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.05}, {"s": 1, "f": 2, "sus": 0.05}]},
+        {"t": 2.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.05}, {"s": 1, "f": 2, "sus": 0.05}]},
+        {"t": 3.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.5}, {"s": 1, "f": 2, "sus": 0.5}]},  # landmark
+        {"t": 4.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.05}, {"s": 1, "f": 2, "sus": 0.05}]},  # last: protected
+    ]
+    arr = _arrangement([], chords=chords, n_beats=40)
+    arr["templates"] = _STAGED_TEMPLATES
+
+    def _onsets(phrase, lvl_idx):
+        lvl = phrase["levels"][lvl_idx]
+        return {c["t"] for c in lvl["chords"]} | {n["t"] for n in lvl["notes"]}
+
+    with patch.object(routes, "_assign_tiers", lambda *a, **k: None):
+        off_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=False)
+        on_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=True)
+
+    off_phrase = next(p for p in off_phrases if p["levels"][0]["chords"] or p["levels"][0]["notes"])
+    on_phrase = next(p for p in on_phrases if p["levels"][0]["chords"] or p["levels"][0]["notes"])
+
+    assert _onsets(off_phrase, 0) == {1.0, 2.0, 3.0, 4.0}  # nosec B101 - staged off: every occurrence survives
+    assert _onsets(on_phrase, -1) == {1.0, 2.0, 3.0, 4.0}  # nosec B101 - top tier always untouched
+    assert _onsets(on_phrase, 0) == {3.0, 4.0}  # nosec B101 - landmark (3.0) + protected resolution (4.0)
+
+
+def test_resolvable_chord_identity_rejects_a_non_string_name_instead_of_raising():
+    """A hand-edited pack could carry a malformed template `name` (e.g. a
+    list); this must degrade to 'unidentified' rather than raising when the
+    non-string value later flows into a dict key in
+    _staged_chord_drop_ids's best_by_identity (PR #127 review)."""
+    bad_templates = [{"name": ["G"], "frets": [3, 2, 0, 0, 0, 3]}]
+    g = _identified_chord_group(0.0, 0)
+    assert routes._resolvable_chord_identity(g, bad_templates) is None  # nosec B101 - pytest assertion
+    # Must not raise when actually used downstream, either.
+    assert routes._staged_chord_drop_ids([g], bad_templates) == set()  # nosec B101 - pytest assertion
+
+
+def test_staged_chord_drop_ids_only_considers_bottom_tier_occurrences():
+    """#103/B10 regression (PR #127 review): the landmark scan and the
+    protected-resolution lookup must only consider groups already at
+    level 0 -- picking a landmark from a HIGHER-tier occurrence would drop
+    the only level-0 occurrence of that identity with nothing to replace
+    it there, emptying the identity out of the bottom tier entirely."""
+    # g3 is deliberately at a HIGHER tier than g1 (not level 0, like g2) --
+    # with both g2 and g3 out of contention, g1 is the identity's ONLY
+    # level-0 occurrence. A phrase-wide scan (the pre-fix implementation)
+    # would pick g2 as the landmark (longest overall sustain) and drop g1,
+    # emptying the bottom tier of this identity -- exactly the bug this
+    # test must catch. (An earlier version of this fixture put g3 at
+    # level 0 too, where it was protected as the phrase's last bottom-tier
+    # group either way, so the assertions passed under BOTH the buggy and
+    # fixed implementations and caught nothing -- verified in PR #127
+    # review by restoring the phrase-wide scan and confirming this test
+    # still passed with it. Moving g3 off level 0 is what makes the two
+    # implementations diverge.)
+    g1 = _identified_chord_group(0.0, 0, sus=0.05)  # the only level-0 occurrence
+    g1["level"] = 0
+    g2 = _identified_chord_group(1.0, 0, sus=0.5)  # longest sustain overall, but NOT at level 0
+    g2["level"] = 1
+    g3 = _identified_chord_group(2.0, 0, sus=0.05)
+    g3["level"] = 2
+    drop_ids = routes._staged_chord_drop_ids([g1, g2, g3], _STAGED_TEMPLATES)
+    # g2 and g3 must never be considered (neither is competing for a
+    # level-0 slot), and the bottom tier must keep g1 -- its only
+    # level-0 occurrence of this identity.
+    assert id(g2) not in drop_ids  # nosec B101 - never a candidate: not level 0
+    assert id(g3) not in drop_ids  # nosec B101 - never a candidate: not level 0
+    assert id(g1) not in drop_ids  # nosec B101 - the only level-0 occurrence survives
+
+
+def test_staged_chord_drop_ids_never_lets_a_notes_empty_group_win_the_landmark():
+    """#103/B10 regression (PR #127 review, round 2): a chord group whose
+    `notes` list is empty (reachable from a GP import whose chord id is
+    out of range or whose template is fully muted -- lib/song.py's
+    importer) scores 0.0 sustain, which could win a landmark tie (the
+    comparison is a strict `>`, favoring the earliest occurrence) or the
+    resolution slot while emitting nothing in _notes_for_level -- silently
+    holding an identity's "kept" spot while contributing nothing, which is
+    indistinguishable from the identity being dropped entirely."""
+    # Both occurrences score max-sustain 0.0 (a struck chord with no held
+    # duration is ordinary, not just the empty one) -- a genuine tie, which
+    # the strict `>` comparison resolves in favor of whichever is processed
+    # first. `empty` comes first in the input list, so under the pre-fix
+    # code (no notes-bearing filter) it would win the tie and become the
+    # landmark, silently holding the identity's kept slot while
+    # contributing nothing to the tier.
+    # A trailing, differently-identified chord ("C") is required so the
+    # phrase's "last chord group" resolution protection doesn't
+    # accidentally save `real` on its own merits -- without it, `real`
+    # would always survive as the protected final group regardless of
+    # whether the landmark tie is resolved correctly, masking the bug.
+    empty = _identified_chord_group(0.0, 0, sus=0.0)
+    empty["notes"] = []
+    empty["chord"]["notes"] = []
+    real = _identified_chord_group(1.0, 0, sus=0.0)
+    # #103/B10 regression (PR #127 review, round 3): the note-bearing filter
+    # applies to TWO searches -- the landmark scan above, and the final-
+    # chord resolution lookup. A fixture where the notes-empty group is
+    # also the phrase's very last group would let the resolution lookup
+    # pick `trailing` correctly either way (it's the only OTHER chord
+    # group), masking a bug in the resolution half specifically. So here
+    # `trailing` ("C") is NOT its own identity's landmark (c_landmark
+    # sustains longer) -- its survival depends entirely on the resolution
+    # protection -- and a notes-empty "C" comes AFTER it as the phrase's
+    # actual last group. An unfiltered resolution lookup would then pick
+    # that trailing empty group as "the last chord" instead of `trailing`,
+    # dropping the real final chord group #121 says must never be dropped.
+    c_landmark = _identified_chord_group(2.0, 1, sus=0.5)  # id=1 -> "C", wins the landmark on sustain
+    trailing = _identified_chord_group(3.0, 1, sus=0.1)  # "C" again; not the landmark -- must survive via resolution protection
+    trailing_empty = _identified_chord_group(4.0, 1, sus=0.0)  # "C" again; the phrase's actual last group
+    trailing_empty["notes"] = []
+    trailing_empty["chord"]["notes"] = []
+    groups = [empty, real, c_landmark, trailing, trailing_empty]
+    for g in groups:
+        g["level"] = 0
+    drop_ids = routes._staged_chord_drop_ids(groups, _STAGED_TEMPLATES)
+    assert id(real) not in drop_ids  # nosec B101 - the note-bearing occurrence must survive
+    assert id(trailing) not in drop_ids  # nosec B101 - protected as the phrase's last NOTE-BEARING chord group
 
 # ── #103/B8: keys — beat strength, melody shape, budget-based reduction ────
 
