@@ -1914,12 +1914,14 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None,
                         key=lambda n: n.get("s", 0),
                     )
                 # Bass-note-only very early, then a partial voicing that
-                # grows by one note at a mid-ladder threshold, mirroring the
-                # keys path's outer-voices -> +middle -> full progression —
-                # authored ladders widen chords quickly (this is a
-                # bottom-tier-only thing) but a 4+-note chord still gets a
-                # real middle rung instead of jumping straight from 2 notes
-                # to the full voicing.
+                # grows by one note at a mid-ladder threshold -- the same
+                # general shape the keys path's per-tier budget aims for
+                # (root/outer alone, a real middle voicing, full voicing),
+                # though the two are no longer the same step function
+                # (#103/B8 made the keys path a proportional budget; this
+                # fretted branch is still a two-threshold step) — a 4+-note
+                # chord still gets a real middle rung instead of jumping
+                # straight from 2 notes to the full voicing.
                 if diff_percent <= _CHORD_ROOT_ONLY_MAX_FRAC:
                     ch_notes = [ranked[0]]
                 elif diff_percent < _CHORD_MID_VOICING_FRAC or len(ranked) <= 3:
@@ -2052,6 +2054,27 @@ def _note_midi_keys(n):
     return int(n.get("s", 0)) * 24 + int(n.get("f", 0))
 
 
+# #103/B8: the fretted path's beat-value coefficient (0.12) and
+# _MELODY_TURNING_POINT_RETENTION_BONUS (0.12) were calibrated against the
+# fretted `cost` model's typical range (0.3-0.6 for a mid-difficulty group,
+# dominated by 0.35*fretting + 0.30*technique) -- reusing them verbatim on
+# keys' `cost` model is wrong: a single-note keys melody can only move
+# `cost` through density/speed/sustain (poly and span_score are 0 for a
+# single note), giving a typical spread of roughly 0.10 across an entire
+# melodic passage (measured in PR #126 review: min 0.125 / max 0.225,
+# stdev 0.0168 on a representative fixture). At the fretted coefficients,
+# one beat discount alone (0.12) is already larger than that whole spread,
+# and beat+turning together (0.24) can flatten a uniformly-costed keys
+# passage's bottom tier to hold over half its notes purely from metrical
+# position -- a side effect of borrowing the fretted scale, not an
+# intentional design choice. Scaled down to roughly the same RELATIVE
+# influence the fretted coefficients have on the fretted cost range
+# (0.12 / ~0.45 typical ≈ 27%; 0.10 spread * 27% ≈ 0.025) rather than the
+# same absolute number.
+_KEYS_BEAT_VALUE_COEF = 0.025
+_KEYS_MELODY_TURNING_BONUS = 0.025
+
+
 def _group_notes_keys(notes, chords, *, onset_window_ms=30):
     """Group keys notes into atomic units. No fretboard, so grouping is
     purely temporal: explicit chords stay chords, remaining notes sharing an
@@ -2155,9 +2178,9 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
         # the final clamp. `value` feeds `_assign_tiers`'s tie-break exactly
         # as it does on the fretted path.
         value = _beat_value(g["time"], beat_times, tempo)
-        retention_score = cost - 0.12 * value
+        retention_score = cost - _KEYS_BEAT_VALUE_COEF * value
         if gi in turning_points:
-            retention_score -= _MELODY_TURNING_POINT_RETENTION_BONUS
+            retention_score -= _KEYS_MELODY_TURNING_BONUS
         g["cost"] = cost
         g["value"] = value
         g["retention_score"] = max(0.0, min(1.0, retention_score))
@@ -2250,8 +2273,18 @@ def _notes_for_level_keys(groups, level, max_level):
                 # Proportional budget, same shape as the fretted path's
                 # arpeggio-reduction ratio (_notes_for_level): always at
                 # least the outer voices, growing toward the full voicing
-                # as level approaches max_level.
-                keep_n = max(len(outer), round(len(priority) * (level + 1) / max_level))
+                # as level approaches max_level. Capped at len(priority) - 1
+                # (PR #126 review): at level == max_level - 1 the raw
+                # formula already evaluates to the complete voicing, which
+                # belongs to the top tier (level >= max_level, handled
+                # above) alone -- without the cap, a levels=3 request
+                # reaches "everything" one tier early and the tier below
+                # the top can come out byte-identical to it for voicings
+                # the octave-collapse doesn't rescue.
+                keep_n = max(
+                    len(outer),
+                    min(len(priority) - 1, round(len(priority) * (level + 1) / max_level)),
+                )
             # Output stays pitch-ordered regardless of the voice-add order
             # used to pick `keep_n` of them -- `priority` only determines
             # WHICH notes survive, never their presentation order.

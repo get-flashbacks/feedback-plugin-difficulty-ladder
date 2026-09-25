@@ -17,7 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of jumping straight from "outer voices" to "outer + one middle voice" to
   "everything" regardless of how many tiers the ladder has; a fixed
   voice-add order (outer first, then alternately inward) guarantees each
-  tier's kept notes are a strict superset of the tier below.
+  tier's kept notes are a superset of the tier below (octave-duplicate
+  collapsing can make two adjacent tiers byte-identical, so not always a
+  strict superset), and beat/turning coefficients are scaled to keys'
+  own, much narrower `cost` range rather than reused verbatim from the
+  fretted path.
 - Key- and chord-aware note retention: estimate each phrase's key
   (Krumhansl-Schmuckler correlation against the 24 major/minor rotations
   of the Krumhansl & Kessler 1982 profiles, from a duration-weighted

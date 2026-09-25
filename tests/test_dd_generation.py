@@ -4013,37 +4013,43 @@ def test_melody_turning_points_keys_finds_a_local_peak():
     assert turning == {1}  # nosec B101 - pytest assertion
 
 
-def test_keys_voice_priority_puts_outer_voices_first():
+def test_keys_voice_priority_full_add_order_for_five_voices():
+    """Pins the WHOLE add order, not just the two outer voices -- a
+    plausible alternate implementation (outer voices, then the remaining
+    interior voices left in pitch order) also passes an outer-only check
+    but produces different mid-ladder voicings than the real alternating-
+    inward order this function implements (PR #126 review)."""
     ranked = [52, 59, 64, 67, 71]
     notes = [{"s": m // 24, "f": m % 24} for m in ranked]
     priority = routes._keys_voice_priority(notes)
-    assert priority[0] is notes[0]  # nosec B101 - pytest assertion (lowest)
-    assert priority[1] is notes[-1]  # nosec B101 - pytest assertion (highest)
+    assert [routes._note_midi_keys(n) for n in priority] == [52, 71, 59, 67, 64]  # nosec B101 - pytest assertion
 
 
 def test_notes_for_level_keys_budget_grows_smoothly_for_a_wide_chord():
-    """#103/B8 acceptance: a 6-voice chord's kept-note count should rise
-    tier by tier (a real budget), not jump straight from 2 to 3 to 6
-    regardless of how many tiers the ladder has -- the pre-B8 behavior."""
-    midis = [48, 52, 55, 60, 64, 67]
+    """#103/B8 acceptance: a 6-voice chord's kept-note IDENTITIES should
+    nest and grow tier by tier (a real budget), not jump straight from
+    "outer" to "everything" one tier before the top (PR #126 review caught
+    this exact off-by-one: the un-clamped budget formula reached the full
+    voicing at level == max_level - 1, making that tier and the top tier
+    byte-identical for voicings octave-collapsing didn't rescue). Uses a
+    voicing with no two notes exactly an octave apart, so nesting can be
+    checked without an unrelated octave-collapse muddying the counts."""
+    midis = [48, 50, 53, 57, 61, 66]
     notes = [{"t": 0.0, "s": m // 24, "f": m % 24} for m in midis]
     groups = [{
         "type": "chord", "notes": notes, "chord": None,
         "time": 0.0, "cost": 0.5, "value": 0.0,
         "retention_score": 0.5, "level": 0,
     }]
-    counts = []
+    tiers = []
     for level in range(4):
         reduced, _ = routes._notes_for_level_keys(groups, level, max_level=3)
-        counts.append(len(reduced))
-    assert counts[0] == 2  # nosec B101 - outer voices only
-    assert counts[-1] == 6  # nosec B101 - full voicing at the top tier's boundary... 
-    # Every tier must be a strict superset by count of the tier below (a
-    # real graded budget), and no two adjacent non-terminal tiers should
-    # both jump straight from "outer" to "everything".
-    for lower, higher in pairwise(counts):
-        assert lower <= higher  # nosec B101 - pytest assertion
-    assert len(set(counts)) > 2  # nosec B101 - more than just "outer" and "everything"
+        tiers.append({routes._note_midi_keys(n) for n in reduced})
+    assert tiers[0] == {48, 66}  # nosec B101 - outer voices only
+    assert tiers[-1] == set(midis)  # nosec B101 - full voicing only at the top tier
+    assert tiers[-2] != tiers[-1]  # nosec B101 - the off-by-one regression: tier below top must NOT already be full
+    for lower, higher in pairwise(tiers):
+        assert lower < higher  # nosec B101 - genuine identity nesting, strictly growing on this collision-free fixture
 
 
 def test_notes_for_level_keys_small_chord_keeps_pitch_order():
@@ -4058,3 +4064,57 @@ def test_notes_for_level_keys_small_chord_keeps_pitch_order():
     }]
     reduced, _ = routes._notes_for_level_keys(groups, level=1, max_level=3)
     assert [routes._note_midi_keys(n) for n in reduced] == midis  # nosec B101 - pytest assertion
+
+
+def test_score_groups_keys_cost_field_is_unaffected_by_beat_or_turning_bonuses():
+    """#103/B8 (PR #126 review): the beat-value discount and melody-turning
+    bonus must only ever touch `retention_score`, never `cost` itself --
+    the same cost/value separation #72/B1 established for the fretted
+    path. Verified directly rather than trusting the pre-existing legacy-
+    formula oracle test, whose fixture has zero single-note groups and so
+    can't exercise the turning-point path at all."""
+    beat_times = [0.0, 0.5, 1.0, 1.5, 2.0]
+    tempo = routes._TempoParams.from_beats(beat_times, [{"time": t, "measure": 0} for t in beat_times])
+    groups = [
+        _keys_single(0.0, 60),
+        _keys_single(0.5, 67),  # local high -> turning point, and on-beat
+        _keys_single(1.0, 60),
+    ]
+    routes._score_groups_keys(groups, beat_times, tempo=tempo)
+    without_beat_or_turning = [
+        _keys_single(0.0, 60), _keys_single(0.5, 67), _keys_single(1.0, 60),
+    ]
+    # Same groups/neighbors (so density/speed/sustain -- which DO depend on
+    # neighboring groups -- are identical), but no beat_times, so the beat
+    # discount and turning-point bonus can't apply. If `cost` differs here,
+    # one of those terms leaked into it.
+    routes._score_groups_keys(without_beat_or_turning, (), tempo=routes._TempoParams())
+    assert groups[1]["cost"] == without_beat_or_turning[1]["cost"]  # nosec B101 - pytest assertion
+    assert groups[1]["retention_score"] != groups[1]["cost"]  # nosec B101 - beat+turning did discount retention_score
+
+
+def test_generate_phrases_keys_multi_note_chords_nest_end_to_end():
+    """#103/B8 (PR #126 review): the pre-existing keys nesting test
+    (test_keys_phrases_use_the_tier_scale_too) only uses single notes, so
+    _notes_for_level_keys's multi-note chord-voicing budget (this PR's
+    actual subject) is never exercised through the real generator
+    pipeline. This adds that coverage."""
+    chords = [
+        {"t": round(i * 1.0, 3), "notes": [
+            {"s": 2, "f": 0}, {"s": 3, "f": 2}, {"s": 4, "f": 5}, {"s": 5, "f": 9}, {"s": 6, "f": 13},
+        ]}
+        for i in range(10)
+    ]
+    arr = {
+        "type": "keys", "name": "keys", "notes": [], "chords": chords,
+        "beats": _tiered_beats(40), "sections": [], "tuning": [],
+    }
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        identities = [
+            {(n["t"], routes._note_midi_keys(n)) for n in lvl["notes"]}
+            for lvl in p["levels"]
+        ]
+        for lower, higher in pairwise(identities):
+            assert lower <= higher  # nosec B101 - pytest assertion
