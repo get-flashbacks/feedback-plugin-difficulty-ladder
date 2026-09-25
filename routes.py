@@ -2025,12 +2025,14 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None,
                         key=lambda n: n.get("s", 0),
                     )
                 # Bass-note-only very early, then a partial voicing that
-                # grows by one note at a mid-ladder threshold, mirroring the
-                # keys path's outer-voices -> +middle -> full progression —
-                # authored ladders widen chords quickly (this is a
-                # bottom-tier-only thing) but a 4+-note chord still gets a
-                # real middle rung instead of jumping straight from 2 notes
-                # to the full voicing.
+                # grows by one note at a mid-ladder threshold -- the same
+                # general shape the keys path's per-tier budget aims for
+                # (root/outer alone, a real middle voicing, full voicing),
+                # though the two are no longer the same step function
+                # (#103/B8 made the keys path a proportional budget; this
+                # fretted branch is still a two-threshold step) — a 4+-note
+                # chord still gets a real middle rung instead of jumping
+                # straight from 2 notes to the full voicing.
                 if diff_percent <= _CHORD_ROOT_ONLY_MAX_FRAC:
                     ch_notes = [ranked[0]]
                 elif diff_percent < _CHORD_MID_VOICING_FRAC or len(ranked) <= 3:
@@ -2163,6 +2165,27 @@ def _note_midi_keys(n):
     return int(n.get("s", 0)) * 24 + int(n.get("f", 0))
 
 
+# #103/B8: the fretted path's beat-value coefficient (0.12) and
+# _MELODY_TURNING_POINT_RETENTION_BONUS (0.12) were calibrated against the
+# fretted `cost` model's typical range (0.3-0.6 for a mid-difficulty group,
+# dominated by 0.35*fretting + 0.30*technique) -- reusing them verbatim on
+# keys' `cost` model is wrong: a single-note keys melody can only move
+# `cost` through density/speed/sustain (poly and span_score are 0 for a
+# single note), giving a typical spread of roughly 0.10 across an entire
+# melodic passage (measured in PR #126 review: min 0.125 / max 0.225,
+# stdev 0.0168 on a representative fixture). At the fretted coefficients,
+# one beat discount alone (0.12) is already larger than that whole spread,
+# and beat+turning together (0.24) can flatten a uniformly-costed keys
+# passage's bottom tier to hold over half its notes purely from metrical
+# position -- a side effect of borrowing the fretted scale, not an
+# intentional design choice. Scaled down to roughly the same RELATIVE
+# influence the fretted coefficients have on the fretted cost range
+# (0.12 / ~0.45 typical ≈ 27%; 0.10 spread * 27% ≈ 0.025) rather than the
+# same absolute number.
+_KEYS_BEAT_VALUE_COEF = 0.025
+_KEYS_MELODY_TURNING_BONUS = 0.025
+
+
 def _group_notes_keys(notes, chords, *, onset_window_ms=30):
     """Group keys notes into atomic units. No fretboard, so grouping is
     purely temporal: explicit chords stay chords, remaining notes sharing an
@@ -2197,10 +2220,38 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
     return groups
 
 
-def _score_groups_keys(groups, *, tempo=None):
+def _melody_turning_points_keys(groups, tempo):
+    """Keys counterpart of `_melody_turning_points` (#103/B8, applying B5 to
+    the keys path). Keys notes carry a REAL MIDI pitch (`_note_midi_keys`),
+    not an approximation from string/fret + tuning, so this needs none of
+    the fretted version's tuning-approximation machinery -- otherwise
+    identical: a strict local high/low among single-note groups, gated by
+    the same `tempo.fret_jump_window_seconds` "not one continuous passage"
+    neighbor-gap bound."""
+    singles = [i for i, g in enumerate(groups) if len(g["notes"]) == 1]
+    pitches = {i: _note_midi_keys(groups[i]["notes"][0]) for i in singles}
+    times = {i: float(groups[i]["time"]) for i in singles}
+    max_gap = tempo.fret_jump_window_seconds
+    turning = set()
+    for k in range(1, len(singles) - 1):
+        i, prev_i, next_i = singles[k], singles[k - 1], singles[k + 1]
+        if times[i] - times[prev_i] > max_gap or times[next_i] - times[i] > max_gap:
+            continue
+        p, prev_p, next_p = pitches[i], pitches[prev_i], pitches[next_i]
+        if (p > prev_p and p > next_p) or (p < prev_p and p < next_p):
+            turning.add(i)
+    return turning
+
+
+def _score_groups_keys(groups, beat_times=(), *, tempo=None):
     tempo = tempo or _TempoParams()
     total = len(groups)
     times_sorted = [float(g["time"]) for g in groups]
+    # #103/B8: apply B2 (graded beat strength, via _beat_value) and B5
+    # (melody-turning-point retention) to the keys path -- previously only
+    # the fretted path (_score_groups) had either term, so a keys chart's
+    # ladder ignored metrical position and melodic shape entirely.
+    turning_points = _melody_turning_points_keys(groups, tempo)
     for gi, g in enumerate(groups):
         ns = g["notes"]
         if not ns:
@@ -2233,9 +2284,17 @@ def _score_groups_keys(groups, *, tempo=None):
             0.30 * poly + 0.25 * span_score + 0.20 * density
             + 0.15 * speed + 0.10 * (1.0 - sustain_ease)
         )
+        # Same operation order as the fretted path's _score_groups: base
+        # cost, then the beat-value discount and melody-turning bonus, then
+        # the final clamp. `value` feeds `_assign_tiers`'s tie-break exactly
+        # as it does on the fretted path.
+        value = _beat_value(g["time"], beat_times, tempo)
+        retention_score = cost - _KEYS_BEAT_VALUE_COEF * value
+        if gi in turning_points:
+            retention_score -= _KEYS_MELODY_TURNING_BONUS
         g["cost"] = cost
-        g["value"] = 0.0
-        g["retention_score"] = cost
+        g["value"] = value
+        g["retention_score"] = max(0.0, min(1.0, retention_score))
 
 
 def _collapse_octave_duplicates(ns, preferred=()):
@@ -2259,12 +2318,50 @@ def _collapse_octave_duplicates(ns, preferred=()):
     return [n for n in ns if id(n) in kept_ids]
 
 
+def _keys_voice_priority(ranked):
+    """Fixed voice-add order for a keys chord's notes, `ranked` ascending by
+    MIDI pitch: outer voices (bass + melody) first, then inner voices added
+    alternately from the outside in. #103/B8 reframes `_notes_for_level_keys`
+    as truncating THIS one fixed order to a per-tier count -- since the
+    order never changes across tiers, tier k+1's kept set is always a
+    superset of tier k's (the #99 nesting property), and "outer voices kept
+    at the lowest tier" holds by construction (they're always first)."""
+    n = len(ranked)
+    if n <= 2:
+        return list(ranked)
+    order = [ranked[0], ranked[-1]]
+    lo, hi = 1, n - 2
+    toggle = True
+    while lo <= hi:
+        if toggle:
+            order.append(ranked[lo])
+            lo += 1
+        else:
+            order.append(ranked[hi])
+            hi -= 1
+        toggle = not toggle
+    return order
+
+
 def _notes_for_level_keys(groups, level, max_level):
     """Thin keys chords by pitch, keeping outer voices first — melody
     (highest pitch) + bass (lowest) at the bottom tier, growing inward,
     mirroring simplified piano sheet-music arrangements. No 'chords' output:
     everything flattens to individual notes, same as the fretted path's
-    reduced tiers."""
+    reduced tiers.
+
+    #103/B8: how many voices a tier keeps is now a per-tier BUDGET that
+    rises with level -- `_keys_voice_priority`'s fixed add-order truncated
+    to `keep_n(level)` notes -- rather than the previous fixed three-step
+    (outer / outer+mid / everything) regardless of how many tiers the
+    ladder actually has. This is a note-COUNT budget, not the mechanical-
+    cost budget Nakamura & Yoshii (2018) frame piano reduction around
+    (`g["cost"]`'s poly/span/density/speed/sustain terms aren't attributed
+    per note, only per group) -- a real simplification of the cited
+    approach, declared here rather than left implicit. Still gives every
+    tier a genuinely graded voicing instead of jumping straight from 2
+    notes to 3 to "everything" regardless of ladder depth.
+    """
     out_notes = []
     for g in groups:
         if g["level"] > level:
@@ -2274,27 +2371,61 @@ def _notes_for_level_keys(groups, level, max_level):
         is_explicit_chord = g.get("chord") is not None
         if len(ns) > 1 and level < max_level:
             ranked = sorted(ns, key=_note_midi_keys)
-            # Every reduced tier starts with the simplified outer voices from
-            # the easiest tier. When a newly-added middle voice is an octave
-            # duplicate, prefer those established representatives so moving
-            # up a tier can only add absolute MIDI identities, never swap one.
-            outer = _collapse_octave_duplicates([ranked[0], ranked[-1]])
+            priority = _keys_voice_priority(ranked)
+            outer = _collapse_octave_duplicates(priority[:2])
             if level == 0:
-                keep = outer
-            elif len(ranked) > 3:
-                mid = len(ranked) // 2
-                keep = [ranked[0], ranked[mid], ranked[-1]]
+                keep_n = len(outer)
+            elif len(priority) <= 3:
+                # A 2-3 note chord has no real room for a graded budget
+                # between "outer only" and "everything" -- matches the
+                # pre-#103/B8 behavior exactly for this size.
+                keep_n = len(priority)
             else:
-                keep = ranked
+                # Proportional budget, same shape as the fretted path's
+                # arpeggio-reduction ratio (_notes_for_level): always at
+                # least the outer voices, growing toward the full voicing
+                # as level approaches max_level. Capped at len(priority) - 1
+                # (PR #126 review): at level == max_level - 1 the raw
+                # formula already evaluates to the complete voicing, which
+                # belongs to the top tier (level >= max_level, handled
+                # above) alone -- without the cap, a levels=3 request
+                # reaches "everything" one tier early and the tier below
+                # the top can come out byte-identical to it for voicings
+                # the octave-collapse doesn't rescue.
+                keep_n = max(
+                    len(outer),
+                    min(len(priority) - 1, round(len(priority) * (level + 1) / max_level)),
+                )
+            # #99/#103/B8 (PR #126 review, round 2): collapse octave
+            # duplicates in VOICE-ADD order (priority[:keep_n]), not
+            # pitch-sorted order -- `_collapse_octave_duplicates` is a
+            # greedy left-to-right pass that keeps whichever note it sees
+            # FIRST in a collision, so sorting by pitch before collapsing
+            # makes collision priority pitch order instead of add order.
+            # When a newly-added interior voice at a HIGHER tier is an
+            # octave below one an easier tier already exposed, the sorted
+            # collapse can keep the new low voice and drop the exposed
+            # high one -- neither a superset nor a subset of the easier
+            # tier, breaking the #99 nesting guarantee this whole function
+            # exists to provide (measured: 11/2310 adjacent-tier pairs
+            # violated nesting on a random voicing sweep; reproduced
+            # end-to-end through generate_phrases_for_arrangement).
+            # `priority[:keep_n]` is a prefix of one FIXED order, so
+            # collapsing over it directly is prefix-stable by construction:
+            # a newly added voice is either kept (a real superset) or
+            # dropped as an octave duplicate of a voice already exposed at
+            # every earlier tier -- never the other way around. Sort for
+            # presentation only, after the collapse decides survivors.
             seen = set()
             deduped = []
-            for n in keep:
+            for n in priority[:keep_n]:
                 if id(n) not in seen:
                     seen.add(id(n))
                     deduped.append(n)
             ns = deduped
             if len(ns) > 1:
                 ns = _collapse_octave_duplicates(ns, preferred=outer)
+            ns = sorted(ns, key=_note_midi_keys)
         for n in ns:
             merged = dict(n)
             if is_explicit_chord or merged.get("t") is None:
@@ -2612,7 +2743,7 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     link_next_keep_ids = None
     if is_keys:
         groups_all = _group_notes_keys(notes, chords)
-        _score_groups_keys(groups_all, tempo=tempo)
+        _score_groups_keys(groups_all, beat_times, tempo=tempo)
     else:
         groups_all = _group_notes(
             notes, chords, time_window_ms=tempo.time_window_ms,
