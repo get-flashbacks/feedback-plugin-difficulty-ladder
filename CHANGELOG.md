@@ -76,7 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same effective name/type, now also matching feedBack core's exact
   bass-detection substring semantics (a bare case-insensitive "bass" in
   the name, not a narrower word-boundary match) for consistency with
-  generation's own `is_bass`.
+  generation's own `is_bass`. A manifest entry's `name`/`type` is
+  unschema'd YAML and can be a non-string (a list, number, ...); the
+  shared bass classifier now coerces it with `str()` first (matching
+  `lib/sloppak.py`'s own coercion) instead of raising.
 
 ### Changed
 - Split generated-note mechanical cost from rhythmic retention value internally,

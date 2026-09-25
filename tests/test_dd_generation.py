@@ -2154,6 +2154,29 @@ def test_generate_one_ignores_a_malformed_manifest_tuning_instead_of_crashing(ma
     assert result["ok"] is True  # nosec B101 - pytest assertion
 
 
+def test_generate_one_ignores_a_non_string_manifest_type_override():
+    """A pullfrog-flagged bug: _generate_one's is_bass resolution feeds
+    the manifest entry's `type` straight into _is_bass_arrangement,
+    which must not raise when that value is a non-string (a YAML
+    list, dict, or number)."""
+    class _Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    fake_arr = {"type": "lead", "name": "Lead"}
+    fake_entry = {"type": ["bass"]}
+    with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
+         patch.object(routes, "_load_manifest_and_arrangement",
+                      return_value=("arrangements/lead.json", fake_arr, fake_entry, None)), \
+         patch.object(routes, "generate_phrases_for_arrangement", return_value=None):
+        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG)
+
+    assert result["ok"] is True  # nosec B101 - pytest assertion
+
+
 # Chordr's service can be stubbed: these tests pin the preview's HTTP and
 # forwarding contract without requiring the sibling plugin to be installed.
 _CHORD_PREVIEW_URL = f"/api/plugins/{routes.PLUGIN_ID}/analyze-chords"
@@ -2224,6 +2247,33 @@ def test_chord_preview_matches_core_substring_semantics_including_surprising_cas
     )
     assert _preview(client).status_code == 200  # nosec B101 - pytest assertion
     assert contexts[0]["isBass"] is True  # nosec B101 - pytest assertion
+
+
+@pytest.mark.parametrize("bad_type", [["bass"], {"x": 1}, 0, 1])
+def test_is_bass_arrangement_coerces_non_string_type_instead_of_raising(bad_type):
+    """A pullfrog-flagged bug: a manifest entry's `type`/`name` is
+    unschema'd YAML, so either can come through as a list, dict, or
+    number. A bare `.strip()`/`.lower()` on that raises AttributeError;
+    lib/sloppak.py's load_song() str()'s a truthy manifest override
+    before comparing it, and this helper must match that instead of
+    crashing."""
+    assert routes._is_bass_arrangement(bad_type, "Lead") in (True, False)  # nosec B101
+
+
+def test_chord_preview_ignores_a_non_string_manifest_type_override(tmp_path):
+    """Route-level version of the above: a manifest entry whose `type`
+    is a YAML list (`type: [bass]`) must not 500 the request."""
+    arr = _arrangement([])
+    arr.update(type="lead", name="Lead")
+    pack = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    manifest_path = pack / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["arrangements"][0]["type"] = ["bass"]
+    manifest_path.write_text(yaml.safe_dump(manifest))
+
+    client = _client_for(tmp_path)
+    client.app.state.chordr_analyze_chart_chords_v1 = lambda chords, *, context, templates: {}
+    assert _preview(client).status_code == 200  # nosec B101 - pytest assertion
 
 
 def test_chord_preview_infers_bass_from_legacy_name(tmp_path):

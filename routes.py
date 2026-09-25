@@ -118,10 +118,17 @@ def _is_bass_arrangement(arr_type: str, arr_name: str) -> bool:
     no equivalent here; the other two are the ones available to a chart
     without that XML-only flag anyway. Callers should pass the EFFECTIVE
     type/name (after any manifest entry override), not necessarily the
-    embedded arrangement's own."""
-    if (arr_type or "").strip().lower() == "bass":
+    embedded arrangement's own. A manifest entry's `name`/`type` is
+    unschema'd YAML, so either can be a non-string (a list, a number,
+    ...) -- str()'d first, same as lib/sloppak.py's load_song() coerces
+    a truthy manifest override (`arr.type = str(entry["type"])...`),
+    so a malformed manifest value degrades to a stringified comparison
+    instead of raising AttributeError on a bare `.strip()`/`.lower()`."""
+    type_str = str(arr_type) if arr_type else ""
+    name_str = str(arr_name) if arr_name else ""
+    if type_str.strip().lower() == "bass":
         return True
-    return "bass" in (arr_name or "").lower()
+    return "bass" in name_str.lower()
 
 
 # ── Tempo-relative constants ─────────────────────────────────────────────────
