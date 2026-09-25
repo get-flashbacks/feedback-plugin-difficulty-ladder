@@ -406,11 +406,13 @@ change unless a user turns it on.
   `_resolvable_chord_identity` requires a positively-identified parent
   chord before a group is even a drop candidate. A short, difficult
   passing/transition chord (the brief Bmadd11 in *So Far Away* Rhythm is
-  the example) is a drop candidate exactly when it's the EARLIER of two
-  bottom-tier occurrences of the same identity and a later one happens to
-  sustain longer — the earlier, shorter one is what the landmark rule
-  drops in that case, which includes this chord itself when it's the
-  earlier occurrence. This lands only the bottom tier's group selection;
+  the example) is a drop candidate whenever another bottom-tier
+  occurrence of the same identity sustains as long or longer — including
+  when the short chord is the LATER of the two, and including an exact
+  sustain tie, which the landmark rule gives to the earlier occurrence.
+  The only group besides that landmark that is never dropped is the
+  phrase's own final, note-bearing bottom-tier chord group. This lands
+  only the bottom tier's group selection;
   every tier above it shows every occurrence, going through the same
   voicing/technique reduction as when the setting is off.
   **Known approximation:** resolution protection is positional (the

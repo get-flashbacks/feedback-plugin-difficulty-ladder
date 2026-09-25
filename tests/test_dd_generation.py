@@ -4163,10 +4163,26 @@ def test_staged_chord_drop_ids_never_lets_a_notes_empty_group_win_the_landmark()
     empty["notes"] = []
     empty["chord"]["notes"] = []
     real = _identified_chord_group(1.0, 0, sus=0.0)
-    trailing = _identified_chord_group(2.0, 1, sus=0.1)  # id=1 -> "C", the protected resolution
-    empty["level"] = 0
-    real["level"] = 0
-    trailing["level"] = 0
-    drop_ids = routes._staged_chord_drop_ids([empty, real, trailing], _STAGED_TEMPLATES)
+    # #103/B10 regression (PR #127 review, round 3): the note-bearing filter
+    # applies to TWO searches -- the landmark scan above, and the final-
+    # chord resolution lookup. A fixture where the notes-empty group is
+    # also the phrase's very last group would let the resolution lookup
+    # pick `trailing` correctly either way (it's the only OTHER chord
+    # group), masking a bug in the resolution half specifically. So here
+    # `trailing` ("C") is NOT its own identity's landmark (c_landmark
+    # sustains longer) -- its survival depends entirely on the resolution
+    # protection -- and a notes-empty "C" comes AFTER it as the phrase's
+    # actual last group. An unfiltered resolution lookup would then pick
+    # that trailing empty group as "the last chord" instead of `trailing`,
+    # dropping the real final chord group #121 says must never be dropped.
+    c_landmark = _identified_chord_group(2.0, 1, sus=0.5)  # id=1 -> "C", wins the landmark on sustain
+    trailing = _identified_chord_group(3.0, 1, sus=0.1)  # "C" again; not the landmark -- must survive via resolution protection
+    trailing_empty = _identified_chord_group(4.0, 1, sus=0.0)  # "C" again; the phrase's actual last group
+    trailing_empty["notes"] = []
+    trailing_empty["chord"]["notes"] = []
+    groups = [empty, real, c_landmark, trailing, trailing_empty]
+    for g in groups:
+        g["level"] = 0
+    drop_ids = routes._staged_chord_drop_ids(groups, _STAGED_TEMPLATES)
     assert id(real) not in drop_ids  # nosec B101 - the note-bearing occurrence must survive
-    assert id(trailing) not in drop_ids  # nosec B101 - protected as the phrase's last chord group
+    assert id(trailing) not in drop_ids  # nosec B101 - protected as the phrase's last NOTE-BEARING chord group
