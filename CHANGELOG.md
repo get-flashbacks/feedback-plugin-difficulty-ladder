@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Opt-in "staged chords" bottom tier (off by default; `generate`/
+  `generate-library`'s new `staged_chords` request field, plumbed through
+  `generate_phrases_for_arrangement`): a repeated occurrence of a
+  Chordr-identified chord is dropped entirely at the bottom tier, keeping
+  only its longest-sustained ("landmark") occurrence per phrase, plus the
+  phrase's own final chord group (protected as a likely resolution
+  regardless of how briefly it's struck). Only chords the chart positively
+  identifies via a matched `ChordTemplate` name are ever collapsed —
+  unnamed/unmatched voicings are never touched. Every tier above the
+  bottom one, and every existing caller that doesn't pass `staged_chords`,
+  is completely unaffected — this is additive to the existing per-group
+  voicing/technique reduction, not a replacement for it.
 - Key- and chord-aware note retention: estimate each phrase's key
   (Krumhansl-Schmuckler correlation against the 24 major/minor rotations
   of the Krumhansl & Kessler 1982 profiles, from a duration-weighted

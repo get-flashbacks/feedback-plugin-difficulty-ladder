@@ -3979,3 +3979,103 @@ def test_chord_pitch_class_windows_covers_each_chords_sustain():
     assert start == 0.0  # nosec B101 - pytest assertion
     assert end == 0.5  # nosec B101 - pytest assertion
     assert 0 in pcs  # nosec B101 - pytest assertion
+
+# ── #103/B10: opt-in staged-chords bottom tier (chord landmarks) ───────────
+
+
+def _identified_chord_group(t, template_id, sus=0.2, s_base=0):
+    chord = {"t": t, "id": template_id, "notes": [
+        {"s": s_base, "f": 3, "sus": sus}, {"s": s_base + 1, "f": 2, "sus": sus},
+    ]}
+    return {
+        "type": "chord", "notes": list(chord["notes"]), "chord": chord,
+        "time": t, "cost": 0.5, "value": 0.0, "retention_score": 0.5, "level": 0,
+    }
+
+
+_STAGED_TEMPLATES = [{"name": "G", "frets": [3, 2, 0, 0, 0, 3]}, {"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
+
+
+def test_resolvable_chord_identity_requires_a_named_template():
+    named = _identified_chord_group(0.0, 0)
+    assert routes._resolvable_chord_identity(named, _STAGED_TEMPLATES) == "G"  # nosec B101 - pytest assertion
+    unmatched = _identified_chord_group(0.0, 99)  # out of range
+    assert routes._resolvable_chord_identity(unmatched, _STAGED_TEMPLATES) is None  # nosec B101 - pytest assertion
+    assert routes._resolvable_chord_identity(unmatched, []) is None  # nosec B101 - pytest assertion
+
+
+def test_staged_chord_drop_ids_keeps_only_the_landmark_occurrence():
+    """Three repeats of the same identified chord ("G") -- the middle one
+    (longest sustain) is the landmark; the shorter first occurrence gets
+    dropped. The last occurrence is protected as the phrase's resolution
+    regardless of its own sustain."""
+    g1 = _identified_chord_group(0.0, 0, sus=0.1)
+    g2 = _identified_chord_group(1.0, 0, sus=0.5)  # landmark: longest sustain
+    g3 = _identified_chord_group(2.0, 0, sus=0.1)  # resolution: last chord group
+    phrase_groups = [g1, g2, g3]
+    drop_ids = routes._staged_chord_drop_ids(phrase_groups, _STAGED_TEMPLATES)
+    assert drop_ids == {id(g1)}  # nosec B101 - pytest assertion
+
+
+def test_staged_chord_drop_ids_never_touches_unidentified_chords():
+    """An unresolvable-identity group can never appear in the drop set,
+    whatever else is in the phrase -- here BOTH identified groups also
+    happen to survive (the sustain-based landmark and, separately, the
+    phrase's last-group resolution protection), so nothing is dropped."""
+    unmatched = _identified_chord_group(0.0, 99)  # unresolvable identity
+    landmark = _identified_chord_group(1.0, 0, sus=0.5)
+    last_group = _identified_chord_group(2.0, 0, sus=0.1)  # protected: phrase's final chord group
+    drop_ids = routes._staged_chord_drop_ids([unmatched, landmark, last_group], _STAGED_TEMPLATES)
+    assert id(unmatched) not in drop_ids  # nosec B101 - pytest assertion
+    assert drop_ids == set()  # nosec B101 - landmark kept by sustain, last_group kept as resolution
+
+
+def test_notes_for_level_drops_groups_in_chord_stage_drop_ids():
+    g1 = _identified_chord_group(0.0, 0)
+    g2 = _identified_chord_group(1.0, 0)
+    notes, chords = routes._notes_for_level(
+        [g1, g2], level=0, max_level=3, chord_stage_drop_ids={id(g1)},
+    )
+    all_times = {n["t"] for n in notes} | {c["t"] for c in chords}
+    assert 0.0 not in all_times  # nosec B101 - g1 was dropped
+    assert any(abs(t - 1.0) < 1e-9 for t in all_times)  # nosec B101 - g2 survived
+
+
+def test_generate_phrases_staged_chords_default_off_is_unaffected():
+    """staged_chords defaults False -- output must be byte-identical to
+    calling generate_phrases_for_arrangement without the parameter at all."""
+    notes = [{"t": round(i * 0.5, 3), "s": 0, "f": (i * 3) % 12, "sus": 0.1} for i in range(20)]
+    chords = [
+        {"t": 10.0 + i * 1.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.3}, {"s": 1, "f": 2, "sus": 0.3}]}
+        for i in range(6)
+    ]
+    arr = _arrangement(notes, chords=chords, n_beats=120)
+    arr["templates"] = _STAGED_TEMPLATES
+    default_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    explicit_off_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=False)
+    assert default_phrases == explicit_off_phrases  # nosec B101 - pytest assertion
+
+
+def test_generate_phrases_staged_chords_drops_repeats_at_bottom_tier_only():
+    """With staged_chords=True, a run of identical named chords collapses to
+    one landmark occurrence at the bottom tier, but every occurrence is
+    still present at the top (authored) tier -- staging augments, it
+    doesn't replace, the existing per-group progression."""
+    notes = [{"t": round(i * 0.5, 3), "s": 0, "f": (i * 3) % 12, "sus": 0.1} for i in range(8)]
+    chords = [
+        {"t": 10.0 + i * 1.0, "id": 0, "notes": [{"s": 0, "f": 3, "sus": 0.2}, {"s": 1, "f": 2, "sus": 0.2}]}
+        for i in range(6)
+    ]
+    arr = _arrangement(notes, chords=chords, n_beats=120)
+    arr["templates"] = _STAGED_TEMPLATES
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=True)
+    assert phrases  # nosec B101 - pytest assertion
+    phrase_with_chords = next(p for p in phrases if p["levels"][0]["chords"] or p["levels"][0]["notes"])
+    bottom_chord_count = len(phrase_with_chords["levels"][0]["chords"]) + sum(
+        1 for n in phrase_with_chords["levels"][0]["notes"] if n.get("t", 0) >= 10.0
+    )
+    top_level = phrase_with_chords["levels"][-1]
+    top_chord_count = len(top_level["chords"]) + sum(
+        1 for n in top_level["notes"] if n.get("t", 0) >= 10.0
+    )
+    assert bottom_chord_count < top_chord_count  # nosec B101 - repeats collapsed at the bottom tier only

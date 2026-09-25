@@ -1835,8 +1835,83 @@ def _evenly_sample(ns, keep_n):
     return [ns[i] for i in indices]
 
 
+# #103/B10 (opt-in, off by default): for a chord/rhythm-led phrase, the
+# generic per-group thinning above still governs voicing/technique
+# reduction inside each surviving chord group -- what's genuinely new here
+# is dropping a REPEATED occurrence of the same identified chord entirely
+# at the bottom tier ("chord landmarks"), which the per-group model never
+# does (every group always survives in some reduced form). Only a chord
+# whose ChordTemplate the chart positively identifies (a real `id` naming a
+# real template with a name) is ever a drop candidate -- "Chordr must
+# identify a voicing's parent chord before grading it: don't confuse
+# unnamed partials with new harmony" (issue #121). Scope: this lands the
+# landmark stage only (the bottom tier's group SELECTION); the issue's
+# fuller staged progression (separate strum-onset/voicing/technique
+# stages) is left to the existing continuous diff_percent curve
+# (_CHORD_ROOT_ONLY_MAX_FRAC/_CHORD_MID_VOICING_FRAC, _TECH_GATE_FRAC),
+# which already grades voicing width and technique presence by tier --
+# see the PR description for why a separate staged curve isn't needed on
+# top of that.
+def _resolvable_chord_identity(g, chord_templates):
+    """The parent chord's authored `name` for chord GROUP `g`, or None when
+    the chord has no template reference, an out-of-range `id`, or the
+    template carries no name. An unidentified/unnamed voicing is never a
+    candidate for `_staged_chord_drop_ids` to collapse."""
+    if g.get("type") != "chord" or not chord_templates:
+        return None
+    ch = g.get("chord")
+    if not ch:
+        return None
+    try:
+        chord_id = int(ch.get("id", -1))
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= chord_id < len(chord_templates)):
+        return None
+    name = chord_templates[chord_id].get("name")
+    return name if name else None
+
+
+def _chord_group_max_sustain(g):
+    notes = g.get("notes", []) or []
+    return max((float(n.get("sus", 0)) for n in notes), default=0.0)
+
+
+def _staged_chord_drop_ids(phrase_groups, chord_templates):
+    """#103/B10: `id()`s of identified-chord groups in `phrase_groups` that
+    the opt-in staged-chords bottom tier should drop entirely -- every
+    occurrence of a distinct identified chord EXCEPT its longest-sustained
+    ("landmark") occurrence, and except the phrase's own final chord group
+    (a likely resolution, which "must never be dropped for being short" --
+    issue #121's explicit rule, since a resolution is often struck briefly
+    right at a phrase's end). Groups with no resolvable identity (see
+    `_resolvable_chord_identity`) are never in the returned set."""
+    best_by_identity = {}
+    for g in phrase_groups:
+        identity = _resolvable_chord_identity(g, chord_templates)
+        if identity is None:
+            continue
+        sus = _chord_group_max_sustain(g)
+        current = best_by_identity.get(identity)
+        if current is None or sus > current[1]:
+            best_by_identity[identity] = (g, sus)
+    keep_ids = {id(g) for g, _sus in best_by_identity.values()}
+    last_chord = None
+    for g in reversed(phrase_groups):
+        if g.get("type") == "chord":
+            last_chord = g
+            break
+    if last_chord is not None and _resolvable_chord_identity(last_chord, chord_templates) is not None:
+        keep_ids.add(id(last_chord))
+    return {
+        id(g) for g in phrase_groups
+        if _resolvable_chord_identity(g, chord_templates) is not None and id(g) not in keep_ids
+    }
+
+
 def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None,
-                      chord_templates=None, tuning=(), n_strings=6, is_bass=False):
+                      chord_templates=None, tuning=(), n_strings=6, is_bass=False,
+                      chord_stage_drop_ids=frozenset()):
     """Return (notes, chords) wire lists at/below `level`.
 
     Below the top tier, chords are reduced by voicing and flattened to plain
@@ -1853,12 +1928,22 @@ def _notes_for_level(groups, level, max_level, *, link_next_keep_ids=None,
     (see `_parse_chord_root_pitch_class`) — before falling back to the
     lowest-string-index heuristic they always used. Omitting `chord_templates`
     reproduces the old lowest-string-only behavior exactly.
+
+    `chord_stage_drop_ids` (#103/B10, opt-in, default empty -- a no-op) is a
+    set of `id()`s of GROUPS to skip entirely at this level, regardless of
+    type -- the opt-in "staged chords" bottom-tier landmark stage computes
+    this once per phrase (see `_staged_chord_drop_ids`) to drop a repeated,
+    already-identified chord occurrence altogether rather than merely
+    thinning its voicing. Empty by default, so every existing caller is
+    unaffected.
     """
     diff_percent = (level + 1) / (max_level + 1) if max_level >= 0 else 1.0
     out_notes = []
     out_chords = []
     for g in groups:
         if g["level"] > level:
+            continue
+        if chord_stage_drop_ids and id(g) in chord_stage_drop_ids:
             continue
         if g["type"] == "chord" and g["chord"] is not None:
             if level >= max_level:
@@ -2375,7 +2460,7 @@ def _collapse_identical_levels(levels_out):
 
 
 def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[float] | None = None,
-                                      is_bass: bool | None = None):
+                                      is_bass: bool | None = None, staged_chords: bool = False):
     """Build a phrase-level difficulty ladder for one arrangement's raw wire
     dict (as stored in a sloppak's arrangements/*.json).
 
@@ -2400,6 +2485,14 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     default) falls back to sniffing `arr`'s own type/name, matching
     lib/sloppak.py's arrangement_is_bass() but over only the embedded
     values -- correct for a caller with no manifest context.
+
+    `staged_chords` (#103/B10, opt-in, default False) enables the chord-
+    landmark bottom tier: a REPEATED occurrence of the same identified
+    chord is dropped entirely at the bottom tier, keeping only its longest-
+    sustained occurrence per phrase (plus the phrase's own final chord
+    group, protected as a likely resolution). False reproduces this
+    function's exact prior output -- existing callers/behavior are
+    unaffected. See `_staged_chord_drop_ids`.
     """
     kind = _instrument_kind(arr.get("type", ""), arr.get("name", ""))
     if kind == "drums":
@@ -2604,6 +2697,12 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # changing — an easy riff is complete early, a hard passage differs
         # at every tier.
         _assign_tiers(phrase_groups, n_levels, global_thresholds, beat_times, tempo=tempo)
+        # #103/B10: computed once per phrase (not per level) since the
+        # landmark stage only ever applies at level 0 -- see the loop below.
+        chord_stage_drop_ids = (
+            _staged_chord_drop_ids(phrase_groups, chord_templates)
+            if staged_chords and not is_keys else frozenset()
+        )
         # Per-phrase refinement (promoting beat/bridge anchors) breaks consistent
         # difficulty mapping: equal-retention groups can end up at different tiers
         # when one phrase's local playability needs trigger promotions that don't
@@ -2621,6 +2720,13 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
                     phrase_groups, lvl, top_tier, link_next_keep_ids=link_next_keep_ids,
                     chord_templates=chord_templates, tuning=tuning, n_strings=n_strings,
                     is_bass=effective_is_bass,
+                    # #103/B10: the landmark stage is the BOTTOM tier only
+                    # ("staged tiers on top of, not replacing, the existing
+                    # progression" -- issue #121); every tier above it goes
+                    # through the normal per-group voicing/technique curve
+                    # with every occurrence present, same as staged_chords
+                    # disabled.
+                    chord_stage_drop_ids=chord_stage_drop_ids if lvl == 0 else frozenset(),
                 )
             # Fret anchors and hand shapes are fretboard concepts the piano
             # renderer never consumes (mirrors feedBack's own editor plugin's
@@ -2790,7 +2896,7 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
 
 
 def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log,
-                  section_times: list[float] | None = None) -> dict:
+                  section_times: list[float] | None = None, staged_chords: bool = False) -> dict:
     # Hold the pack's lock across the whole read-modify-write span. Without
     # this, two requests touching the same pack (a library sweep + a manual
     # click, or two arrangements of one multi-arrangement song) can each read
@@ -2849,6 +2955,7 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
         is_bass = _is_bass_arrangement(effective_type, effective_name)
         phrases = generate_phrases_for_arrangement(
             scoring_arr, n_levels=n_levels, section_times=section_times, is_bass=is_bass,
+            staged_chords=staged_chords,
         )
         if phrases is None:
             return {
@@ -2946,7 +3053,8 @@ def _is_unsupported_skip(reason) -> bool:
     return isinstance(reason, str) and reason.startswith("unsupported-instrument")
 
 
-def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
+def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
+                    staged_chords: bool = False) -> dict:
     """Generate every eligible arrangement in one song.
 
     Arrangement indices are manifest/storage indices, not the player UI's
@@ -2969,7 +3077,7 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log) -> dict:
         try:
             result = _generate_one(
                 pack_path, index, n_levels=n_levels, force=force, log=log,
-                section_times=section_times or None,
+                section_times=section_times or None, staged_chords=staged_chords,
             )
         except HTTPException as exc:
             # A bad arrangement must not prevent the remaining arrangements
@@ -3011,6 +3119,11 @@ class GenerateIn(BaseModel):
     filename: str
     levels: int = Field(default=4, ge=2, le=8)
     force: StrictBool = False
+    # #103/B10, opt-in: drops a repeated occurrence of an already-Chordr-
+    # identified chord at the bottom tier, keeping only its longest-
+    # sustained ("landmark") occurrence per phrase. False (the default)
+    # reproduces generation output exactly as before this option existed.
+    staged_chords: StrictBool = False
 
 
 class AnalyzeChordsIn(BaseModel):
@@ -3029,6 +3142,7 @@ class GenerateLibraryIn(BaseModel):
     force: StrictBool = False
     max_songs: int = Field(default=500, ge=1, le=2000)
     max_processing_seconds: int = Field(default=MAX_PROCESSING_SECONDS, ge=1, le=600)
+    staged_chords: StrictBool = False  # #103/B10, opt-in — see GenerateIn
 
 
 def setup(app, context):
@@ -3123,6 +3237,7 @@ def setup(app, context):
             raise HTTPException(400, "filename required")
         n_levels = body.levels
         force = body.force
+        staged_chords = body.staged_chords
 
         dlc_root = get_dlc_dir()
         if dlc_root is None:
@@ -3130,7 +3245,10 @@ def setup(app, context):
         pack_path = _resolve_pack(Path(dlc_root), filename)
 
         try:
-            return _generate_song(pack_path, n_levels=n_levels, force=force, log=log)
+            return _generate_song(
+                pack_path, n_levels=n_levels, force=force, log=log,
+                staged_chords=staged_chords,
+            )
         except HTTPException:
             raise
         except Exception as e:  # noqa: BLE001 — surface as a clean 500, never crash the server
@@ -3146,6 +3264,7 @@ def setup(app, context):
         force = body.force
         max_songs = body.max_songs
         max_processing_seconds = body.max_processing_seconds
+        staged_chords = body.staged_chords
 
         dlc_root = get_dlc_dir()
         if dlc_root is None:
@@ -3205,7 +3324,7 @@ def setup(app, context):
                 try:
                     result = _generate_one(
                         entry, idx, n_levels=n_levels, force=force, log=log,
-                        section_times=section_times or None,
+                        section_times=section_times or None, staged_chords=staged_chords,
                     )
                 except HTTPException as e:
                     failed.append({"filename": label, "arrangement_index": idx, "error": e.detail})
