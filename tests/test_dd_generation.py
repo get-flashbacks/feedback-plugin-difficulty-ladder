@@ -205,7 +205,14 @@ def test_melody_turning_points_identifies_local_highs_and_lows_only():
         {"time": 3.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},   # repeated pitch, not a turn
     ]
     turning = routes._melody_turning_points(groups, tuning=(), n_strings=6)
-    assert turning == {1: False, 2: True, 3: False, 4: True, 5: False}  # nosec B101 - pytest assertion
+    assert turning == {2, 4}  # nosec B101 - pytest assertion
+
+
+def _single(t, f, s=5):
+    """A single-note group fixture at time `t`, string `s` (default 5),
+    fret `f` -- the recurring shape the melody-turning-point tests build
+    sequences out of."""
+    return {"time": t, "notes": [{"s": s, "f": f, "sus": 0}]}
 
 
 def test_melody_turning_point_survives_thinning_over_an_equally_hard_neighbor():
@@ -218,14 +225,14 @@ def test_melody_turning_point_survives_thinning_over_an_equally_hard_neighbor():
     turning point (a peak, in `turn`) or not (a monotonic rise, in
     `no_turn`)."""
     turn = [
-        {"time": 0.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
-        {"time": 0.5, "notes": [{"s": 5, "f": 6, "sus": 0}]},  # local high -> turning point
-        {"time": 1.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+        _single(0.0, 3),
+        _single(0.5, 6),  # local high -> turning point
+        _single(1.0, 3),
     ]
     no_turn = [
-        {"time": 0.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
-        {"time": 0.5, "notes": [{"s": 5, "f": 6, "sus": 0}]},  # monotonic rise -> not a turn
-        {"time": 1.0, "notes": [{"s": 5, "f": 9, "sus": 0}]},
+        _single(0.0, 3),
+        _single(0.5, 6),  # monotonic rise -> not a turn
+        _single(1.0, 9),
     ]
     routes._score_groups(turn, n_strings=6)
     routes._score_groups(no_turn, n_strings=6)
@@ -246,16 +253,16 @@ def test_melody_turning_point_bonus_never_applies_to_a_chord_or_cluster_group():
     even at a time/pitch position that would otherwise be a local high in
     a single-note line."""
     single_note_peak = [
-        {"time": 0.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
-        {"time": 0.5, "notes": [{"s": 5, "f": 6, "sus": 0}]},  # a real turning point
-        {"time": 1.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+        _single(0.0, 3),
+        _single(0.5, 6),  # a real turning point
+        _single(1.0, 3),
     ]
     chord_at_same_position = [
-        {"time": 0.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+        _single(0.0, 3),
         {"time": 0.5, "notes": [  # same pitch, but a chord -- must not qualify
             {"s": 5, "f": 6, "sus": 0}, {"s": 4, "f": 6, "sus": 0},
         ]},
-        {"time": 1.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},
+        _single(1.0, 3),
     ]
     routes._score_groups(single_note_peak, n_strings=6)
     routes._score_groups(chord_at_same_position, n_strings=6)
@@ -1259,7 +1266,7 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None, t
             + 0.15 * (1.0 - sustain_ease)
         )
         group["score"] -= 0.12 * routes._beat_value(group["time"], beat_times, tempo)
-        if turning_points.get(gi):
+        if gi in turning_points:
             group["score"] -= routes._MELODY_TURNING_POINT_RETENTION_BONUS
         if gi:
             previous = routes._group_anchor_note(legacy[gi - 1])

@@ -919,19 +919,20 @@ def _approx_pitch(note, tuning, n_strings):
 
 
 def _melody_turning_points(groups, tuning, n_strings):
-    """Map group index -> True for each single-note group (`len(notes) ==
-    1`) that is a strict local high or low among the OTHER single-note
-    groups in the arrangement -- chords/clusters are skipped when looking
-    for neighbors, since they aren't part of the single-note melodic line.
-    A repeated pitch (equal to a neighbor) is not a turning point: the
-    contour hasn't changed direction there."""
+    """Return the set of group indices among single-note groups
+    (`len(notes) == 1`) that are a strict local high or low among the
+    OTHER single-note groups in the arrangement -- chords/clusters are
+    skipped when looking for neighbors, since they aren't part of the
+    single-note melodic line. A repeated pitch (equal to a neighbor) is
+    not a turning point: the contour hasn't changed direction there."""
     singles = [i for i, g in enumerate(groups) if len(g["notes"]) == 1]
     pitches = {i: _approx_pitch(groups[i]["notes"][0], tuning, n_strings) for i in singles}
-    turning = {}
+    turning = set()
     for k in range(1, len(singles) - 1):
         i, prev_i, next_i = singles[k], singles[k - 1], singles[k + 1]
         p, prev_p, next_p = pitches[i], pitches[prev_i], pitches[next_i]
-        turning[i] = (p > prev_p and p > next_p) or (p < prev_p and p < next_p)
+        if (p > prev_p and p > next_p) or (p < prev_p and p < next_p):
+            turning.add(i)
     return turning
 
 
@@ -997,7 +998,7 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None, tuning=()):
         # (value was strictly 0.0/1.0 then) to a graded value without
         # changing the binary case's result: 0.12*1.0 == 0.12, 0.12*0.0 == 0.0.
         retention_score = base_cost - 0.12 * value
-        if turning_points.get(gi):
+        if gi in turning_points:
             retention_score -= _MELODY_TURNING_POINT_RETENTION_BONUS
         if gi:
             prev = _group_anchor_note(groups[gi - 1])
