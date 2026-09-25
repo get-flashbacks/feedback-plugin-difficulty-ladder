@@ -230,6 +230,24 @@ def test_melody_turning_points_does_not_cross_a_chord_section_between_phrases():
     )
 
 
+def test_five_string_bass_uses_bass_intervals_not_guitar_intervals():
+    """A pullfrog-flagged bug: the 5-string row must be bass-tuned
+    (standard B-E-A-D-G, all perfect fourths -> 0,5,10,15,20), not the
+    guitar row's one-major-third shape (…,19,24). On a standard 5-string
+    bass, D-open (string 3, ->15) to G-open (string 4, ->20 real / 19
+    under the old guitar-derived table) to F# (string 3 fret 4, ->19) is a
+    genuine local high on the middle note -- but the old table's 19/19
+    tie between the peak and the next note made the strict `>` comparison
+    reject it outright, not just misjudge its size."""
+    groups = [
+        _single(0.0, 0, s=3),  # D open -> 15
+        _single(0.5, 0, s=4),  # G open -> 20 (bass) / 19 (old guitar-shaped table)
+        _single(1.0, 4, s=3),  # F# -> 19
+    ]
+    turning = routes._melody_turning_points(groups, tuning=(), n_strings=5, tempo=routes._TempoParams())
+    assert turning == {1}  # nosec B101 - pytest assertion
+
+
 def _single(t, f, s=5):
     """A single-note group fixture at time `t`, string `s` (default 5),
     fret `f` -- the recurring shape the melody-turning-point tests build
@@ -745,7 +763,7 @@ def test_unsupported_drums_skip_preserves_instrument_classification():
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), patch.object(
         routes,
         "_load_manifest_and_arrangement",
-        return_value=(None, None, "unsupported-instrument-drums"),
+        return_value=(None, None, None, "unsupported-instrument-drums"),
     ):
         result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=None)
 
@@ -851,7 +869,7 @@ def test_generate_one_reports_unsupported_instrument_type_distinctly_from_drums(
     fake_arr = {"type": "vocals"}
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
          patch.object(routes, "_load_manifest_and_arrangement",
-                      return_value=("arrangements/vocals.json", fake_arr, None)):
+                      return_value=("arrangements/vocals.json", fake_arr, {}, None)):
         result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=None)
 
     assert result == {
@@ -1974,14 +1992,23 @@ def _write_pack(root, name, arrangements, song_timeline_sections=None):
     return pack_dir
 
 
-def test_manifest_tuning_override_takes_precedence_over_embedded_arrangement_tuning(tmp_path):
-    """A pullfrog-flagged bug: lib/sloppak.py's load_song() (the path the
-    player actually uses) applies a manifest entry's own `tuning` over
-    whatever the embedded arrangement JSON carries -- `if "tuning" in
-    entry: arr.tuning = list(entry["tuning"])`. _load_manifest_and_arrangement
-    must mirror that override, or this generator scores contour (and
-    fret-position cost) against a tuning the player never actually
-    hears."""
+def test_load_manifest_and_arrangement_returns_the_raw_entry_alongside_the_arrangement(tmp_path):
+    """A pullfrog-flagged bug (round 1): lib/sloppak.py's load_song() (the
+    path the player actually uses) applies a manifest entry's own
+    `tuning` over whatever the embedded arrangement JSON carries --
+    `if "tuning" in entry: arr.tuning = list(entry["tuning"])`. This
+    generator must resolve the same effective tuning for scoring, or it
+    scores contour (and fret-position cost) against a tuning the player
+    never actually hears.
+
+    Round 2: mutating the returned `arr` in place to apply that override
+    (an earlier version of this fix) meant the override got serialized
+    straight back into the pack's arrangement file the next time a
+    generation run wrote `arr["phrases"] = phrases` -- silently
+    normalizing authored data nobody asked to change. `arr` is therefore
+    returned exactly as read; the manifest `entry` is returned alongside
+    it so a caller resolves the effective tuning itself, on a copy, only
+    where scoring needs it."""
     embedded_tuning = [0, 0, 0, 0, 0, 0]        # standard, baked into the file
     manifest_tuning = [-2, 0, 0, 0, 0, 0]       # drop-D override, in the manifest entry
     arr = _arrangement(_simple_notes(0, 2), n_beats=8)
@@ -1992,10 +2019,48 @@ def test_manifest_tuning_override_takes_precedence_over_embedded_arrangement_tun
     manifest = {"arrangements": [{"file": "arrangements/lead.json", "tuning": manifest_tuning}]}
     (pack_dir / "manifest.yaml").write_text(yaml.safe_dump(manifest))
 
-    _rel, loaded_arr, skip_reason = routes._load_manifest_and_arrangement(pack_dir, 0)
+    _rel, loaded_arr, entry, skip_reason = routes._load_manifest_and_arrangement(pack_dir, 0)
 
     assert skip_reason is None  # nosec B101 - pytest assertion
-    assert loaded_arr["tuning"] == manifest_tuning  # nosec B101 - pytest assertion
+    assert loaded_arr["tuning"] == embedded_tuning, (  # nosec B101 - pytest assertion
+        "the returned arrangement must be a read-only load -- untouched by "
+        "any manifest override"
+    )
+    assert entry["tuning"] == manifest_tuning  # nosec B101 - pytest assertion
+
+
+def test_generate_one_scores_the_manifest_tuning_but_persists_the_embedded_one(tmp_path):
+    """End-to-end version of the above, through _generate_one: the
+    manifest's tuning override must reach scoring (proven indirectly via
+    generate_phrases_for_arrangement's tuning kwarg) without that override
+    ending up written back into the pack's arrangement file."""
+    embedded_tuning = [0, 0, 0, 0, 0, 0]
+    manifest_tuning = [-2, 0, 0, 0, 0, 0]
+    arr = _arrangement(_simple_notes(0, 2), n_beats=8)
+    arr["tuning"] = embedded_tuning
+    pack_dir = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    manifest_path = pack_dir / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["arrangements"][0]["tuning"] = manifest_tuning
+    manifest_path.write_text(yaml.safe_dump(manifest))
+
+    seen_tuning = []
+    real_generate = routes.generate_phrases_for_arrangement
+
+    def _spy_generate(arr_arg, **kwargs):
+        seen_tuning.append(arr_arg.get("tuning"))
+        return real_generate(arr_arg, **kwargs)
+
+    with patch.object(routes, "generate_phrases_for_arrangement", side_effect=_spy_generate):
+        result = routes._generate_one(pack_dir, 0, n_levels=4, force=False, log=_TEST_LOG)
+
+    assert result["ok"] is True  # nosec B101 - pytest assertion
+    assert seen_tuning == [manifest_tuning]  # nosec B101 - pytest assertion
+    persisted = json.loads((pack_dir / "arrangements/lead.json").read_text())
+    assert persisted["tuning"] == embedded_tuning, (  # nosec B101 - pytest assertion
+        "the manifest override must never be written back into the "
+        "arrangement file -- only used for this generation run's scoring"
+    )
 
 
 # Chordr's service can be stubbed: these tests pin the preview's HTTP and
@@ -2611,7 +2676,7 @@ def test_generate_one_reports_requested_cap_separately_from_actual_depth():
     ]
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
          patch.object(routes, "_load_manifest_and_arrangement",
-                      return_value=("arrangements/lead.json", fake_arr, None)), \
+                      return_value=("arrangements/lead.json", fake_arr, {}, None)), \
          patch.object(routes, "_instrument_kind", return_value="fretted"), \
          patch.object(routes, "generate_phrases_for_arrangement", return_value=fake_phrases), \
          patch.object(routes, "_write_member_bytes"):
@@ -3372,13 +3437,13 @@ def test_missing_arrangement_type_detects_unsupported_by_name_issue_102():
     keys_arr["type"] = "keys"
 
     load_results = {
-        0: ("arrangements/lead.json", _make_arr("Lead"), None),  # supported fretted
-        1: ("arrangements/combo.json", _make_arr("Combo"), None),  # supported fretted
-        2: ("arrangements/bass.json", _make_arr("Bass"), None),  # supported fretted
-        3: ("arrangements/sax.json", _make_arr("Sax"), None),  # unsupported by name
-        4: ("arrangements/keys.json", keys_arr, None),  # supported keys
-        5: ("arrangements/drums.json", _make_arr("Drums"), None),  # unsupported by name
-        6: ("arrangements/drums2.json", _make_arr("Drums 2"), None),  # unsupported by name
+        0: ("arrangements/lead.json", _make_arr("Lead"), {}, None),  # supported fretted
+        1: ("arrangements/combo.json", _make_arr("Combo"), {}, None),  # supported fretted
+        2: ("arrangements/bass.json", _make_arr("Bass"), {}, None),  # supported fretted
+        3: ("arrangements/sax.json", _make_arr("Sax"), {}, None),  # unsupported by name
+        4: ("arrangements/keys.json", keys_arr, {}, None),  # supported keys
+        5: ("arrangements/drums.json", _make_arr("Drums"), {}, None),  # unsupported by name
+        6: ("arrangements/drums2.json", _make_arr("Drums 2"), {}, None),  # unsupported by name
     }
 
     def _mock_load_manifest(pack_path, idx):

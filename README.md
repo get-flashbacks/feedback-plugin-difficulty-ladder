@@ -141,16 +141,22 @@ contract.
   intervals (Dowling, 1978) — strong as a perception finding, though that
   keeping the shape specifically aids learning is inferred, not tested
   (moderate evidence). Each note that is a strict local high or low among
-  the arrangement's single-note groups gets the same modest retention push
-  a downbeat or phrase boundary gets, so a thinned tier still traces the
-  melody's contour instead of collapsing to whichever notes happened to
-  score hardest. Chord and multi-note cluster groups never participate —
-  chord-heavy passages are unaffected by construction, not by a special
-  case. Pitch direction is approximated from string/fret using standard
-  tuning intervals (plus the arrangement's own per-string `tuning`
-  offsets) rather than an exact MIDI pitch, since only the rise/fall
+  the arrangement's single-note groups, no further than
+  `tempo.fret_jump_window_seconds` from its nearest single-note neighbor
+  on either side, gets the same modest retention push a downbeat or phrase
+  boundary gets, so a thinned tier still traces the melody's contour
+  instead of collapsing to whichever notes happened to score hardest.
+  Chord and multi-note cluster groups never participate — chord-heavy
+  passages are unaffected by construction, not by a special case. Pitch
+  direction is approximated from string/fret using standard tuning
+  intervals, rather than an exact MIDI pitch, since only the rise/fall
   *direction* between neighboring notes matters for finding a turning
-  point, not its precise size. Two single-note groups that shouldn't be
+  point, not its precise size. The offset added on top is the EFFECTIVE
+  tuning — a manifest entry's own `tuning`, when the pack's manifest
+  declares one, takes precedence over the embedded arrangement JSON's,
+  mirroring `lib/sloppak.py`'s `load_song()`; this is resolved for
+  scoring only, on a copy, and is never written back into the arrangement
+  file. Two single-note groups that shouldn't be
   compared at all — either side of an intervening chord section, or the
   end of one authored phrase and the start of an unrelated one — are
   excluded from each other's neighbor comparison when they're more than

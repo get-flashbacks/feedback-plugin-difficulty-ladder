@@ -900,9 +900,20 @@ _MELODY_TURNING_POINT_RETENTION_BONUS = 0.12
 # wrongly-sized interval is the rare case), which is all a turning point
 # needs. The arrangement's own per-string `tuning` offsets (already
 # available at every call site) are added on top where given.
+#
+# The 5-string row is bass-tuned (0,5,10,15,20 — standard B-E-A-D-G, all
+# perfect fourths), not a guitar row: standard 6-string guitar's one major
+# third (B-string) makes its own top interval 19 rather than 20, but a real
+# 5-string *guitar* essentially doesn't exist, while 5-string bass is
+# common and `_instrument_kind` doesn't distinguish bass from guitar (both
+# are "fretted"). Getting this one wrong isn't just imprecise the way a
+# wrong interval size usually is (see above): a 1-semitone error here can
+# turn a genuine turning point into an exact tie, which the strict `>`/`<`
+# comparison below then rejects outright, rather than just misjudging its
+# size.
 _STANDARD_STRING_INTERVALS = {
     4: (0, 5, 10, 15),
-    5: (0, 5, 10, 15, 19),
+    5: (0, 5, 10, 15, 20),
     6: (0, 5, 10, 15, 19, 24),
     7: (-5, 0, 5, 10, 15, 19, 24),
     8: (-10, -5, 0, 5, 10, 15, 19, 24),
@@ -2361,7 +2372,7 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
     # reads, so this is a clean, expected skip, not an error.
     entry_type = str(entry.get("type") or "").strip().lower()
     if entry_type in ("drums", "drum"):
-        return None, None, "unsupported-instrument-drums"
+        return None, None, None, "unsupported-instrument-drums"
 
     rel = str(entry.get("file", "")).strip()
     if not rel:
@@ -2375,16 +2386,17 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
     # stat the .jsonc suffix and read_text itself) doesn't apply here —
     # detect .jsonc by the manifest-declared relpath instead.
     arr = parse_jsonc(text) if rel.lower().endswith(".jsonc") else json.loads(text)
-    # A manifest entry's own `tuning` overrides whatever the embedded
-    # arrangement JSON carries -- mirror lib/sloppak.py's load_song()
-    # (`if "tuning" in entry: arr.tuning = list(entry["tuning"])`) so this
-    # generator scores the same effective tuning the player actually
-    # hears, not a stale value left behind in the arrangement file itself
-    # (feedpakr's upgrade/build tooling writes both, and they can diverge
-    # when only one side is edited after the fact).
-    if "tuning" in entry:
-        arr["tuning"] = list(entry["tuning"])
-    return rel, arr, None
+    # `arr` is returned exactly as read -- a read-only load, matching this
+    # function's pre-existing contract. `entry` is also returned so a
+    # caller can resolve the EFFECTIVE tuning (the manifest entry's own
+    # `tuning` overrides the embedded arrangement JSON's, mirroring
+    # lib/sloppak.py's load_song(): `if "tuning" in entry: arr.tuning =
+    # list(entry["tuning"])`) without that override leaking into whatever
+    # the caller does with `arr` next -- in particular, _generate_one
+    # writes `arr` straight back into the pack, and the override must
+    # never end up persisted into the arrangement file merely because a
+    # generation run happened to read it for scoring.
+    return rel, arr, entry, None
 
 
 def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log,
@@ -2395,7 +2407,7 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
     # the original zip before either writes, then race to os.replace() —
     # whichever finishes last silently discards the other's phrases.
     with _lock_for_pack(pack_path):
-        rel, arr, skip_reason = _load_manifest_and_arrangement(pack_path, arrangement_index)
+        rel, arr, entry, skip_reason = _load_manifest_and_arrangement(pack_path, arrangement_index)
         if skip_reason:
             instrument = "drums" if skip_reason == "unsupported-instrument-drums" else None
             response = {"ok": True, "skipped": skip_reason, "arrangement_index": arrangement_index}
@@ -2429,8 +2441,16 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
                 "arrangement_index": arrangement_index, "instrument": instrument,
             }
 
+        # Score against the EFFECTIVE tuning (manifest entry override, when
+        # present) on a shallow copy, so the override -- read purely for
+        # scoring -- never ends up written back into the pack below via
+        # `arr["phrases"] = phrases`. The arrangement file's own `tuning`
+        # is left exactly as authored.
+        scoring_arr = arr
+        if entry and "tuning" in entry:
+            scoring_arr = dict(arr, tuning=list(entry["tuning"]))
         phrases = generate_phrases_for_arrangement(
-            arr, n_levels=n_levels, section_times=section_times
+            scoring_arr, n_levels=n_levels, section_times=section_times
         )
         if phrases is None:
             return {
@@ -2635,7 +2655,7 @@ def setup(app, context):
             raise HTTPException(400, "no DLC library configured")
         pack_path = _resolve_pack(Path(dlc_root), body.filename.strip())
         try:
-            _, arr, skip_reason = _load_manifest_and_arrangement(
+            _, arr, _entry, skip_reason = _load_manifest_and_arrangement(
                 pack_path, body.arrangement_index
             )
         except HTTPException:
