@@ -214,15 +214,24 @@ def test_authored_phrase_keeps_its_first_and_last_group_at_the_bottom_tier():
     assert float(technical[-1]["t"]) in bottom  # nosec B101 - pytest assertion
 
 
-def test_generated_window_bonus_applies_only_at_the_very_first_window():
-    """#105 acceptance criterion: generated windows (no authored sections)
-    don't get the phrase-boundary bonus except at the very start of the
-    song -- an internal generated-window edge is an arbitrary cut point,
-    not a real phrase boundary."""
+def test_generated_window_bonus_applies_only_at_song_start_and_song_end():
+    """#105 acceptance criterion, refined in PR #123 review: generated
+    windows (no authored sections) don't get the phrase-boundary bonus at
+    an INTERNAL window edge -- but the very first window's start and the
+    very LAST window's end are always genuine song boundaries (both
+    generated-window builders clamp the final window's end to the song's
+    actual duration), so both of those get the bonus even though the
+    windows themselves aren't authored phrases."""
     hard = {"s": 5, "f": 20, "bn": 1.0, "bt": 3, "tp": True, "sus": 0}
     easy0 = [{"t": round(i * 0.3, 3), "s": 0, "f": 0, "sus": 0} for i in range(1, 100) if i * 0.3 < 30]
-    easy1 = [{"t": round(30 + i * 0.3, 3), "s": 0, "f": 0, "sus": 0} for i in range(1, 100) if 30 + i * 0.3 < 60]
-    notes = [{**hard, "t": 0.0}] + easy0 + [{**hard, "t": 30.0}] + easy1
+    easy1 = [{"t": round(30 + i * 0.3, 3), "s": 0, "f": 0, "sus": 0} for i in range(1, 99) if 30 + i * 0.3 < 59.8]
+    notes = (
+        [{**hard, "t": 0.0}] + easy0 + [{**hard, "t": 30.0}] + easy1
+        # A small sustain nudges `duration` past this note's own onset, so
+        # it lands inside the half-open [t0, t1) final window instead of
+        # exactly on its (exclusive) boundary.
+        + [{**hard, "t": 59.8, "sus": 0.05}]
+    )
     arr = {
         "type": "lead", "name": "lead", "notes": notes, "chords": [],
         "beats": [{"time": i * 0.5} for i in range(140)],  # no measure data -> generated windows
@@ -233,8 +242,9 @@ def test_generated_window_bonus_applies_only_at_the_very_first_window():
     assert len(phrases) == 2  # nosec B101 - pytest assertion
     bottom0 = {float(n["t"]) for n in phrases[0]["levels"][0]["notes"]}
     bottom1 = {float(n["t"]) for n in phrases[1]["levels"][0]["notes"]}
-    assert 0.0 in bottom0  # nosec B101 - pytest assertion
-    assert 30.0 not in bottom1  # nosec B101 - pytest assertion
+    assert 0.0 in bottom0  # nosec B101 - the song's start
+    assert 30.0 not in bottom1  # nosec B101 - an internal window edge, not a real boundary
+    assert 59.8 in bottom1  # nosec B101 - the song's actual end
 
 
 def test_flashy_techniques_are_gated_out_of_low_tiers():
@@ -251,10 +261,16 @@ def test_flashy_techniques_are_gated_out_of_low_tiers():
     # fret outside {12, 19, 24}, since removing it there would change the
     # struck pitch -- "keeping a technique on a low tier is better than a
     # wrong pitch" is an intentional, pre-existing rule this test must not
-    # contradict. Excluded from this assertion; every other bottom-tier
-    # note must still be gated normally.
+    # contradict. Exempted by the documented reason itself (hm at a
+    # non-pitch-safe fret), not by absolute time -- tightened per PR #123
+    # review so a *different* flashy note that happened to also land at
+    # t=0 in a future fixture tweak wouldn't silently escape this check.
+    # Every other bottom-tier note must still be gated normally.
+    def _hm_pitch_preserved(n):
+        return bool(n.get("hm")) and int(n.get("f", 0)) not in routes._HARMONIC_PITCH_SAFE_FRETS
+
     assert not any(
-        (n.get("tr") or n.get("hm")) and float(n.get("t", -1)) != 0.0
+        (n.get("tr") or n.get("hm")) and not _hm_pitch_preserved(n)
         for n in bottom_notes
     ), "tremolo/harmonic should not survive into the bottom tier of a technical phrase"
 
@@ -1325,9 +1341,13 @@ def test_movement_cost_generates_nested_ladder_fixture():
     phrases = routes.generate_phrases_for_arrangement(arr, n_levels=3)
 
     assert phrases is not None  # nosec B101 - pytest assertion
+    # #103/B3: this arrangement's single fallback window (no sections, no
+    # measure data) is both the first AND the last window, so both its
+    # start (0.0) and its end (3.0, the song's actual end -- caught in PR
+    # #123 review) get the boundary-retention bonus at the bottom tier.
     assert [(level["difficulty"], [n["t"] for n in level["notes"]])
             for level in phrases[0]["levels"]] == [
-        (0, [0.0, 0.5]),
+        (0, [0.0, 3.0]),
         (1, [0.0, 0.5, 1.5, 2.0, 3.0]),
         (2, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]),
     ]

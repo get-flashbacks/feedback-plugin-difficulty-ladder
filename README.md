@@ -129,10 +129,13 @@ contract.
   though that keeping boundary notes specifically aids learning is
   inferred, not tested (moderate evidence). Phrases generated from
   8-bar/30s fallback windows (no authored section data) don't get this at
-  their internal window edges, since those aren't real musical
-  phrases — except the very first window's start, which is always a
-  genuine boundary (the song's own beginning) regardless of how the
-  windows were generated.
+  their internal window edges, since those aren't real musical phrases —
+  except the very first window's start and the very last window's end,
+  which are always genuine boundaries (the song's own beginning and end)
+  regardless of how the windows in between were generated: both
+  generated-window builders clamp their final window's end to the song's
+  actual duration, so unlike an internal edge, that one really is the
+  song's end.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty

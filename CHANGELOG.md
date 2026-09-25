@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Give a modest retention push to the first and last note group of each
   authored phrase, so a thinned tier is more likely to keep a phrase's
   opening and closing material. Generated (non-authored) windows only get
-  this at the very start of the song, not at internal window edges (#105).
+  this at the very start and very end of the song (both are genuine
+  boundaries even when the windows aren't authored phrases), not at
+  internal window edges (#105).
 - Score technique coordination demand: a group using more than one distinct
   technique at once, or switching technique from the last technique-bearing
   group before it, now scores above `_tech_score`'s previous

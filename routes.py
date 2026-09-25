@@ -2097,17 +2097,20 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # evidence, see #105). Only for AUTHORED phrase boundaries
         # (windows_are_authored) -- a generated window's edges are
         # arbitrary cut points, not real phrase starts/ends -- EXCEPT the
-        # very first window's start, which is always a genuine boundary
-        # (the start of the song itself) regardless of how the windows
-        # were generated. No such unconditional exception on the end side:
-        # unlike the song's start, a generated window's end is never
-        # guaranteed to be the song's actual end (more windows may follow).
+        # very first window's start and the very LAST window's end, both of
+        # which are always genuine boundaries (the song's own beginning and
+        # end) regardless of how the windows in between were generated:
+        # both generated-window builders (_measure_aligned_windows and the
+        # blind 30s chunker) clamp their final window's end to `duration`,
+        # so unlike an INTERNAL generated edge, the last window's end really
+        # is the song's actual end (caught in PR #123 review).
         if windows_are_authored or widx == 0:
             first = phrase_groups[0]
             first["retention_score"] = max(
                 0.0, first["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
             )
-        if windows_are_authored and phrase_groups[-1] is not phrase_groups[0]:
+        is_last_window = widx == len(windows) - 1
+        if (windows_are_authored or is_last_window) and phrase_groups[-1] is not phrase_groups[0]:
             last = phrase_groups[-1]
             last["retention_score"] = max(
                 0.0, last["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
