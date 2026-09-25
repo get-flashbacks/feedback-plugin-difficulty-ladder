@@ -101,7 +101,8 @@ function simulate({ sensitivity, reactionSpeed, dropResistance, downStepRatio,
 function quantile(sorted, q) {
     const i = (sorted.length - 1) * q;
     const lo = Math.floor(i), hi = Math.ceil(i);
-    return sorted[lo] + (sorted[hi] - sorted[lo]) * (i - lo);
+    const a = sorted.at(lo), b = sorted.at(hi);
+    return a + ((b - a) * (i - lo));
 }
 
 function summarize(runs) {
