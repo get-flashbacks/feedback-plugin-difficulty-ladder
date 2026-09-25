@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Keys/piano generator improvements: graded beat-strength retention (same
+  `_beat_value` term the fretted path uses) and melody-turning-point
+  retention (using keys' real MIDI pitch directly, no fret/tuning
+  approximation needed) now apply to `_score_groups_keys`, matching the
+  fretted path. Chord-voicing reduction (`_notes_for_level_keys`) now
+  grows by a smooth per-tier budget for chords wider than 3 notes, instead
+  of jumping straight from "outer voices" to "outer + one middle voice" to
+  "everything" regardless of how many tiers the ladder has; a fixed
+  voice-add order (outer first, then alternately inward) guarantees each
+  tier's kept notes are a strict superset of the tier below.
 - Key- and chord-aware note retention: estimate each phrase's key
   (Krumhansl-Schmuckler correlation against the 24 major/minor rotations
   of the Krumhansl & Kessler 1982 profiles, from a duration-weighted

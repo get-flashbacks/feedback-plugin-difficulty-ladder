@@ -3979,3 +3979,82 @@ def test_chord_pitch_class_windows_covers_each_chords_sustain():
     assert start == 0.0  # nosec B101 - pytest assertion
     assert end == 0.5  # nosec B101 - pytest assertion
     assert 0 in pcs  # nosec B101 - pytest assertion
+
+
+# ── #103/B8: keys — beat strength, melody shape, budget-based reduction ────
+
+
+def _keys_single(t, midi):
+    s, f = divmod(midi, 24)
+    return {"time": t, "type": "note", "notes": [{"s": s, "f": f, "sus": 0}]}
+
+
+def test_score_groups_keys_applies_beat_value_discount():
+    """#103/B8: a beat-aligned keys group must score a lower retention_score
+    than an otherwise-identical off-beat one, now that _score_groups_keys
+    takes beat_times and applies the same _beat_value discount the fretted
+    path already had."""
+    beat_times = [0.0, 0.5, 1.0, 1.5]
+    tempo = routes._TempoParams.from_beats(beat_times, [{"time": t, "measure": 0} for t in beat_times])
+    on_beat = [_keys_single(0.0, 60)]  # exact downbeat
+    off_beat = [_keys_single(0.65, 60)]  # off the beat grid entirely
+    routes._score_groups_keys(on_beat, beat_times, tempo=tempo)
+    routes._score_groups_keys(off_beat, beat_times, tempo=tempo)
+    assert on_beat[0]["retention_score"] < off_beat[0]["retention_score"]  # nosec B101 - pytest assertion
+
+
+def test_melody_turning_points_keys_finds_a_local_peak():
+    groups = [
+        _keys_single(0.0, 60),
+        _keys_single(0.3, 67),  # local high
+        _keys_single(0.6, 60),
+    ]
+    turning = routes._melody_turning_points_keys(groups, routes._TempoParams())
+    assert turning == {1}  # nosec B101 - pytest assertion
+
+
+def test_keys_voice_priority_puts_outer_voices_first():
+    ranked = [52, 59, 64, 67, 71]
+    notes = [{"s": m // 24, "f": m % 24} for m in ranked]
+    priority = routes._keys_voice_priority(notes)
+    assert priority[0] is notes[0]  # nosec B101 - pytest assertion (lowest)
+    assert priority[1] is notes[-1]  # nosec B101 - pytest assertion (highest)
+
+
+def test_notes_for_level_keys_budget_grows_smoothly_for_a_wide_chord():
+    """#103/B8 acceptance: a 6-voice chord's kept-note count should rise
+    tier by tier (a real budget), not jump straight from 2 to 3 to 6
+    regardless of how many tiers the ladder has -- the pre-B8 behavior."""
+    midis = [48, 52, 55, 60, 64, 67]
+    notes = [{"t": 0.0, "s": m // 24, "f": m % 24} for m in midis]
+    groups = [{
+        "type": "chord", "notes": notes, "chord": None,
+        "time": 0.0, "cost": 0.5, "value": 0.0,
+        "retention_score": 0.5, "level": 0,
+    }]
+    counts = []
+    for level in range(4):
+        reduced, _ = routes._notes_for_level_keys(groups, level, max_level=3)
+        counts.append(len(reduced))
+    assert counts[0] == 2  # nosec B101 - outer voices only
+    assert counts[-1] == 6  # nosec B101 - full voicing at the top tier's boundary... 
+    # Every tier must be a strict superset by count of the tier below (a
+    # real graded budget), and no two adjacent non-terminal tiers should
+    # both jump straight from "outer" to "everything".
+    for lower, higher in pairwise(counts):
+        assert lower <= higher  # nosec B101 - pytest assertion
+    assert len(set(counts)) > 2  # nosec B101 - more than just "outer" and "everything"
+
+
+def test_notes_for_level_keys_small_chord_keeps_pitch_order():
+    """A 2-3 note chord has no room for a graded budget -- non-zero tiers
+    keep everything, in pitch order, exactly as before #103/B8."""
+    midis = [52, 59, 67]
+    notes = [{"t": 0.0, "s": m // 24, "f": m % 24} for m in midis]
+    groups = [{
+        "type": "chord", "notes": notes, "chord": None,
+        "time": 0.0, "cost": 0.5, "value": 0.0,
+        "retention_score": 0.5, "level": 0,
+    }]
+    reduced, _ = routes._notes_for_level_keys(groups, level=1, max_level=3)
+    assert [routes._note_midi_keys(n) for n in reduced] == midis  # nosec B101 - pytest assertion

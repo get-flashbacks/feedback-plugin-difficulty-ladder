@@ -215,6 +215,27 @@ contract.
   before any slash is used, since a slash chord's bass isn't its root) —
   before falling back to the pre-existing lowest-string-index heuristic
   when the name doesn't parse or no template matched.
+- **Keys/piano generator parity (#103/B8).** `_score_groups_keys` now
+  applies the same graded beat-strength retention term (#103/B2's
+  `_beat_value`) and melody-turning-point retention (#103/B5) the fretted
+  path already had — the keys path needs none of the fretted version's
+  tuning/string pitch-approximation, since a keys note already carries a
+  real MIDI pitch (`_note_midi_keys`). Phrase-boundary retention (#103/B3)
+  already applied to keys automatically, since it's computed on shared
+  `phrase_groups` code outside the fretted/keys branch. Separately,
+  `_notes_for_level_keys`'s chord-voicing reduction now grows by a smooth
+  per-tier budget for chords wider than 3 notes — a fixed voice-add order
+  (outer voices first, then alternating inward from both ends) is
+  truncated to a count that rises with tier level, instead of the old
+  fixed three-step jump (outer only → outer + one middle voice →
+  everything) regardless of how many tiers the ladder has. This is a
+  note-COUNT budget, not the mechanical-cost budget Nakamura & Yoshii
+  (2018) frame piano reduction around (a group's cost terms — polyphony,
+  span, density, speed, sustain — aren't attributed per note), a
+  simplification declared in the code rather than left implicit. A 2-3
+  note chord has no real room for a graded budget and keeps its
+  pre-#103/B8 behavior exactly (outer only at the bottom tier, everything
+  above it).
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
