@@ -249,9 +249,11 @@ contract.
   collision and drop an upper voice an easier tier had already exposed,
   which is neither a superset nor a subset and breaks the #99 nesting
   guarantee this function exists to provide (caught in PR #126 review on
-  a 7-voice voicing with an octave-adjacent interior pair). Output is
-  still pitch-sorted for presentation, after the collapse decides which
-  voices survive.
+  a 7-voice voicing with an octave-adjacent interior pair). Every REDUCED
+  tier (`level < max_level`) is still pitch-sorted for presentation, after
+  the collapse decides which voices survive — the top tier skips
+  reduction entirely and returns the chord's own authored note order
+  unchanged, same as always.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
