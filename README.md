@@ -181,6 +181,29 @@ contract.
   continuous line. A real fix needs the same phrase/section boundaries
   the generator's windowing already has threaded into this scan, which
   is a larger change than this item's effort-S scope covers.
+- **Key and chord awareness (#103/B7).** Each phrase gets its own key
+  estimate — the classic Krumhansl-Schmuckler algorithm: a duration-weighted
+  pitch-class histogram (reusing the same tuning/instrument-aware pitch
+  approximation as the B5 melody-turning-point signal) correlated against
+  all 24 rotations of the Krumhansl & Kessler (1982) major/minor key
+  profiles, keeping the best-fitting rotation. Notes are then ranked by
+  tonal stability — tonic > a chord/triad tone > another scale tone >
+  chromatic — with chord tones ranked above passing tones of the same
+  category when a chord is sounding, and the group containing the most
+  stable note gets a modest retention push. That push is deliberately
+  weighted *below* beat/metrical strength's (#103/B2) and the melody-shape
+  bonus's (#103/B5) weight — a heuristic key estimate is a weaker signal
+  than measured beat position, so it shouldn't be able to outrank it. A
+  phrase whose best-fit correlation falls below a fixed threshold (blues,
+  modal, or heavily chromatic material — a poor tonal fit) skips the
+  weighting entirely rather than confidently ranking notes against a key
+  estimate the data doesn't support. Separately, chord and arpeggio
+  reduction (the bottom-tier "pick one note to represent this chord" step)
+  now try a real harmonic root — parsed from the matched authored
+  `ChordTemplate`'s `name` (e.g. "Am7" → A, "G/B" → G; only the root letter
+  before any slash is used, since a slash chord's bass isn't its root) —
+  before falling back to the pre-existing lowest-string-index heuristic
+  when the name doesn't parse or no template matched.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty

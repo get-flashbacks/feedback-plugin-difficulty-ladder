@@ -3696,3 +3696,190 @@ def test_missing_arrangement_type_detects_unsupported_by_name_issue_102():
             # Name-sniffed as unsupported
             assert results[idx]["skipped"] == "unsupported-instrument-type"  # nosec B101 - pytest assertion
             assert results[idx]["instrument"] == "unsupported"  # nosec B101 - pytest assertion
+
+
+# ── #103/B7: key/chord awareness in the generator ──────────────────────────
+
+
+def _pc_group(pc, sus=0.25, s=0):
+    """A single-note group whose approximate pitch class (see
+    `routes._approx_pitch`) is exactly `pc`, given the default tuning=()
+    and n_strings=6 -- string 0's base offset is 0, so pitch == fret."""
+    return {"time": 0.0, "type": "note", "notes": [{"s": s, "f": pc, "sus": sus}]}
+
+
+def test_estimate_key_detects_c_major_from_a_matching_pitch_class_profile():
+    """Feeding _estimate_key a histogram that IS the Krumhansl & Kessler
+    C-major profile (via each pitch class's `sus` duration) must recover
+    tonic=C (0), is_major=True, with a correlation near 1.0 -- the
+    textbook case the whole algorithm is built to solve."""
+    groups = [_pc_group(pc, sus=routes._KS_MAJOR_PROFILE[pc]) for pc in range(12)]
+    tonic_pc, is_major, corr = routes._estimate_key(groups, tuning=(), n_strings=6, is_bass=False)
+    assert tonic_pc == 0  # nosec B101 - pytest assertion
+    assert is_major is True  # nosec B101 - pytest assertion
+    assert corr > 0.99  # nosec B101 - pytest assertion
+
+
+def test_estimate_key_detects_a_minor_from_a_matching_pitch_class_profile():
+    """Same as above but for the minor profile, rotated to tonic=A (9) --
+    confirms both mode AND rotation are being searched, not just mode."""
+    tonic = 9
+    rotated_minor = [routes._KS_MINOR_PROFILE[(pc - tonic) % 12] for pc in range(12)]
+    groups = [_pc_group(pc, sus=rotated_minor[pc]) for pc in range(12)]
+    tonic_pc, is_major, corr = routes._estimate_key(groups, tuning=(), n_strings=6, is_bass=False)
+    assert tonic_pc == tonic  # nosec B101 - pytest assertion
+    assert is_major is False  # nosec B101 - pytest assertion
+    assert corr > 0.99  # nosec B101 - pytest assertion
+
+
+def test_estimate_key_returns_none_for_an_empty_group_set():
+    assert routes._estimate_key([], tuning=(), n_strings=6, is_bass=False) is None  # nosec B101 - pytest assertion
+
+
+def test_estimate_key_correlation_is_low_for_a_flat_chromatic_histogram():
+    """#103/B7 acceptance criterion: a section with no real tonal center
+    (every pitch class equally likely -- the flat histogram is the
+    limiting case of "chromatic") must correlate poorly against every key
+    profile, so callers gate on `_KEY_FIT_MIN_CORRELATION` and disable the
+    key-stability weighting rather than trusting a meaningless best-fit."""
+    groups = [_pc_group(pc, sus=1.0) for pc in range(12)]
+    _tonic_pc, _is_major, corr = routes._estimate_key(groups, tuning=(), n_strings=6, is_bass=False)
+    assert corr < routes._KEY_FIT_MIN_CORRELATION  # nosec B101 - pytest assertion
+
+
+def test_pitch_class_stability_rank_orders_tonic_above_triad_above_scale_above_chromatic():
+    # Key of C major: tonic=0, triad={0,4,7}, scale adds {2,5,9,11}, chromatic={1,3,6,8,10}
+    tonic_rank = routes._pitch_class_stability_rank(0, tonic_pc=0, is_major=True)
+    triad_rank = routes._pitch_class_stability_rank(4, tonic_pc=0, is_major=True)
+    scale_rank = routes._pitch_class_stability_rank(2, tonic_pc=0, is_major=True)
+    chromatic_rank = routes._pitch_class_stability_rank(1, tonic_pc=0, is_major=True)
+    assert tonic_rank > triad_rank > scale_rank > chromatic_rank  # nosec B101 - pytest assertion
+
+
+def test_pitch_class_stability_rank_gives_a_chord_tone_bonus_over_a_passing_tone():
+    """A scale tone that is ALSO part of the chord currently sounding must
+    rank above the same scale tone when no chord context is given --
+    #103/B7's "chord notes ranked above passing notes" acceptance criterion."""
+    passing = routes._pitch_class_stability_rank(2, tonic_pc=0, is_major=True, chord_pcs=None)
+    chord_tone = routes._pitch_class_stability_rank(2, tonic_pc=0, is_major=True, chord_pcs={0, 2, 7})
+    assert chord_tone > passing  # nosec B101 - pytest assertion
+
+
+def test_key_stability_bonus_weight_is_below_beat_strength_weight():
+    """#103/B7's explicit guard: key-stability weight must sit below beat/
+    metrical strength's weight (_beat_value's 0.12 coefficient, the same
+    weight _MELODY_TURNING_POINT_RETENTION_BONUS already matches for
+    melodic shape) -- key estimation is a weaker, more heuristic signal
+    than measured beat position."""
+    assert routes._KEY_STABILITY_RETENTION_BONUS < 0.12  # nosec B101 - pytest assertion
+    assert routes._KEY_STABILITY_RETENTION_BONUS < routes._MELODY_TURNING_POINT_RETENTION_BONUS  # nosec B101 - pytest assertion
+
+
+def test_group_key_stability_bonus_is_larger_for_a_tonic_note_than_a_chromatic_one():
+    tonic_group = _pc_group(0)
+    chromatic_group = _pc_group(1)
+    tonic_bonus = routes._group_key_stability_bonus(
+        tonic_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
+    )
+    chromatic_bonus = routes._group_key_stability_bonus(
+        chromatic_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
+    )
+    assert tonic_bonus > chromatic_bonus  # nosec B101 - pytest assertion
+    assert tonic_bonus <= routes._KEY_STABILITY_RETENTION_BONUS  # nosec B101 - pytest assertion
+    assert chromatic_bonus == 0.0  # nosec B101 - pytest assertion
+
+
+def test_parse_chord_root_pitch_class_handles_plain_and_slash_chords():
+    assert routes._parse_chord_root_pitch_class("Am7") == 9  # nosec B101 - pytest assertion
+    assert routes._parse_chord_root_pitch_class("G/B") == 7  # nosec B101 - pytest assertion
+    assert routes._parse_chord_root_pitch_class("C#maj7") == 1  # nosec B101 - pytest assertion
+    assert routes._parse_chord_root_pitch_class("Bbdim") == 10  # nosec B101 - pytest assertion
+
+
+def test_parse_chord_root_pitch_class_returns_none_when_unparseable():
+    assert routes._parse_chord_root_pitch_class(None) is None  # nosec B101 - pytest assertion
+    assert routes._parse_chord_root_pitch_class("") is None  # nosec B101 - pytest assertion
+    assert routes._parse_chord_root_pitch_class(42) is None  # nosec B101 - pytest assertion
+    assert routes._parse_chord_root_pitch_class("Weird Shape") is None  # nosec B101 - pytest assertion
+
+
+def test_find_note_by_pitch_class_prefers_the_lowest_matching_string():
+    notes = [
+        {"s": 4, "f": 3},  # pc 15+3=18 -> 6 (F#) under default tuning
+        {"s": 0, "f": 9},  # pc 9 (A)
+        {"s": 1, "f": 4},  # pc 5+4=9 (A) -- same pc as string 0's note, higher string
+    ]
+    found = routes._find_note_by_pitch_class(notes, root_pc=9, tuning=(), n_strings=6, is_bass=False)
+    assert found == {"s": 0, "f": 9}  # nosec B101 - pytest assertion
+
+
+def test_find_note_by_pitch_class_returns_none_when_no_note_matches_or_root_is_none():
+    notes = [{"s": 0, "f": 1}, {"s": 1, "f": 2}]
+    assert routes._find_note_by_pitch_class(notes, root_pc=None, tuning=(), n_strings=6, is_bass=False) is None  # nosec B101 - pytest assertion
+    assert routes._find_note_by_pitch_class(notes, root_pc=11, tuning=(), n_strings=6, is_bass=False) is None  # nosec B101 - pytest assertion
+
+
+def test_cluster_matches_chord_shape_returns_the_matched_template_not_just_true():
+    """#103/B7 needs the matched ChordTemplate's `name` to parse a root --
+    _cluster_matches_chord_shape must return the template dict (truthy,
+    back-compat with the old boolean contract) rather than a bare True."""
+    cluster = [{"s": 0, "f": 0}, {"s": 1, "f": 2}]
+    templates = [{"name": "Am", "frets": [0, 2, -1, -1, -1, -1]}]
+    matched = routes._cluster_matches_chord_shape(cluster, templates)
+    assert matched == templates[0]  # nosec B101 - pytest assertion
+    assert routes._cluster_matches_chord_shape(cluster, []) is None  # nosec B101 - pytest assertion
+
+
+def test_notes_for_level_chord_reduction_prefers_the_parsed_root_over_lowest_string():
+    """A chord whose lowest-string note is NOT the harmonic root (e.g. a
+    slash chord voiced with the 5th on the bottom) must reduce to the
+    PARSED root, not the lowest-string bass note, once a chord_templates
+    list with a matching name is supplied -- #103/B7's core acceptance
+    criterion. Without chord_templates, the old lowest-string fallback
+    still applies."""
+    # Approx pitch class (default tuning=(), n_strings=6): base(s) + f, mod 12.
+    root_note = {"s": 3, "f": 9}  # base 15 + 9 = 24 -> pc 0 (C) -- the parsed root
+    bass_note = {"s": 0, "f": 7}  # lowest string, base 0 + 7 -> pc 7 (G), NOT the root
+    other_note = {"s": 5, "f": 2}  # base 24 + 2 -> pc 2 (D)
+    chord_notes = [bass_note, root_note, other_note]
+    templates = [{"name": "C", "frets": [-1, -1, -1, 9, -1, 2]}]
+
+    def _chord_group(chord_id=None):
+        chord = {"t": 0.0, "chord_id": chord_id, "notes": list(chord_notes)}
+        return {
+            "type": "chord", "chord": chord, "notes": chord["notes"],
+            "time": 0.0, "cost": 0.0, "value": 0.0, "retention_score": 0.0, "level": 0,
+        }
+
+    notes_with_root, _chords = routes._notes_for_level(
+        [_chord_group(chord_id=0)], level=0, max_level=3, chord_templates=templates,
+        tuning=(), n_strings=6, is_bass=False,
+    )
+    assert any(n.get("s") == 3 for n in notes_with_root)  # nosec B101 - pytest assertion
+    assert not any(n.get("s") == 0 for n in notes_with_root)  # nosec B101 - pytest assertion
+
+    notes_without_templates, _chords2 = routes._notes_for_level(
+        [_chord_group(chord_id=0)], level=0, max_level=3,
+    )
+    assert any(n.get("s") == 0 for n in notes_without_templates)  # nosec B101 - pytest assertion
+
+
+def test_notes_for_level_arpeggio_reduction_prefers_the_parsed_root_over_lowest_string():
+    root_note = {"t": 0.0, "s": 3, "f": 9}  # base 15 + 9 -> pc 0 (C), the parsed root
+    bass_note = {"t": 0.01, "s": 0, "f": 7}  # base 0 + 7 -> pc 7 (G), NOT the root
+    group = {
+        "type": "arpeggio", "chord": None,
+        "notes": [bass_note, root_note],
+        "chord_template_name": "C",
+        "time": 0.0, "cost": 0.0, "value": 0.0, "retention_score": 0.0, "level": 0,
+    }
+    notes_with_root, _chords = routes._notes_for_level(
+        [group], level=0, max_level=3, tuning=(), n_strings=6, is_bass=False,
+    )
+    assert notes_with_root and notes_with_root[0].get("s") == 3  # nosec B101 - pytest assertion
+
+    group_no_name = dict(group, chord_template_name=None)
+    notes_fallback, _chords2 = routes._notes_for_level(
+        [group_no_name], level=0, max_level=3, tuning=(), n_strings=6, is_bass=False,
+    )
+    assert notes_fallback and notes_fallback[0].get("s") == 0  # nosec B101 - pytest assertion
