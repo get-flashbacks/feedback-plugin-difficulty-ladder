@@ -417,6 +417,46 @@ def test_chord_with_two_different_techniques_scores_above_either_alone():
     assert abs(mixed[0]["cost"] - single[0]["cost"] - expected_bonus) < 1e-12  # nosec B101
 
 
+def test_technique_switch_bonus_survives_a_defensive_empty_group():
+    """_score_groups's `if not ns: continue` guard (a malformed zero-note
+    chord -- _group_notes never produces one from real chart data, but the
+    guard exists) must not reset the sequential coordination state: the
+    switch bonus between a real technique-bearing group and the next has to
+    fire the same whether or not a defensive empty group sits between them.
+    Isolate the technique term from density by patching it and syncopation
+    to a constant, since _sequential_density counts onsets including the
+    empty group's own timestamp and would otherwise confound the
+    comparison."""
+    def _string_mute_then(third_notes, with_gap):
+        groups = [{"time": 0.0, "notes": [{"s": 0, "f": 5, "mt": True, "sus": 0}]}]
+        if with_gap:
+            groups.append({"time": 0.5, "notes": []})
+        groups.append({"time": 1.0, "notes": third_notes})
+        return groups
+
+    # string_mute (mt) and palm_mute (pm) share the same 0.15 _tech_score
+    # weight, so switching between them isolates the coordination bonus from
+    # any difference in the two techniques' own base difficulty.
+    switch_notes = [{"s": 0, "f": 5, "pm": True, "sus": 0}]
+    same_notes = [{"s": 0, "f": 5, "mt": True, "sus": 0}]
+    with patch.object(routes, "_sequential_density", return_value=0.0), \
+         patch.object(routes, "_syncopation_score", return_value=0.0):
+        with_gap = _string_mute_then(switch_notes, with_gap=True)
+        without_gap = _string_mute_then(switch_notes, with_gap=False)
+        no_switch_with_gap = _string_mute_then(same_notes, with_gap=True)
+        routes._score_groups(with_gap, n_strings=6)
+        routes._score_groups(without_gap, n_strings=6)
+        routes._score_groups(no_switch_with_gap, n_strings=6)
+
+    # The empty group is a no-op for switch detection: the trailing
+    # palm-mute group costs the same whether or not it sits between it and
+    # the string-mute group.
+    assert with_gap[-1]["cost"] == without_gap[-1]["cost"]  # nosec B101 - pytest assertion
+    # And the switch bonus is genuinely contributing: repeating the same
+    # technique across the same gap costs less than switching across it.
+    assert with_gap[-1]["cost"] > no_switch_with_gap[-1]["cost"]  # nosec B101 - pytest assertion
+
+
 def test_lower_tier_refinement_does_not_insert_a_needless_bridge_for_an_open_anchor():
     groups = [
         {"time": 0.0, "cost": 0.1, "value": 0.0, "retention_score": 0.1,

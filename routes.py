@@ -313,6 +313,16 @@ def _tech_score(n):
 # identically and doesn't distinguish them, so treating them as one
 # category avoids reporting a coordination hit that _tech_score doesn't
 # actually recognize as two different techniques.
+# Single wire-flag -> category name. ho/po and sl/slu aren't here: each
+# pair maps to one category from either of two flags (an "or", not a
+# lookup on one key), so they stay as explicit checks below.
+_TECHNIQUE_FLAG_CATEGORIES = {
+    "bn": "bend", "tp": "tap", "tr": "trem", "hm": "harm_nat",
+    "hp": "harm_pinch", "plk": "pluck", "slp": "slap", "pm": "palm_mute",
+    "mt": "string_mute", "vb": "vibrato", "fhm": "fret_mute",
+}
+
+
 def _technique_categories(n):
     """The set of distinct technique categories active on note `n` (see
     _tech_score) -- used by _technique_coordination_bonus (#72/B4) to score
@@ -321,33 +331,11 @@ def _technique_categories(n):
     _tech_score weight but don't add a category of their own -- they can't
     occur without `bn`, so they'd never contribute a category _tech_score
     doesn't already count."""
-    cats = set()
-    if n.get("bn"):
-        cats.add("bend")
+    cats = {cat for flag, cat in _TECHNIQUE_FLAG_CATEGORIES.items() if n.get(flag)}
     if n.get("ho") or n.get("po"):
         cats.add("hopo")
-    if n.get("tp"):
-        cats.add("tap")
     if n.get("sl", -1) >= 0 or n.get("slu", -1) >= 0:
         cats.add("slide")
-    if n.get("tr"):
-        cats.add("trem")
-    if n.get("hm"):
-        cats.add("harm_nat")
-    if n.get("hp"):
-        cats.add("harm_pinch")
-    if n.get("plk"):
-        cats.add("pluck")
-    if n.get("slp"):
-        cats.add("slap")
-    if n.get("pm"):
-        cats.add("palm_mute")
-    if n.get("mt"):
-        cats.add("string_mute")
-    if n.get("vb"):
-        cats.add("vibrato")
-    if n.get("fhm"):
-        cats.add("fret_mute")
     return cats
 
 
