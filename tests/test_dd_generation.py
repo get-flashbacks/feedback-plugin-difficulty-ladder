@@ -1485,6 +1485,137 @@ def _write_pack(root, name, arrangements, song_timeline_sections=None):
     return pack_dir
 
 
+# Chordr's service can be stubbed: these tests pin the preview's HTTP and
+# forwarding contract without requiring the sibling plugin to be installed.
+_CHORD_PREVIEW_URL = f"/api/plugins/{routes.PLUGIN_ID}/analyze-chords"
+
+
+def _preview(client, filename="song.feedpak", arrangement_index=0):
+    return client.post(_CHORD_PREVIEW_URL, json={
+        "filename": filename, "arrangement_index": arrangement_index,
+    })
+
+
+def test_chord_preview_forwards_fretted_data_without_writing(tmp_path):
+    arr = _arrangement([], chords=[{"t": 1.0, "id": 0, "notes": [{"s": 0, "f": 2}]}])
+    arr.update(type="bass", name="Bass", capo=2, tuning=[0, 0, 0, 0],
+               templates=[{"name": "F#"}])
+    pack = _write_pack(tmp_path, "song.feedpak", [("arrangements/bass.json", arr)])
+    before = {p.relative_to(pack): p.read_bytes() for p in pack.rglob("*") if p.is_file()}
+    client = _client_for(tmp_path)
+    calls = []
+
+    def analyze(chords, *, context, templates):
+        calls.append((chords, context, templates))
+        return {"grouped": [{"parentIndex": 0, "continuation": False}]}
+
+    client.app.state.chordr_analyze_chart_chords_v1 = analyze
+    resp = _preview(client)
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "ok": True, "filename": "song.feedpak", "arrangement_index": 0,
+        "chord_count": 1,
+        "grouped": [{"parentIndex": 0, "continuation": False}],
+    }
+    assert calls == [(arr["chords"], {
+        "tuning": arr["tuning"], "capo": 2, "stringCount": 4, "isBass": True,
+    }, arr["templates"])]
+    assert before == {p.relative_to(pack): p.read_bytes() for p in pack.rglob("*") if p.is_file()}
+
+
+def test_chord_preview_does_not_infer_bass_from_name_fragment(tmp_path):
+    arr = _arrangement([])
+    arr["name"] = "Ambassador Lead"
+    _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    client = _client_for(tmp_path)
+    contexts = []
+    client.app.state.chordr_analyze_chart_chords_v1 = (
+        lambda chords, *, context, templates: contexts.append(context) or {}
+    )
+    assert _preview(client).status_code == 200
+    assert contexts[0]["isBass"] is False
+
+
+def test_chord_preview_infers_bass_from_legacy_name(tmp_path):
+    arr = _arrangement([])
+    arr.update(type="", name="Bass 2")
+    _write_pack(tmp_path, "song.feedpak", [("arrangements/bass.json", arr)])
+    client = _client_for(tmp_path)
+    contexts = []
+    client.app.state.chordr_analyze_chart_chords_v1 = (
+        lambda chords, *, context, templates: contexts.append(context) or {}
+    )
+    assert _preview(client).status_code == 200
+    assert contexts[0]["isBass"] is True
+
+
+def test_chord_preview_rejects_missing_library_and_invalid_filenames(tmp_path):
+    assert _preview(_client_for(None)).status_code == 400
+    client = _client_for(tmp_path)
+    for filename, expected in (("../song.feedpak", 400), ("song.mp3", 400),
+                               ("missing.feedpak", 404)):
+        assert _preview(client, filename).status_code == expected
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_chord_preview_rejects_bad_index_drums_and_keys(tmp_path):
+    lead = _arrangement([])
+    keys = _arrangement([])
+    keys.update(type="keys", name="Keys")
+    pack = _write_pack(tmp_path, "song.feedpak", [
+        ("arrangements/lead.json", lead), ("arrangements/drums.json", lead),
+        ("arrangements/keys.json", keys),
+    ])
+    manifest_path = pack / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["arrangements"][1]["type"] = "drums"
+    manifest_path.write_text(yaml.safe_dump(manifest))
+    client = _client_for(tmp_path)
+    for index in (3, 1, 2):
+        assert _preview(client, arrangement_index=index).status_code == 400
+
+
+def test_chord_preview_reports_missing_service_and_service_failure(tmp_path):
+    _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", _arrangement([]))])
+    client = _client_for(tmp_path)
+    assert _preview(client).status_code == 503
+    assert _preview(client).json()["detail"] == "Chordr server analysis is not active"
+    client.app.state.chordr_analyze_chart_chords_v1 = lambda *args, **kwargs: 1 / 0
+    resp = _preview(client)
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Chordr analysis failed"
+
+
+@pytest.mark.parametrize("bad_data", ["{bad json", b"\xff\xfe"])
+def test_chord_preview_rejects_malformed_arrangement_bytes(tmp_path, bad_data):
+    pack = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", _arrangement([]))])
+    (pack / "arrangements/lead.json").write_bytes(
+        bad_data if isinstance(bad_data, bytes) else bad_data.encode()
+    )
+    resp = _preview(_client_for(tmp_path))
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "malformed arrangement"
+
+
+@pytest.mark.parametrize("field,value", [("tuning", 123), ("chords", "bad"),
+                                       ("templates", "bad")])
+def test_chord_preview_rejects_malformed_field_shapes(tmp_path, field, value):
+    arr = _arrangement([])
+    arr[field] = value
+    _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    assert _preview(_client_for(tmp_path)).status_code == 400
+
+
+def test_chord_preview_preserves_missing_member_and_manifest_404(tmp_path):
+    pack = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", _arrangement([]))])
+    (pack / "arrangements/lead.json").unlink()
+    assert _preview(_client_for(tmp_path)).status_code == 404
+    (pack / "manifest.yaml").unlink()
+    assert _preview(_client_for(tmp_path)).status_code == 404
+    (pack / "manifest.yaml").write_text("arrangements: [not valid")
+    assert _preview(_client_for(tmp_path)).status_code == 400
+
+
 def _phrase_boundaries(pack_dir, rel):
     arr = json.loads((pack_dir / rel).read_text())
     return [(p["start_time"], p["end_time"]) for p in arr["phrases"]]

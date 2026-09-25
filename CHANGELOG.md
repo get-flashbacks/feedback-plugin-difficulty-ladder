@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Replace the fixed-window linear fret-jump charge with a bounded Fitts-law
   movement cost that decreases as time available for the same shift grows.
+- Read-only Chordr chord-grouping preview for fretted arrangements. Reports
+  identified chord names and continuation/parent indices without changing
+  existing generation behavior or song packs.
 
 ### Fixed
 - Kept generated Keys tiers monotonic by preserving an easier tier's octave
