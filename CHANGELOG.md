@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Key- and chord-aware note retention: estimate each phrase's key
+  (Krumhansl-Schmuckler correlation against the 24 major/minor rotations
+  of the Krumhansl & Kessler 1982 profiles, from a duration-weighted
+  pitch-class histogram), then rank notes tonic > chord/triad tone > other
+  scale tone > chromatic (chord tones ranked above passing tones of the
+  same category) and give the most tonally-stable note in a group a modest
+  retention push — deliberately weighted below beat/metrical strength and
+  melody-turning-point retention, per the guard that a heuristic key
+  estimate shouldn't outweigh measured beat position. Applied per-window
+  before the tier scale is frozen, so it participates in tier-cutoff
+  construction rather than re-labeling an already-frozen scale. Disabled
+  per-window when the key estimate correlates poorly (near-uniform/atonal
+  pitch-class content — ordinary diatonic, modal, and blues material all
+  clear the threshold and get the weighting). Also: chord and arpeggio reduction now try a real harmonic
+  root parsed from the matched `ChordTemplate`'s authored name (e.g.
+  "Am7", "G/B") before falling back to the lowest-string-index heuristic
+  (#108).
 - Grade beat strength (downbeat > strong beat > other beat > eighth >
   sixteenth > off-grid) instead of an on/off check, and replace the
   nearest-beat-distance syncopation measure with a Longuet-Higgins & Lee

@@ -181,6 +181,40 @@ contract.
   continuous line. A real fix needs the same phrase/section boundaries
   the generator's windowing already has threaded into this scan, which
   is a larger change than this item's effort-S scope covers.
+- **Key and chord awareness (#103/B7).** Each phrase gets its own key
+  estimate — the classic Krumhansl-Schmuckler algorithm: a duration-weighted
+  pitch-class histogram (reusing the same tuning/instrument-aware pitch
+  approximation as the B5 melody-turning-point signal) correlated against
+  all 24 rotations of the Krumhansl & Kessler (1982) major/minor key
+  profiles, keeping the best-fitting rotation. Notes are then ranked by
+  tonal stability — tonic > a chord/triad tone > another scale tone >
+  chromatic — with chord tones ranked above passing tones of the same
+  category when a chord is sounding (looked up from the arrangement's own
+  chord track for non-chord groups — a single note or run that lands
+  under a sustained chord picks up its notes' pitch classes, not just a
+  chord group's own self-evidently-chord-tone constituents), and the
+  group containing the most stable note gets a modest retention push.
+  That push is deliberately weighted *below* beat/metrical strength's
+  (#103/B2) and the melody-shape bonus's (#103/B5) weight — a heuristic
+  key estimate is a weaker signal than measured beat position, so it
+  shouldn't be able to outrank it — and is applied per section BEFORE the
+  shared tier scale is frozen (the same point B2's beat-value term and
+  B5's melody bonus already apply at), so it participates in tier-cutoff
+  construction instead of re-labeling an already-frozen scale and
+  silently collapsing a tier on ordinary tonal material. A section whose
+  best-fit correlation falls below a fixed threshold skips the weighting
+  entirely rather than confidently ranking notes against a key estimate
+  the data doesn't support — despite the "poor tonal fit" framing, that
+  threshold mainly rejects near-uniform/atonal pitch-class content
+  (whole-tone, fully chromatic); ordinary diatonic, modal, and blues
+  material all correlate well above it and get the weighting like any
+  other tonal section. Separately, chord and arpeggio
+  reduction (the bottom-tier "pick one note to represent this chord" step)
+  now try a real harmonic root — parsed from the matched authored
+  `ChordTemplate`'s `name` (e.g. "Am7" → A, "G/B" → G; only the root letter
+  before any slash is used, since a slash chord's bass isn't its root) —
+  before falling back to the pre-existing lowest-string-index heuristic
+  when the name doesn't parse or no template matched.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
