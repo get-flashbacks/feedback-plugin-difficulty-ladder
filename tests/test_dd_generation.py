@@ -204,8 +204,30 @@ def test_melody_turning_points_identifies_local_highs_and_lows_only():
         {"time": 2.5, "notes": [{"s": 5, "f": 3, "sus": 0}]},   # rising into a plateau
         {"time": 3.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},   # repeated pitch, not a turn
     ]
-    turning = routes._melody_turning_points(groups, tuning=(), n_strings=6)
+    turning = routes._melody_turning_points(groups, tuning=(), n_strings=6, tempo=routes._TempoParams())
     assert turning == {2, 4}  # nosec B101 - pytest assertion
+
+
+def test_melody_turning_points_does_not_cross_a_chord_section_between_phrases():
+    """A pullfrog-flagged bug: single-note groups either side of an
+    intervening chord section aren't musically adjacent, so an ascending
+    phrase's last note must not be scored as a local high just because
+    the next SINGLE-note group (skipping the chord in between) happens to
+    be lower -- that's the start of an unrelated phrase, not a turn
+    within this one."""
+    groups = [
+        _single(0.0, 0), _single(0.5, 3), _single(1.0, 6),  # phrase A: rising to f=6
+        {"time": 1.5, "notes": [  # an intervening chord section
+            {"s": 5, "f": 1, "sus": 0}, {"s": 4, "f": 1, "sus": 0},
+        ]},
+        _single(3.0, 0), _single(3.5, 3), _single(4.0, 6),  # phrase B: rising again, from f=0
+    ]
+    turning = routes._melody_turning_points(groups, tuning=(), n_strings=6, tempo=routes._TempoParams())
+    assert turning == set(), (  # nosec B101 - pytest assertion
+        "phrase A's last note (f=6) and phrase B's first note (f=0) are "
+        "both monotonic run endpoints, separated by a gap far larger than "
+        "tempo.fret_jump_window_seconds -- neither is a real turning point"
+    )
 
 
 def _single(t, f, s=5):
@@ -270,7 +292,7 @@ def test_melody_turning_point_bonus_never_applies_to_a_chord_or_cluster_group():
         "the chord group's retention_score must not receive the "
         "single-note turning-point discount"
     )
-    turning = routes._melody_turning_points(chord_at_same_position, tuning=(), n_strings=6)
+    turning = routes._melody_turning_points(chord_at_same_position, tuning=(), n_strings=6, tempo=routes._TempoParams())
     assert 1 not in turning  # nosec B101 - pytest assertion, the chord group never qualifies
 
 
@@ -1215,7 +1237,7 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None, t
     tempo = tempo or routes._TempoParams()
     legacy = deepcopy(groups)
     times_sorted = [float(g["time"]) for g in legacy]
-    turning_points = routes._melody_turning_points(legacy, tuning, n_strings)
+    turning_points = routes._melody_turning_points(legacy, tuning, n_strings, tempo)
     prev_categories = set()
     for gi, group in enumerate(legacy):
         notes = group["notes"]
@@ -1950,6 +1972,30 @@ def _write_pack(root, name, arrangements, song_timeline_sections=None):
     for rel, arr in arrangements:
         (pack_dir / rel).write_text(json.dumps(arr))
     return pack_dir
+
+
+def test_manifest_tuning_override_takes_precedence_over_embedded_arrangement_tuning(tmp_path):
+    """A pullfrog-flagged bug: lib/sloppak.py's load_song() (the path the
+    player actually uses) applies a manifest entry's own `tuning` over
+    whatever the embedded arrangement JSON carries -- `if "tuning" in
+    entry: arr.tuning = list(entry["tuning"])`. _load_manifest_and_arrangement
+    must mirror that override, or this generator scores contour (and
+    fret-position cost) against a tuning the player never actually
+    hears."""
+    embedded_tuning = [0, 0, 0, 0, 0, 0]        # standard, baked into the file
+    manifest_tuning = [-2, 0, 0, 0, 0, 0]       # drop-D override, in the manifest entry
+    arr = _arrangement(_simple_notes(0, 2), n_beats=8)
+    arr["tuning"] = embedded_tuning
+    pack_dir = tmp_path / "song.feedpak"
+    (pack_dir / "arrangements").mkdir(parents=True)
+    (pack_dir / "arrangements" / "lead.json").write_text(json.dumps(arr))
+    manifest = {"arrangements": [{"file": "arrangements/lead.json", "tuning": manifest_tuning}]}
+    (pack_dir / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+
+    _rel, loaded_arr, skip_reason = routes._load_manifest_and_arrangement(pack_dir, 0)
+
+    assert skip_reason is None  # nosec B101 - pytest assertion
+    assert loaded_arr["tuning"] == manifest_tuning  # nosec B101 - pytest assertion
 
 
 # Chordr's service can be stubbed: these tests pin the preview's HTTP and

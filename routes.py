@@ -918,18 +918,30 @@ def _approx_pitch(note, tuning, n_strings):
     return base + offset + f
 
 
-def _melody_turning_points(groups, tuning, n_strings):
+def _melody_turning_points(groups, tuning, n_strings, tempo):
     """Return the set of group indices among single-note groups
     (`len(notes) == 1`) that are a strict local high or low among the
     OTHER single-note groups in the arrangement -- chords/clusters are
     skipped when looking for neighbors, since they aren't part of the
     single-note melodic line. A repeated pitch (equal to a neighbor) is
-    not a turning point: the contour hasn't changed direction there."""
+    not a turning point: the contour hasn't changed direction there.
+
+    A candidate neighbor more than `tempo.fret_jump_window_seconds` away
+    (the same "long enough that this isn't one continuous passage"
+    threshold `_score_groups`'s fret-jump/string-jump bonuses already use)
+    doesn't count -- otherwise two single notes either side of an
+    intervening chord section, or either side of an unrelated authored
+    phrase, could sit next to each other in `singles` and look like a
+    contour turn that was never actually played that way."""
     singles = [i for i, g in enumerate(groups) if len(g["notes"]) == 1]
     pitches = {i: _approx_pitch(groups[i]["notes"][0], tuning, n_strings) for i in singles}
+    times = {i: float(groups[i]["time"]) for i in singles}
+    max_gap = tempo.fret_jump_window_seconds
     turning = set()
     for k in range(1, len(singles) - 1):
         i, prev_i, next_i = singles[k], singles[k - 1], singles[k + 1]
+        if times[i] - times[prev_i] > max_gap or times[next_i] - times[i] > max_gap:
+            continue
         p, prev_p, next_p = pitches[i], pitches[prev_i], pitches[next_i]
         if (p > prev_p and p > next_p) or (p < prev_p and p < next_p):
             turning.add(i)
@@ -939,7 +951,7 @@ def _melody_turning_points(groups, tuning, n_strings):
 def _score_groups(groups, n_strings, beat_times=(), *, tempo=None, tuning=()):
     tempo = tempo or _TempoParams()
     times_sorted = [float(g["time"]) for g in groups]
-    turning_points = _melody_turning_points(groups, tuning, n_strings)
+    turning_points = _melody_turning_points(groups, tuning, n_strings, tempo)
     prev_categories = set()
     for gi, g in enumerate(groups):
         ns = g["notes"]
@@ -2363,6 +2375,15 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
     # stat the .jsonc suffix and read_text itself) doesn't apply here —
     # detect .jsonc by the manifest-declared relpath instead.
     arr = parse_jsonc(text) if rel.lower().endswith(".jsonc") else json.loads(text)
+    # A manifest entry's own `tuning` overrides whatever the embedded
+    # arrangement JSON carries -- mirror lib/sloppak.py's load_song()
+    # (`if "tuning" in entry: arr.tuning = list(entry["tuning"])`) so this
+    # generator scores the same effective tuning the player actually
+    # hears, not a stale value left behind in the arrangement file itself
+    # (feedpakr's upgrade/build tooling writes both, and they can diverge
+    # when only one side is edited after the fact).
+    if "tuning" in entry:
+        arr["tuning"] = list(entry["tuning"])
     return rel, arr, None
 
 
