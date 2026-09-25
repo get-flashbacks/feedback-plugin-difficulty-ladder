@@ -5,6 +5,7 @@ conftest of its own) so `pytest tests/` works from this directory directly.
 """
 import json
 import logging
+import math
 import sys
 from copy import deepcopy
 from itertools import pairwise
@@ -248,7 +249,7 @@ def test_bottom_arpeggio_voice_preserves_an_open_root_string():
     assert [(n["s"], n["f"]) for n in notes] == [(0, 0)]  # nosec B101 - pytest assertion
 
 
-def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
+def test_fret_jump_cost_decreases_with_more_time_available():
     def groups(second_time):
         return [
             {"time": 0.0, "notes": [{"s": 5, "f": 2, "sus": 0}]},
@@ -261,11 +262,19 @@ def test_fret_jump_penalty_ignores_groups_separated_by_a_long_rest():
     routes._score_groups(after_rest, n_strings=6)
 
     assert nearby[1]["cost"] > after_rest[1]["cost"]  # nosec B101 - pytest assertion
-    # The 0.18 fret-jump bonus applies only within fret_jump_window_seconds
-    # (nearby) and not beyond it (after_rest). Tempo-relative density (#71)
-    # now also legitimately scores the close-together case as denser, so
-    # the total gap is at least the isolated bonus, not exactly equal to it.
-    assert nearby[1]["cost"] - after_rest[1]["cost"] >= 0.18 - 1e-9  # nosec B101 - pytest assertion
+    # Movement pressure fades smoothly rather than disappearing at a fixed
+    # one-second cutoff. Density also differs, so compare the isolated term.
+    tempo = routes._TempoParams()
+    assert routes._fitts_shift_bonus(13, 0.5, tempo) > routes._fitts_shift_bonus(13, 2.0, tempo) > 0  # nosec B101
+
+
+def test_fitts_shift_cost_tracks_distance_and_tempo_relative_time():
+    tempo = routes._TempoParams(fret_jump_window_seconds=1.0)
+    assert routes._fitts_shift_bonus(7, 0.125, tempo) > routes._fitts_shift_bonus(7, 0.5, tempo)  # nosec B101
+    assert routes._fitts_shift_bonus(7, 0.5, tempo) > routes._fitts_shift_bonus(7, 2.0, tempo)  # nosec B101
+    assert routes._fitts_shift_bonus(9, 0.5, tempo) > routes._fitts_shift_bonus(3, 0.5, tempo)  # nosec B101
+    assert routes._fitts_shift_bonus(0, 0.125, tempo) == 0  # nosec B101
+    assert abs(routes._fitts_shift_bonus(8, 1.0, tempo) - 0.05) < 1e-12  # nosec B101
 
 
 def test_group_anchor_note_prefers_a_fretted_note_over_an_incidental_open_string():
@@ -305,11 +314,28 @@ def test_fret_jump_penalty_reflects_the_true_fretted_position_not_an_incidental_
         "a real large hand-position jump must still be penalized even when "
         "the anchor string happens to be open in the current group"
     )
-    assert abs(far_position[1]["cost"] - close_position[1]["cost"] - 0.18) < 1e-9, (  # nosec B101 - pytest assertion
+    expected = routes._fitts_shift_bonus(11, 0.4, routes._TempoParams()) - routes._fitts_shift_bonus(1, 0.4, routes._TempoParams())
+    assert abs(far_position[1]["cost"] - close_position[1]["cost"] - expected) < 1e-9, (  # nosec B101 - pytest assertion
         "an incidental open string on the anchor string must not itself "
         "read as a hand-position jump — the bonus must track the true "
         "fretted position (s=0), not the coincidentally-open anchor string"
     )
+
+
+def test_low_position_wide_shape_has_extra_posture_cost():
+    low = [{"s": 0, "f": 1}, {"s": 1, "f": 6}]
+    high = [{"s": 0, "f": 12}, {"s": 1, "f": 17}]
+    narrow = [{"s": 0, "f": 1}, {"s": 1, "f": 4}]
+    assert routes._posture_score(low) > routes._posture_score(high) == 0  # nosec B101
+    assert routes._posture_score(low) > routes._posture_score(narrow) == 0  # nosec B101
+
+    group = [{"time": 0.0, "notes": [{**n, "sus": 0} for n in low]}]
+    without_posture = deepcopy(group)
+    with patch.object(routes, "_posture_score", return_value=0):
+        routes._score_groups(without_posture, n_strings=6)
+    routes._score_groups(group, n_strings=6)
+    expected_bonus = 0.35 * 0.15 * routes._posture_score(low)
+    assert abs(group[0]["cost"] - without_posture[0]["cost"] - expected_bonus) < 1e-12  # nosec B101
 
 
 def test_lower_tier_refinement_does_not_insert_a_needless_bridge_for_an_open_anchor():
@@ -345,6 +371,31 @@ def test_lower_tier_refinement_still_bridges_a_genuine_fretted_anchor_jump():
     assert groups[1]["level"] == 0, (
         "a genuine fret-2-to-fret-15 jump should still get bridged"
     )
+
+
+def test_refinement_prioritizes_phrase_then_bar_join_over_earlier_jump():
+    groups = [
+        {"time": t, "notes": [{"s": 2, "f": fret}], "level": level,
+         "retention_score": 0.2}
+        for t, fret, level in (
+            (0.0, 2, 0), (0.2, 8, 2), (0.4, 15, 0),
+            (0.7, 8, 2), (1.0, 2, 0),
+            (1.3, 8, 2), (1.6, 15, 0),
+        )
+    ]
+    times = [g["time"] for g in groups]
+    promoted = []
+    for _ in range(3):
+        kept = [g for g in groups if g["level"] == 0]
+        assert routes._promote_bridge_candidate(  # nosec B101 - pytest assertion
+            kept, groups, times, [], 0, 7,
+            tempo=routes._TempoParams(),
+            phrase_boundaries=[1.2], bar_boundaries=[0.8],
+        )
+        promoted.append(next(g["time"] for g in groups
+                             if g["time"] not in promoted and g["level"] == 0
+                             and g["time"] in (0.2, 0.7, 1.3)))
+    assert promoted == [1.3, 0.7, 0.2]  # nosec B101 - pytest assertion
 
 
 def test_unsupported_drums_skip_preserves_instrument_classification():
@@ -709,8 +760,8 @@ def test_syncopation_term_scores_a_more_off_beat_group_higher():
     )
 
 
-def _legacy_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
-    """Independent oracle for the pre-split, single-score implementation."""
+def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
+    """Independent oracle for the current fretted retention formula."""
     tempo = tempo or routes._TempoParams()
     legacy = deepcopy(groups)
     times_sorted = [float(g["time"]) for g in legacy]
@@ -726,10 +777,17 @@ def _legacy_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
             routes._STRING_SPREAD_BLEND * spread_ratio
             + (1.0 - routes._STRING_SPREAD_BLEND) * count_ratio
         )
-        fretting = (
+        frets = [int(n.get("f", 0)) for n in notes if int(n.get("f", 0)) > 0]
+        posture = 0.0
+        if len(frets) >= 2:
+            stretch = min(1.0, max(0, max(frets) - min(frets) - 3) / 4.0)
+            low_position = min(1.0, max(0.0, (9 - min(frets)) / 8.0))
+            posture = stretch * low_position
+        fretting = min(1.0,
             0.4 * routes._fret_score(avg_fret)
             + 0.35 * routes._span_score(notes)
             + 0.25 * string_shape
+            + 0.15 * posture
         )
         technique = max(routes._tech_score(n) for n in notes)
         raw_density = routes._sequential_density(times_sorted, gi, tempo)
@@ -751,18 +809,23 @@ def _legacy_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
             group["time"], beat_times, tolerance=tempo.beat_tolerance,
         ):
             group["score"] -= 0.12
-        if gi and float(group["time"]) - float(legacy[gi - 1]["time"]) <= tempo.fret_jump_window_seconds:
+        if gi:
             previous = routes._group_anchor_note(legacy[gi - 1])
             current = routes._group_anchor_note(group)
             if previous and current:
+                available = float(group["time"]) - float(legacy[gi - 1]["time"])
                 fret_jump = abs(int(current.get("f", 0)) - int(previous.get("f", 0)))
-                group["score"] += min(0.18, max(0, fret_jump - 5) * 0.03)
-                string_jump = abs(int(current.get("s", 0)) - int(previous.get("s", 0)))
-                group["score"] += min(
-                    routes._STRING_JUMP_MAX_BONUS,
-                    max(0, string_jump - routes._STRING_JUMP_THRESHOLD)
-                    * routes._STRING_JUMP_COEF,
-                )
+                index = math.log2(fret_jump / 2.0 + 1.0)
+                reference = math.log2(8.0 / 2.0 + 1.0)
+                pressure = tempo.fret_jump_window_seconds / (tempo.fret_jump_window_seconds + max(available, 0.0))
+                group["score"] += min(0.10, 0.10 * index / reference * pressure)
+                if available <= tempo.fret_jump_window_seconds:
+                    string_jump = abs(int(current.get("s", 0)) - int(previous.get("s", 0)))
+                    group["score"] += min(
+                        routes._STRING_JUMP_MAX_BONUS,
+                        max(0, string_jump - routes._STRING_JUMP_THRESHOLD)
+                        * routes._STRING_JUMP_COEF,
+                    )
         group["score"] = max(0.0, min(1.0, group["score"]))
     return [g["score"] for g in legacy]
 
@@ -824,22 +887,23 @@ def test_fretted_retention_discount_precedes_clamp():
     ]
     groups.append(
         {"time": 0.7, "notes": [
-            {"s": s, "f": 20 + s, "sus": 0, "tp": True}
+            {"s": s, "f": 20 + s, "sus": 0, "tp": True,
+             "bn": 2, "bt": 3}
             for s in range(6)
         ]}
     )
 
-    legacy_scores = _legacy_fretted_scores(groups, n_strings=6, beat_times=[0.7])
+    reference_scores = _reference_fretted_scores(groups, n_strings=6, beat_times=[0.7])
     routes._score_groups(groups, n_strings=6, beat_times=[0.7])
 
     scored = groups[-1]
     assert scored["cost"] > 1.0  # nosec B101 - pytest assertion
-    assert scored["retention_score"] == legacy_scores[-1]  # nosec B101 - pytest assertion
+    assert scored["retention_score"] == reference_scores[-1]  # nosec B101 - pytest assertion
     assert scored["retention_score"] < 1.0  # nosec B101 - pytest assertion
 
 
 @pytest.mark.parametrize("sustain", [0, 2.0, -0.5, "2.0"])
-def test_fretted_retention_score_exactly_matches_legacy_formula(sustain):
+def test_fretted_retention_score_matches_movement_reference_formula(sustain):
     groups = [
         {"time": 0.0, "notes": [{"s": 5, "f": 0, "sus": sustain}]},
         {"time": 0.1, "notes": [
@@ -853,7 +917,7 @@ def test_fretted_retention_score_exactly_matches_legacy_formula(sustain):
         {"time": 2.0, "notes": []},
     ]
     beat_times = [0.0, 0.1]
-    expected = _legacy_fretted_scores(groups, n_strings=6, beat_times=beat_times)
+    expected = _reference_fretted_scores(groups, n_strings=6, beat_times=beat_times)
 
     routes._score_groups(groups, n_strings=6, beat_times=beat_times)
 
@@ -864,11 +928,11 @@ def test_fretted_retention_score_exactly_matches_legacy_formula(sustain):
     }
 
 
-def test_fretted_malformed_sustain_keeps_legacy_error_behavior():
+def test_fretted_malformed_sustain_keeps_error_behavior():
     groups = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": "invalid"}]}]
 
     with pytest.raises(ValueError):
-        _legacy_fretted_scores(groups, n_strings=6)
+        _reference_fretted_scores(groups, n_strings=6)
     with pytest.raises(ValueError):
         routes._score_groups(deepcopy(groups), n_strings=6)
 
@@ -914,7 +978,7 @@ def test_keys_malformed_sustain_keeps_legacy_error_behavior():
         routes._score_groups_keys(deepcopy(groups))
 
 
-def test_cost_value_split_preserves_legacy_generated_ladder_fixture():
+def test_movement_cost_generates_nested_ladder_fixture():
     notes = [
         {"t": i * 0.5, "s": 2, "f": 3 + (i % 3), "sus": 0}
         for i in range(8)
@@ -926,7 +990,7 @@ def test_cost_value_split_preserves_legacy_generated_ladder_fixture():
     assert phrases is not None  # nosec B101 - pytest assertion
     assert [(level["difficulty"], [n["t"] for n in level["notes"]])
             for level in phrases[0]["levels"]] == [
-        (0, [0.0, 3.0]),
+        (0, [0.0, 0.5]),
         (1, [0.0, 0.5, 1.5, 2.0, 3.0]),
         (2, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]),
     ]

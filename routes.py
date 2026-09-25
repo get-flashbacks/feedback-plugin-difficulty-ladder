@@ -206,6 +206,22 @@ def _span_score(notes):
     return min(1.0, _fret_span(notes) / 6.0)
 
 
+def _posture_score(notes):
+    """Extra low-position stretch cost, separate from absolute fret span.
+
+    A wide shape near the nut needs a larger physical reach than the same
+    fret span high on the neck. Three frets or fewer are treated as ordinary
+    reach; the bonus fades out by fret 9. These are conservative heuristic
+    scales, not measured player-specific hand geometry.
+    """
+    frets = [int(n.get("f", 0)) for n in notes if int(n.get("f", 0)) > 0]
+    if len(frets) < 2:
+        return 0.0
+    stretch = min(1.0, max(0, max(frets) - min(frets) - 3) / 4.0)
+    low_position = min(1.0, max(0.0, (9 - min(frets)) / 8.0))
+    return stretch * low_position
+
+
 def _string_span_score(notes, n_strings):
     """String-index spread within a group, normalized 0..1 — playing
     strings 1 and 6 together (a wide stretch/skip) is harder than playing
@@ -537,7 +553,31 @@ _STRING_SPREAD_BLEND = 0.6
 # far the fret position itself moved.
 _STRING_JUMP_THRESHOLD = 3
 _STRING_JUMP_COEF = 0.03
-_STRING_JUMP_MAX_BONUS = 0.08  # capped lower than the fret-jump bonus (0.18) — a secondary signal
+_STRING_JUMP_MAX_BONUS = 0.08  # capped below the movement bonus (0.10) — a secondary signal
+
+# Fitts's index of difficulty uses a two-fret target width as a conservative
+# approximation of usable hand-position tolerance. The reference 8-fret
+# shift maps one full time-pressure unit to a conservative 0.10 bonus;
+# unlike the old >5-fret step, shorter shifts still have a smaller cost.
+_SHIFT_TARGET_WIDTH_FRETS = 2.0
+_SHIFT_REFERENCE_FRETS = 8.0
+_SHIFT_MAX_BONUS = 0.10
+
+
+def _fitts_shift_bonus(distance, available_seconds, tempo):
+    """Bounded hand-shift cost; a longer interval lowers the same move.
+
+    ``tempo.fret_jump_window_seconds`` is a tempo-relative pressure scale,
+    no longer a hard cutoff. This is a model of relative difficulty, not an
+    estimate of actual human movement time.
+    """
+    if distance <= 0:
+        return 0.0
+    index = math.log2(distance / _SHIFT_TARGET_WIDTH_FRETS + 1.0)
+    reference = math.log2(_SHIFT_REFERENCE_FRETS / _SHIFT_TARGET_WIDTH_FRETS + 1.0)
+    time_scale = max(float(tempo.fret_jump_window_seconds), 0.001)
+    pressure = time_scale / (time_scale + max(float(available_seconds), 0.0))
+    return min(_SHIFT_MAX_BONUS, _SHIFT_MAX_BONUS * index / reference * pressure)
 
 # How many beats wide the sequential-density window is on EACH side of a
 # group's own onset (issue #71). Sized in beats, not seconds, so the same
@@ -590,10 +630,11 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
         count_ratio = min(1.0, (len(ns) - 1) / max(n_strings - 1, 1))
         spread_ratio = _string_span_score(ns, n_strings)
         string_shape = _STRING_SPREAD_BLEND * spread_ratio + (1.0 - _STRING_SPREAD_BLEND) * count_ratio
-        fretting = (
+        fretting = min(1.0,
             0.4 * _fret_score(avg_fret)
             + 0.35 * _span_score(ns)
             + 0.25 * string_shape
+            + 0.15 * _posture_score(ns)
         )
         technique = max(_tech_score(n) for n in ns)
         raw_density = _sequential_density(times_sorted, gi, tempo)
@@ -619,21 +660,23 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
         retention_score = base_cost
         if value:
             retention_score -= 0.12
-        if gi and float(g["time"]) - float(groups[gi - 1]["time"]) <= tempo.fret_jump_window_seconds:
+        if gi:
             prev = _group_anchor_note(groups[gi - 1])
             cur = _group_anchor_note(g)
             if prev and cur:
+                available = float(g["time"]) - float(groups[gi - 1]["time"])
                 fret_jump = abs(int(cur.get("f", 0)) - int(prev.get("f", 0)))
-                fret_jump_bonus = min(0.18, max(0, fret_jump - 5) * 0.03)
+                fret_jump_bonus = _fitts_shift_bonus(fret_jump, available, tempo)
                 cost += fret_jump_bonus
                 retention_score += fret_jump_bonus
-                string_jump = abs(int(cur.get("s", 0)) - int(prev.get("s", 0)))
-                string_jump_bonus = min(
-                    _STRING_JUMP_MAX_BONUS,
-                    max(0, string_jump - _STRING_JUMP_THRESHOLD) * _STRING_JUMP_COEF,
-                )
-                cost += string_jump_bonus
-                retention_score += string_jump_bonus
+                if available <= tempo.fret_jump_window_seconds:
+                    string_jump = abs(int(cur.get("s", 0)) - int(prev.get("s", 0)))
+                    string_jump_bonus = min(
+                        _STRING_JUMP_MAX_BONUS,
+                        max(0, string_jump - _STRING_JUMP_THRESHOLD) * _STRING_JUMP_COEF,
+                    )
+                    cost += string_jump_bonus
+                    retention_score += string_jump_bonus
         # `cost` is deliberately left unclamped (it can exceed 1.0) and does
         # not affect ranking yet — only `retention_score` feeds tiering.
         g["cost"] = cost
@@ -790,8 +833,25 @@ _MAX_STRING_JUMP_FOR_CONTINUITY = 3
 
 
 def _promote_bridge_candidate(kept, groups_sorted, group_times, beat_times, level, max_jump, *,
-                              tempo=None, max_string_jump=_MAX_STRING_JUMP_FOR_CONTINUITY):
-    for left, right in pairwise(kept):
+                              tempo=None, max_string_jump=_MAX_STRING_JUMP_FOR_CONTINUITY,
+                              phrase_boundaries=(), bar_boundaries=()):
+    tempo = tempo or _TempoParams()
+    phrase_boundaries = sorted(phrase_boundaries)
+    bar_boundaries = sorted(bar_boundaries)
+
+    def priority(pair):
+        left, right = pair
+        t0, t1 = float(left["time"]), float(right["time"])
+        if bisect.bisect_right(phrase_boundaries, t0) < bisect.bisect_right(phrase_boundaries, t1):
+            return (0, t0)
+        if bisect.bisect_right(bar_boundaries, t0) < bisect.bisect_right(bar_boundaries, t1):
+            return (1, t0)
+        return (2, t0)
+
+    # Chunk joins are harder to recover after thinning than an equally large
+    # shift inside a chunk. Prioritize phrase joins, then bar joins, then
+    # ordinary within-bar jumps; preserve chronological order within each.
+    for left, right in sorted(pairwise(kept), key=priority):
         if float(right["time"]) - float(left["time"]) > tempo.fret_jump_window_seconds:
             continue
         left_anchor = _group_anchor_note(left)
@@ -816,7 +876,8 @@ def _promote_bridge_candidate(kept, groups_sorted, group_times, beat_times, leve
 
 def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
                              tempo=None,
-                             max_string_jump=_MAX_STRING_JUMP_FOR_CONTINUITY):
+                             max_string_jump=_MAX_STRING_JUMP_FOR_CONTINUITY,
+                             phrase_boundaries=(), bar_boundaries=()):
     """Promote anchors needed for a playable, rhythmically grounded path.
 
     Promotions only add source groups to lower tiers, preserving nesting and
@@ -837,7 +898,9 @@ def _refine_lower_tier_path(groups, beat_times, max_level, max_jump=7, *,
             kept = [g for g in groups_sorted if g["level"] <= level]
 
         while _promote_bridge_candidate(kept, groups_sorted, group_times, beat_times, level, max_jump,
-                                        tempo=tempo, max_string_jump=max_string_jump):
+                                        tempo=tempo, max_string_jump=max_string_jump,
+                                        phrase_boundaries=phrase_boundaries,
+                                        bar_boundaries=bar_boundaries):
             kept = [g for g in groups_sorted if g["level"] <= level]
 
 

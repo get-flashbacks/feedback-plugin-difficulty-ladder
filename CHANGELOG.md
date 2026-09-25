@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Score wide low-position fretted shapes as an extra hand-posture cost.
+- Prioritize phrase-boundary, then bar-boundary bridges in the lower-tier
+  path-refinement helper (not yet enabled in production generation).
+
+### Changed
+- Replace the fixed-window linear fret-jump charge with a bounded Fitts-law
+  movement cost that decreases as time available for the same shift grows.
 - Read-only Chordr chord-grouping preview for fretted arrangements. Reports
   identified chord names and continuation/parent indices without changing
   existing generation behavior or song packs.
