@@ -4118,3 +4118,28 @@ def test_generate_phrases_keys_multi_note_chords_nest_end_to_end():
         ]
         for lower, higher in pairwise(identities):
             assert lower <= higher  # nosec B101 - pytest assertion
+
+
+def test_notes_for_level_keys_nesting_survives_an_octave_adjacent_interior_pair():
+    """#103/B8 regression (PR #126 review, round 2): a voicing wide enough
+    that an octave-adjacent pair lands on INTERIOR (non-outer) voice-add
+    slots used to break the #99 nesting guarantee -- pitch-sorting the kept
+    voices before the octave collapse made collision priority pitch order
+    instead of voice-add order, so a harder tier's newly-added lower voice
+    could win the collision and drop an upper voice an easier tier had
+    already exposed (neither a superset nor a subset). This is the
+    reviewer's own end-to-end repro, reduced to a direct _notes_for_level_
+    keys check."""
+    midis = [56, 57, 60, 67, 70, 72, 81]
+    notes = [{"t": 0.0, "s": m // 24, "f": m % 24} for m in midis]
+    groups = [{
+        "type": "chord", "notes": notes, "chord": None,
+        "time": 0.0, "cost": 0.5, "value": 0.0,
+        "retention_score": 0.5, "level": 0,
+    }]
+    tiers = []
+    for level in range(5):
+        reduced, _ = routes._notes_for_level_keys(groups, level, max_level=4)
+        tiers.append({routes._note_midi_keys(n) for n in reduced})
+    for lower, higher in pairwise(tiers):
+        assert lower <= higher  # nosec B101 - real superset nesting, no dropped-then-reappeared voice

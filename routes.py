@@ -2285,19 +2285,36 @@ def _notes_for_level_keys(groups, level, max_level):
                     len(outer),
                     min(len(priority) - 1, round(len(priority) * (level + 1) / max_level)),
                 )
-            # Output stays pitch-ordered regardless of the voice-add order
-            # used to pick `keep_n` of them -- `priority` only determines
-            # WHICH notes survive, never their presentation order.
-            keep = sorted(priority[:keep_n], key=_note_midi_keys)
+            # #99/#103/B8 (PR #126 review, round 2): collapse octave
+            # duplicates in VOICE-ADD order (priority[:keep_n]), not
+            # pitch-sorted order -- `_collapse_octave_duplicates` is a
+            # greedy left-to-right pass that keeps whichever note it sees
+            # FIRST in a collision, so sorting by pitch before collapsing
+            # makes collision priority pitch order instead of add order.
+            # When a newly-added interior voice at a HIGHER tier is an
+            # octave below one an easier tier already exposed, the sorted
+            # collapse can keep the new low voice and drop the exposed
+            # high one -- neither a superset nor a subset of the easier
+            # tier, breaking the #99 nesting guarantee this whole function
+            # exists to provide (measured: 11/2310 adjacent-tier pairs
+            # violated nesting on a random voicing sweep; reproduced
+            # end-to-end through generate_phrases_for_arrangement).
+            # `priority[:keep_n]` is a prefix of one FIXED order, so
+            # collapsing over it directly is prefix-stable by construction:
+            # a newly added voice is either kept (a real superset) or
+            # dropped as an octave duplicate of a voice already exposed at
+            # every earlier tier -- never the other way around. Sort for
+            # presentation only, after the collapse decides survivors.
             seen = set()
             deduped = []
-            for n in keep:
+            for n in priority[:keep_n]:
                 if id(n) not in seen:
                     seen.add(id(n))
                     deduped.append(n)
             ns = deduped
             if len(ns) > 1:
                 ns = _collapse_octave_duplicates(ns, preferred=outer)
+            ns = sorted(ns, key=_note_midi_keys)
         for n in ns:
             merged = dict(n)
             if is_explicit_chord or merged.get("t") is None:

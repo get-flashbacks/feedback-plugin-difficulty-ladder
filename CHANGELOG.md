@@ -19,9 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   voice-add order (outer first, then alternately inward) guarantees each
   tier's kept notes are a superset of the tier below (octave-duplicate
   collapsing can make two adjacent tiers byte-identical, so not always a
-  strict superset), and beat/turning coefficients are scaled to keys'
-  own, much narrower `cost` range rather than reused verbatim from the
-  fretted path.
+  strict superset) — the collapse itself runs in that same voice-add
+  order rather than pitch-sorted order, so a harder tier's newly-added
+  voice can never win an octave collision against, and drop, a voice an
+  easier tier already exposed — and beat/turning coefficients are scaled
+  to keys' own, much narrower `cost` range rather than reused verbatim
+  from the fretted path.
 - Key- and chord-aware note retention: estimate each phrase's key
   (Krumhansl-Schmuckler correlation against the 24 major/minor rotations
   of the Krumhansl & Kessler 1982 profiles, from a duration-weighted

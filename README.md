@@ -220,9 +220,16 @@ contract.
   `_beat_value`) and melody-turning-point retention (#103/B5) the fretted
   path already had — the keys path needs none of the fretted version's
   tuning/string pitch-approximation, since a keys note already carries a
-  real MIDI pitch (`_note_midi_keys`). Phrase-boundary retention (#103/B3)
-  already applied to keys automatically, since it's computed on shared
-  `phrase_groups` code outside the fretted/keys branch. Separately,
+  real MIDI pitch (`_note_midi_keys`). The two terms use keys-SPECIFIC
+  coefficients (`_KEYS_BEAT_VALUE_COEF`/`_KEYS_MELODY_TURNING_BONUS`,
+  0.025 each), not the fretted path's 0.12/0.12 — keys' `cost` model has
+  a much narrower dynamic range for melodic content (measured spread
+  ~0.10 across an entire passage vs. the fretted path's typical 0.3-0.6),
+  so reusing the fretted weight verbatim would let one discount alone
+  outweigh the whole cost signal it's supposed to merely nudge. Phrase-
+  boundary retention (#103/B3) already applied to keys automatically,
+  since it's computed on shared `phrase_groups` code outside the
+  fretted/keys branch. Separately,
   `_notes_for_level_keys`'s chord-voicing reduction now grows by a smooth
   per-tier budget for chords wider than 3 notes — a fixed voice-add order
   (outer voices first, then alternating inward from both ends) is
@@ -235,7 +242,16 @@ contract.
   simplification declared in the code rather than left implicit. A 2-3
   note chord has no real room for a graded budget and keeps its
   pre-#103/B8 behavior exactly (outer only at the bottom tier, everything
-  above it).
+  above it). Octave-duplicate collapsing (`_collapse_octave_duplicates`)
+  runs in the fixed voice-ADD order, not pitch-sorted order — sorting by
+  pitch first would make collision priority pitch order instead of add
+  order, letting a harder tier's newly-added lower voice win an octave
+  collision and drop an upper voice an easier tier had already exposed,
+  which is neither a superset nor a subset and breaks the #99 nesting
+  guarantee this function exists to provide (caught in PR #126 review on
+  a 7-voice voicing with an octave-adjacent interior pair). Output is
+  still pitch-sorted for presentation, after the collapse decides which
+  voices survive.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
