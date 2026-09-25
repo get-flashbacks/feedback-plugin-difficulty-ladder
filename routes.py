@@ -31,6 +31,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, StrictBool
+import yaml
 
 import sloppak
 from dlc_paths import _resolve_dlc_path
@@ -2133,28 +2134,40 @@ def setup(app, context):
         if dlc_root is None:
             raise HTTPException(400, "no DLC library configured")
         pack_path = _resolve_pack(Path(dlc_root), body.filename.strip())
-        _, arr, skip_reason = _load_manifest_and_arrangement(
-            pack_path, body.arrangement_index
-        )
+        try:
+            _, arr, skip_reason = _load_manifest_and_arrangement(
+                pack_path, body.arrangement_index
+            )
+        except HTTPException:
+            raise
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "song manifest not found") from exc
+        except (UnicodeError, ValueError, yaml.YAMLError, zipfile.BadZipFile) as exc:
+            raise HTTPException(400, "malformed arrangement") from exc
         if skip_reason or not isinstance(arr, dict):
             raise HTTPException(400, skip_reason or "malformed arrangement")
         if _instrument_kind(arr.get("type", ""), arr.get("name", "")) != "fretted":
             raise HTTPException(400, "chord grouping requires a fretted arrangement")
+        chords = arr.get("chords", [])
+        tuning = arr.get("tuning", [])
+        templates = arr.get("templates") or arr.get("chordTemplates") or []
+        if not all(isinstance(value, list) for value in (chords, tuning, templates)):
+            raise HTTPException(400, "malformed arrangement")
         analyze = getattr(app.state, "chordr_analyze_chart_chords_v1", None)
         if not callable(analyze):
             raise HTTPException(503, "Chordr server analysis is not active")
-        chords = arr.get("chords", []) or []
-        tuning = arr.get("tuning", []) or []
         analysis_context = {
             "tuning": tuning,
             "capo": arr.get("capo", 0) or 0,
             "stringCount": len(tuning) or 6,
-            "isBass": "bass" in f"{arr.get('type') or ''} {arr.get('name') or ''}".lower(),
+            "isBass": bool(re.search(
+                r"\bbass\b", f"{arr.get('type') or ''} {arr.get('name') or ''}", re.IGNORECASE
+            )),
         }
         try:
             analysis = analyze(
                 chords, context=analysis_context,
-                templates=arr.get("templates") or arr.get("chordTemplates") or [],
+                templates=templates,
             )
         except Exception as exc:
             log.exception("difficulty_ladder: Chordr analysis failed for %s", pack_path.name)
