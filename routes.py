@@ -1898,10 +1898,22 @@ def _staged_chord_drop_ids(phrase_groups, chord_templates):
     of the bottom tier entirely, the opposite of this stage's purpose
     (caught in PR #127 review, with a 6-in-2592 synthetic-fixture repro).
     Restricting the scan to groups already competing for a level-0 slot
-    makes an empty bottom tier for an identity structurally unreachable."""
+    makes an empty bottom tier for an identity structurally unreachable
+    -- PROVIDED the landmark/resolution role only ever goes to a group
+    that actually contributes notes: a `notes: []` chord group (reachable
+    from a GP import whose chord id is out of range or whose template is
+    fully muted, per `lib/song.py`'s importer) scores a `_chord_group_
+    max_sustain` of `0.0`, which can win a landmark tie (`>` favors the
+    earliest occurrence) or the resolution slot while emitting nothing in
+    `_notes_for_level` -- silently holding an identity's "kept" spot while
+    contributing nothing, which is indistinguishable from the identity
+    being empty (caught in PR #127 review, round 2). Excluded from
+    candidacy below; dropping such a group is a no-op regardless, so
+    excluding it from candidacy costs nothing."""
     bottom_tier_groups = [g for g in phrase_groups if g.get("level") == 0]
+    note_bearing_candidates = [g for g in bottom_tier_groups if g.get("notes")]
     best_by_identity = {}
-    for g in bottom_tier_groups:
+    for g in note_bearing_candidates:
         identity = _resolvable_chord_identity(g, chord_templates)
         if identity is None:
             continue
@@ -1911,7 +1923,7 @@ def _staged_chord_drop_ids(phrase_groups, chord_templates):
             best_by_identity[identity] = (g, sus)
     keep_ids = {id(g) for g, _sus in best_by_identity.values()}
     last_chord = None
-    for g in reversed(bottom_tier_groups):
+    for g in reversed(note_bearing_candidates):
         if g.get("type") == "chord":
             last_chord = g
             break

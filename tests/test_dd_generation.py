@@ -4111,15 +4111,62 @@ def test_staged_chord_drop_ids_only_considers_bottom_tier_occurrences():
     level 0 -- picking a landmark from a HIGHER-tier occurrence would drop
     the only level-0 occurrence of that identity with nothing to replace
     it there, emptying the identity out of the bottom tier entirely."""
-    g1 = _identified_chord_group(0.0, 0, sus=0.05)
+    # g3 is deliberately at a HIGHER tier than g1 (not level 0, like g2) --
+    # with both g2 and g3 out of contention, g1 is the identity's ONLY
+    # level-0 occurrence. A phrase-wide scan (the pre-fix implementation)
+    # would pick g2 as the landmark (longest overall sustain) and drop g1,
+    # emptying the bottom tier of this identity -- exactly the bug this
+    # test must catch. (An earlier version of this fixture put g3 at
+    # level 0 too, where it was protected as the phrase's last bottom-tier
+    # group either way, so the assertions passed under BOTH the buggy and
+    # fixed implementations and caught nothing -- verified in PR #127
+    # review by restoring the phrase-wide scan and confirming this test
+    # still passed with it. Moving g3 off level 0 is what makes the two
+    # implementations diverge.)
+    g1 = _identified_chord_group(0.0, 0, sus=0.05)  # the only level-0 occurrence
     g1["level"] = 0
     g2 = _identified_chord_group(1.0, 0, sus=0.5)  # longest sustain overall, but NOT at level 0
     g2["level"] = 1
     g3 = _identified_chord_group(2.0, 0, sus=0.05)
-    g3["level"] = 0
+    g3["level"] = 2
     drop_ids = routes._staged_chord_drop_ids([g1, g2, g3], _STAGED_TEMPLATES)
-    # g2 must never be considered (it's not competing for a level-0 slot),
-    # and the bottom tier must keep at least one occurrence -- g3, as the
-    # phrase's last bottom-tier chord group (protected as a resolution).
+    # g2 and g3 must never be considered (neither is competing for a
+    # level-0 slot), and the bottom tier must keep g1 -- its only
+    # level-0 occurrence of this identity.
     assert id(g2) not in drop_ids  # nosec B101 - never a candidate: not level 0
-    assert id(g3) not in drop_ids  # nosec B101 - protected as the last level-0 chord group
+    assert id(g3) not in drop_ids  # nosec B101 - never a candidate: not level 0
+    assert id(g1) not in drop_ids  # nosec B101 - the only level-0 occurrence survives
+
+
+def test_staged_chord_drop_ids_never_lets_a_notes_empty_group_win_the_landmark():
+    """#103/B10 regression (PR #127 review, round 2): a chord group whose
+    `notes` list is empty (reachable from a GP import whose chord id is
+    out of range or whose template is fully muted -- lib/song.py's
+    importer) scores 0.0 sustain, which could win a landmark tie (the
+    comparison is a strict `>`, favoring the earliest occurrence) or the
+    resolution slot while emitting nothing in _notes_for_level -- silently
+    holding an identity's "kept" spot while contributing nothing, which is
+    indistinguishable from the identity being dropped entirely."""
+    # Both occurrences score max-sustain 0.0 (a struck chord with no held
+    # duration is ordinary, not just the empty one) -- a genuine tie, which
+    # the strict `>` comparison resolves in favor of whichever is processed
+    # first. `empty` comes first in the input list, so under the pre-fix
+    # code (no notes-bearing filter) it would win the tie and become the
+    # landmark, silently holding the identity's kept slot while
+    # contributing nothing to the tier.
+    # A trailing, differently-identified chord ("C") is required so the
+    # phrase's "last chord group" resolution protection doesn't
+    # accidentally save `real` on its own merits -- without it, `real`
+    # would always survive as the protected final group regardless of
+    # whether the landmark tie is resolved correctly, masking the bug.
+    empty = _identified_chord_group(0.0, 0, sus=0.0)
+    empty["notes"] = []
+    empty["chord"]["notes"] = []
+    real = _identified_chord_group(1.0, 0, sus=0.0)
+    trailing = _identified_chord_group(2.0, 1, sus=0.1)  # id=1 -> "C", the protected resolution
+    empty["level"] = 0
+    real["level"] = 0
+    trailing["level"] = 0
+    drop_ids = routes._staged_chord_drop_ids([empty, real, trailing], _STAGED_TEMPLATES)
+    assert id(real) not in drop_ids  # nosec B101 - the note-bearing occurrence must survive
+    assert id(trailing) not in drop_ids  # nosec B101 - protected as the phrase's last chord group
