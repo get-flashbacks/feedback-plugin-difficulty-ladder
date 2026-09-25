@@ -306,6 +306,84 @@ def _tech_score(n):
     return min(1.0, score)
 
 
+# Category names mirror _tech_score's own groupings, so a note's set of
+# active categories is exactly the set of terms that contributed to its
+# _tech_score. ho/po (hammer-on/pull-off) share one category, as do
+# sl/slu (slide/slide-up) -- _tech_score itself scores each of those pairs
+# identically and doesn't distinguish them, so treating them as one
+# category avoids reporting a coordination hit that _tech_score doesn't
+# actually recognize as two different techniques.
+# Single wire-flag -> category name. ho/po and sl/slu aren't here: each
+# pair maps to one category from either of two flags (an "or", not a
+# lookup on one key), so they stay as explicit checks below.
+_TECHNIQUE_FLAG_CATEGORIES = {
+    "bn": "bend", "tp": "tap", "tr": "trem", "hm": "harm_nat",
+    "hp": "harm_pinch", "plk": "pluck", "slp": "slap", "pm": "palm_mute",
+    "mt": "string_mute", "vb": "vibrato", "fhm": "fret_mute",
+}
+
+
+def _technique_categories(n):
+    """The set of distinct technique categories active on note `n` (see
+    _tech_score) -- used by _technique_coordination_bonus (#72/B4) to score
+    coordination demand separately from _tech_score's own max-single-note
+    difficulty. Bend intent/curve (bt/bnv) refine the 'bend' category's
+    _tech_score weight but don't add a category of their own -- they can't
+    occur without `bn`, so they'd never contribute a category _tech_score
+    doesn't already count."""
+    cats = {cat for flag, cat in _TECHNIQUE_FLAG_CATEGORIES.items() if n.get(flag)}
+    if n.get("ho") or n.get("po"):
+        cats.add("hopo")
+    if n.get("sl", -1) >= 0 or n.get("slu", -1) >= 0:
+        cats.add("slide")
+    return cats
+
+
+# Per extra simultaneous technique category beyond the hardest one already
+# counted by _tech_score's max, and per switch to a different technique set
+# than the immediately preceding group. Heuristic weights (not measured
+# against real players), capped low relative to _tech_score's own 0-1 range
+# so a single very hard technique (_tech_score's max term) still dominates
+# over coordination alone -- coordination compounds an existing demand, it
+# doesn't replace judging which demand is hardest.
+_COORD_PER_EXTRA_CATEGORY = 0.08
+_COORD_SWITCH_BONUS = 0.06
+_COORD_MAX_BONUS = 0.20
+
+
+def _technique_coordination_bonus(group_categories, prev_categories):
+    """Coordination-demand bonus on top of _tech_score's max-only term
+    (#72/B4): planning and linking movements is harder than any one of them
+    alone (motor-sequence literature; see #103's B4 entry), so a chord
+    mixing a bend, a palm mute and a slide should score above a lone bend,
+    and a passage that keeps switching technique between neighbouring
+    groups should score above one that repeats the same technique.
+
+    `group_categories` is this group's union of _technique_categories(n)
+    across its notes (simultaneous demand); `prev_categories` is the same
+    for the immediately preceding TECHNIQUE-BEARING group (sequential
+    demand) -- not necessarily the physically adjacent group -- or an empty
+    set if there is none yet. The caller (_score_groups) only updates its
+    carried `prev_categories` when a group actually uses a technique, so a
+    plain-picked or defensively-empty group in between doesn't count as
+    "the group before": [bend] -> [plain] -> [palm_mute] still registers as
+    a switch (the player changed technique since the last time one was
+    active), while comparing against literally-adjacent-only would miss
+    that switch whenever anything plain sits between the two technique
+    passages. Returns 0.0 whenever a group uses at most one technique and
+    doesn't change it from the last technique-bearing group -- the common
+    case -- so single-technique passages are unaffected."""
+    if not group_categories:
+        return 0.0
+    simultaneous = max(0, len(group_categories) - 1) * _COORD_PER_EXTRA_CATEGORY
+    switched = (
+        _COORD_SWITCH_BONUS
+        if prev_categories and group_categories != prev_categories
+        else 0.0
+    )
+    return min(_COORD_MAX_BONUS, simultaneous + switched)
+
+
 def _cluster_covered_by_hand_shape(cluster, hand_shapes):
     """True when an authored `HandShape` window (wire keys `start_time`/
     `end_time`) covers every note's onset in `cluster` — the chart's own
@@ -619,6 +697,7 @@ def _sequential_density(times_sorted, gi, tempo):
 def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
     tempo = tempo or _TempoParams()
     times_sorted = [float(g["time"]) for g in groups]
+    prev_categories = set()
     for gi, g in enumerate(groups):
         ns = g["notes"]
         if not ns:
@@ -636,7 +715,24 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
             + 0.25 * string_shape
             + 0.15 * _posture_score(ns)
         )
-        technique = max(_tech_score(n) for n in ns)
+        group_categories = set().union(*(_technique_categories(n) for n in ns))
+        # Deliberately NOT re-clamped to 1.0 here: _tech_score already clamps
+        # each note to [0,1] on its own (routes.py's _tech_score), so a
+        # single note stacking techniques (e.g. tap + a round-trip bend)
+        # routinely saturates max(_tech_score) at exactly 1.0 -- clamping
+        # `technique` again would silently swallow the coordination bonus in
+        # exactly the peak-demand regime #72/B4 exists to score (a real bug
+        # caught in PR #120 review: a chord mixing a palm mute into an
+        # already-saturated tapped-bend scored identically to the tapped-bend
+        # alone). `cost` (which this feeds) is already documented as
+        # deliberately unclamped below; only `retention_score`, the value
+        # that actually drives tiering, gets re-clamped to [0,1] there.
+        technique = (
+            max(_tech_score(n) for n in ns)
+            + _technique_coordination_bonus(group_categories, prev_categories)
+        )
+        if group_categories:
+            prev_categories = group_categories
         raw_density = _sequential_density(times_sorted, gi, tempo)
         syncopation = _syncopation_score(g["time"], beat_times, tempo.beat_interval)
         density = min(1.0, (1.0 - _SYNCOPATION_DENSITY_WEIGHT) * raw_density

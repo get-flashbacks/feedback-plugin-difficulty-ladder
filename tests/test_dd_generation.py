@@ -372,6 +372,116 @@ def test_low_position_wide_shape_has_extra_posture_cost():
     assert abs(group[0]["cost"] - without_posture[0]["cost"] - expected_bonus) < 1e-12  # nosec B101
 
 
+def test_technique_coordination_bonus_scores_simultaneous_techniques():
+    """#72/B4: a chord mixing two different single-note techniques scores
+    above the harder of the two alone, even though _tech_score's own
+    max-only term is unchanged (it already reports the same 0.4 for a lone
+    bend either way -- the coordination bonus is the only thing that can
+    tell the two chords apart)."""
+    assert routes._technique_coordination_bonus(set(), set()) == 0.0  # nosec B101
+    assert routes._technique_coordination_bonus({"bend"}, set()) == 0.0  # nosec B101
+    two_techniques = routes._technique_coordination_bonus({"bend", "palm_mute"}, set())
+    assert two_techniques == pytest.approx(routes._COORD_PER_EXTRA_CATEGORY)  # nosec B101
+    assert two_techniques > 0.0  # nosec B101
+
+
+def test_technique_coordination_bonus_scores_a_switch_between_groups():
+    assert routes._technique_coordination_bonus({"bend"}, {"bend"}) == 0.0  # nosec B101
+    switched = routes._technique_coordination_bonus({"palm_mute"}, {"bend"})
+    assert switched == pytest.approx(routes._COORD_SWITCH_BONUS)  # nosec B101
+    # No previous group (start of the phrase) is not a "switch" -- there is
+    # nothing to switch away from.
+    assert routes._technique_coordination_bonus({"bend"}, set()) == 0.0  # nosec B101
+
+
+def test_technique_coordination_bonus_is_capped():
+    many_categories = {"bend", "hopo", "tap", "slide", "trem", "harm_nat"}
+    capped = routes._technique_coordination_bonus(many_categories, {"vibrato"})
+    assert capped == routes._COORD_MAX_BONUS  # nosec B101
+
+
+def test_chord_with_two_different_techniques_scores_above_either_alone():
+    """End-to-end through _score_groups: max(_tech_score) alone can't
+    distinguish a chord using two different techniques from a chord using
+    only the harder of the two -- the coordination bonus is what makes the
+    two-technique chord cost more."""
+    single = [{"time": 0.0, "notes": [
+        {"s": 0, "f": 5, "bn": 1.0, "sus": 0}, {"s": 1, "f": 5, "sus": 0},
+    ]}]
+    mixed = [{"time": 0.0, "notes": [
+        {"s": 0, "f": 5, "bn": 1.0, "sus": 0}, {"s": 1, "f": 5, "pm": True, "sus": 0},
+    ]}]
+    routes._score_groups(single, n_strings=6)
+    routes._score_groups(mixed, n_strings=6)
+    expected_bonus = 0.30 * routes._COORD_PER_EXTRA_CATEGORY
+    assert abs(mixed[0]["cost"] - single[0]["cost"] - expected_bonus) < 1e-12  # nosec B101
+
+
+def test_coordination_bonus_survives_an_already_saturated_technique():
+    """Regression for a real bug caught in PR #120 review: _tech_score
+    clamps each note to [0, 1] on its own, so max(_tech_score(n) for n in
+    ns) routinely saturates at exactly 1.0 the moment a single note stacks
+    enough techniques (e.g. tap + a round-trip bend, as here). Re-clamping
+    `technique` to 1.0 on top of that silently swallows the coordination
+    bonus in exactly the peak-demand regime #72/B4 exists to score -- a
+    chord mixing a palm mute into an already-saturated tapped-bend must
+    still cost more than the tapped-bend alone."""
+    saturated_note = {"s": 0, "f": 5, "tp": True, "bn": 1.0, "bt": 3, "sus": 0}
+    assert routes._tech_score(saturated_note) == 1.0  # nosec B101 - pytest assertion
+
+    alone = [{"time": 0.0, "notes": [saturated_note, {"s": 1, "f": 5, "sus": 0}]}]
+    with_extra_technique = [{"time": 0.0, "notes": [
+        saturated_note, {"s": 1, "f": 5, "pm": True, "sus": 0},
+    ]}]
+    routes._score_groups(alone, n_strings=6)
+    routes._score_groups(with_extra_technique, n_strings=6)
+    assert with_extra_technique[0]["cost"] > alone[0]["cost"]  # nosec B101 - pytest assertion
+    expected_bonus = 0.30 * routes._COORD_PER_EXTRA_CATEGORY
+    assert abs(  # nosec B101 - pytest assertion
+        with_extra_technique[0]["cost"] - alone[0]["cost"] - expected_bonus
+    ) < 1e-12
+
+
+def test_technique_switch_bonus_survives_a_defensive_empty_group():
+    """_score_groups's `if not ns: continue` guard (a malformed zero-note
+    chord -- _group_notes never produces one from real chart data, but the
+    guard exists) must not reset the sequential coordination state: the
+    switch bonus between a real technique-bearing group and the next has to
+    fire the same whether or not a defensive empty group sits between them.
+    Isolate the technique term from density by patching it and syncopation
+    to a constant, since _sequential_density counts onsets including the
+    empty group's own timestamp and would otherwise confound the
+    comparison."""
+    def _string_mute_then(third_notes, with_gap):
+        groups = [{"time": 0.0, "notes": [{"s": 0, "f": 5, "mt": True, "sus": 0}]}]
+        if with_gap:
+            groups.append({"time": 0.5, "notes": []})
+        groups.append({"time": 1.0, "notes": third_notes})
+        return groups
+
+    # string_mute (mt) and palm_mute (pm) share the same 0.15 _tech_score
+    # weight, so switching between them isolates the coordination bonus from
+    # any difference in the two techniques' own base difficulty.
+    switch_notes = [{"s": 0, "f": 5, "pm": True, "sus": 0}]
+    same_notes = [{"s": 0, "f": 5, "mt": True, "sus": 0}]
+    with patch.object(routes, "_sequential_density", return_value=0.0), \
+         patch.object(routes, "_syncopation_score", return_value=0.0):
+        with_gap = _string_mute_then(switch_notes, with_gap=True)
+        without_gap = _string_mute_then(switch_notes, with_gap=False)
+        no_switch_with_gap = _string_mute_then(same_notes, with_gap=True)
+        routes._score_groups(with_gap, n_strings=6)
+        routes._score_groups(without_gap, n_strings=6)
+        routes._score_groups(no_switch_with_gap, n_strings=6)
+
+    # The empty group is a no-op for switch detection: the trailing
+    # palm-mute group costs the same whether or not it sits between it and
+    # the string-mute group.
+    assert with_gap[-1]["cost"] == without_gap[-1]["cost"]  # nosec B101 - pytest assertion
+    # And the switch bonus is genuinely contributing: repeating the same
+    # technique across the same gap costs less than switching across it.
+    assert with_gap[-1]["cost"] > no_switch_with_gap[-1]["cost"]  # nosec B101 - pytest assertion
+
+
 def test_lower_tier_refinement_does_not_insert_a_needless_bridge_for_an_open_anchor():
     groups = [
         {"time": 0.0, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
@@ -799,6 +909,7 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
     tempo = tempo or routes._TempoParams()
     legacy = deepcopy(groups)
     times_sorted = [float(g["time"]) for g in legacy]
+    prev_categories = set()
     for gi, group in enumerate(legacy):
         notes = group["notes"]
         if not notes:
@@ -823,7 +934,17 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
             + 0.25 * string_shape
             + 0.15 * posture
         )
-        technique = max(routes._tech_score(n) for n in notes)
+        group_categories = set().union(*(routes._technique_categories(n) for n in notes))
+        # Not re-clamped to 1.0, matching _score_groups -- see its inline
+        # comment on why re-clamping here would swallow the coordination
+        # bonus whenever the hardest note's own _tech_score already
+        # saturates at 1.0.
+        technique = (
+            max(routes._tech_score(n) for n in notes)
+            + routes._technique_coordination_bonus(group_categories, prev_categories)
+        )
+        if group_categories:
+            prev_categories = group_categories
         raw_density = routes._sequential_density(times_sorted, gi, tempo)
         syncopation = routes._syncopation_score(
             group["time"], beat_times, tempo.beat_interval,
