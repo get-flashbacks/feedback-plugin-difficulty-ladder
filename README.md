@@ -63,6 +63,14 @@ contract.
   fretted note where that sounds the same pitch (frets 12, 19, 24). Chords
   reduce toward their bass note (the lowest string; string 0 is the lowest),
   which in standard open and barre shapes is usually the root.
+- **Fretting movement is time-aware.** The generator applies a bounded
+  `log2(distance / width + 1)` shift cost, discounted by the time between
+  onsets, and adds a modest posture cost for wide shapes low on the neck.
+  The two-fret target width, time scale and weights are heuristics, not
+  measured player thresholds. Bar/phrase join priority is implemented in
+  the path-refinement helper but that helper remains disabled in normal
+  generation until arrangement-wide refinement can preserve the shared
+  tier scale.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
@@ -73,7 +81,7 @@ contract.
 
 | Instrument | Supported? | Notes |
 |---|---|---|
-| Guitar / bass (fretted) | ✅ | Fret complexity, span, string-skip/hand-shape distance, tempo/syncopation-aware density, sustain-ease. Technique scoring covers bend (base + pre-bend/round-trip/shaped-curve difficulty, `bt`/`bnv`), slide, hammer-on/pull-off, tremolo, natural vs. pinch harmonic (scored independently), palm/string mute, vibrato, fret-hand mute, and bass slap/pop (scored independently, slap weighted harder). Timing thresholds (grouping window, beat tolerance, fret-jump window) scale with the song's own tempo instead of fixed wall-clock constants. |
+| Guitar / bass (fretted) | ✅ | Fret complexity, low-position stretch posture, time-aware hand shifts, string-skip/hand-shape distance, tempo/syncopation-aware density, sustain-ease. Technique scoring covers bend (base + pre-bend/round-trip/shaped-curve difficulty, `bt`/`bnv`), slide, hammer-on/pull-off, tremolo, natural vs. pinch harmonic (scored independently), palm/string mute, vibrato, fret-hand mute, and bass slap/pop (scored independently, slap weighted harder). Timing thresholds (grouping window, beat tolerance, movement time scale) scale with the song's own tempo instead of fixed wall-clock constants. |
 | Keys / piano | ✅ | Separate pitch-based heuristic (polyphony, hand-span, density, sustain-ease) — keys notes encode `midi = string*24 + fret`, so the fretted heuristic doesn't apply and never runs against them. No fret anchors/hand-shapes generated (the piano renderer doesn't consume them). |
 | Drums | ❌ | Drum parts are a `drum_tab.json` pointer, not a `notes`/`chords` file — outside this generator's data model entirely. Detected and skipped cleanly (`unsupported-instrument-drums`), never mis-scored. |
 | Anything else (vocals, harmony, notation-only, …) | ❌ | An arrangement whose `type` is a specific, non-empty value this generator doesn't recognize is rejected explicitly (`unsupported-instrument-type`) rather than silently treated as fretted. |
