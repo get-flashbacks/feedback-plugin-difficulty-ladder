@@ -109,6 +109,28 @@ def _instrument_kind(arr_type: str, arr_name: str) -> str:
     return "unsupported"
 
 
+def _is_bass_arrangement(arr_type: str, arr_name: str) -> bool:
+    """Mirrors lib/song.py's `arrangement_is_bass()`: an editor-authored
+    `type == "bass"` (exact match) first, then a case-insensitive "bass"
+    substring in the name (so "Bassline" counts, unlike a `\\bbass\\b`
+    word-boundary match). `path_bass` -- core's third, most-authoritative
+    signal -- isn't part of the wire dict this generator reads and so has
+    no equivalent here; the other two are the ones available to a chart
+    without that XML-only flag anyway. Callers should pass the EFFECTIVE
+    type/name (after any manifest entry override), not necessarily the
+    embedded arrangement's own. A manifest entry's `name`/`type` is
+    unschema'd YAML, so either can be a non-string (a list, a number,
+    ...) -- str()'d first, same as lib/sloppak.py's load_song() coerces
+    a truthy manifest override (`arr.type = str(entry["type"])...`),
+    so a malformed manifest value degrades to a stringified comparison
+    instead of raising AttributeError on a bare `.strip()`/`.lower()`."""
+    type_str = str(arr_type) if arr_type else ""
+    name_str = str(arr_name) if arr_name else ""
+    if type_str.strip().lower() == "bass":
+        return True
+    return "bass" in name_str.lower()
+
+
 # ── Tempo-relative constants ─────────────────────────────────────────────────
 #
 # A wall-clock constant (150ms, 0.06s, 1.0s, 2.0s) behaves completely
@@ -880,9 +902,99 @@ def _sequential_density(times_sorted, gi, tempo):
     return min(1.0, (hi - lo) / _DENSITY_SATURATION_ONSETS)
 
 
-def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
+# #103/B5 (Dowling, 1978): beginners remember a melody's rising-and-falling
+# shape before its exact intervals, so thinning a single-note line can erase
+# that shape even when none of its individual notes are otherwise "hard" by
+# the cost model below. This nudges each local high or low note in a
+# single-note passage to survive thinning a little longer, the same weight
+# a downbeat gets from `value` (see _beat_value). Chord/cluster groups
+# (`len(notes) != 1`) never participate — chord-heavy passages are
+# unaffected by construction, not by a special case.
+_MELODY_TURNING_POINT_RETENTION_BONUS = 0.12
+
+# Approximate semitone offsets for a standard tuning, low string to high,
+# keyed by string count. This ranks pitch DIRECTION (rising vs falling) for
+# melody-shape retention -- not an exact pitch. It ignores capo and treats
+# every string as standard-interval-spaced, which is wrong for drop/altered
+# tunings and any non-standard interval between two particular strings, but
+# a wrong interval size still preserves note-to-note direction almost
+# always (a fret difference big enough to flip apparent direction across a
+# wrongly-sized interval is the rare case), which is all a turning point
+# needs. The arrangement's own per-string `tuning` offsets (already
+# available at every call site) are added on top where given.
+#
+# Only the 5-string row is instrument-dependent, matching feedBack core's
+# own `base_open_string_midis(string_count, is_bass)` contract (lib/song.py):
+# a 5-string BASS is all perfect fourths (B-E-A-D-G -> 0,5,10,15,20), while
+# a 5-string NON-bass (a guitar voicing) borrows the low strings of the
+# 6-string base instead -- so its top interval is 19, same as 6-string
+# guitar's own major-third B-string, not 20. (4-string is instrument-
+# independent: both the bass base and the borrowed 6-string prefix give
+# the same (0,5,10,15) shape, since the major third only appears between
+# strings 5 and 6.) Getting the 5-string case wrong isn't just imprecise
+# the way a wrong interval size usually is (see above): a 1-semitone error
+# here can turn a genuine turning point into an exact tie, which the
+# strict `>`/`<` comparison below then rejects outright, rather than just
+# misjudging its size.
+_STANDARD_STRING_INTERVALS = {
+    4: (0, 5, 10, 15),
+    6: (0, 5, 10, 15, 19, 24),
+    7: (-5, 0, 5, 10, 15, 19, 24),
+    8: (-10, -5, 0, 5, 10, 15, 19, 24),
+}
+_STANDARD_STRING_INTERVALS_5_BASS = (0, 5, 10, 15, 20)
+_STANDARD_STRING_INTERVALS_5_GUITAR = (0, 5, 10, 15, 19)
+
+
+def _string_intervals(n_strings, is_bass):
+    if n_strings == 5:
+        return _STANDARD_STRING_INTERVALS_5_BASS if is_bass else _STANDARD_STRING_INTERVALS_5_GUITAR
+    return _STANDARD_STRING_INTERVALS.get(n_strings, _STANDARD_STRING_INTERVALS[6])
+
+
+def _approx_pitch(note, tuning, n_strings, is_bass):
+    s = int(note.get("s", 0))
+    f = int(note.get("f", 0))
+    intervals = _string_intervals(n_strings, is_bass)
+    base = intervals[s] if 0 <= s < len(intervals) else s * 5
+    offset = int(tuning[s]) if 0 <= s < len(tuning) else 0
+    return base + offset + f
+
+
+def _melody_turning_points(groups, tuning, n_strings, tempo, is_bass=False):
+    """Return the set of group indices among single-note groups
+    (`len(notes) == 1`) that are a strict local high or low among the
+    OTHER single-note groups in the arrangement -- chords/clusters are
+    skipped when looking for neighbors, since they aren't part of the
+    single-note melodic line. A repeated pitch (equal to a neighbor) is
+    not a turning point: the contour hasn't changed direction there.
+
+    A candidate neighbor more than `tempo.fret_jump_window_seconds` away
+    (the same "long enough that this isn't one continuous passage"
+    threshold `_score_groups`'s fret-jump/string-jump bonuses already use)
+    doesn't count -- otherwise two single notes either side of an
+    intervening chord section, or either side of an unrelated authored
+    phrase, could sit next to each other in `singles` and look like a
+    contour turn that was never actually played that way."""
+    singles = [i for i, g in enumerate(groups) if len(g["notes"]) == 1]
+    pitches = {i: _approx_pitch(groups[i]["notes"][0], tuning, n_strings, is_bass) for i in singles}
+    times = {i: float(groups[i]["time"]) for i in singles}
+    max_gap = tempo.fret_jump_window_seconds
+    turning = set()
+    for k in range(1, len(singles) - 1):
+        i, prev_i, next_i = singles[k], singles[k - 1], singles[k + 1]
+        if times[i] - times[prev_i] > max_gap or times[next_i] - times[i] > max_gap:
+            continue
+        p, prev_p, next_p = pitches[i], pitches[prev_i], pitches[next_i]
+        if (p > prev_p and p > next_p) or (p < prev_p and p < next_p):
+            turning.add(i)
+    return turning
+
+
+def _score_groups(groups, n_strings, beat_times=(), *, tempo=None, tuning=(), is_bass=False):
     tempo = tempo or _TempoParams()
     times_sorted = [float(g["time"]) for g in groups]
+    turning_points = _melody_turning_points(groups, tuning, n_strings, tempo, is_bass)
     prev_categories = set()
     for gi, g in enumerate(groups):
         ns = g["notes"]
@@ -941,6 +1053,8 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None):
         # (value was strictly 0.0/1.0 then) to a graded value without
         # changing the binary case's result: 0.12*1.0 == 0.12, 0.12*0.0 == 0.0.
         retention_score = base_cost - 0.12 * value
+        if gi in turning_points:
+            retention_score -= _MELODY_TURNING_POINT_RETENTION_BONUS
         if gi:
             prev = _group_anchor_note(groups[gi - 1])
             cur = _group_anchor_note(g)
@@ -1954,7 +2068,8 @@ def _collapse_identical_levels(levels_out):
     return collapsed
 
 
-def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[float] | None = None):
+def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[float] | None = None,
+                                      is_bass: bool | None = None):
     """Build a phrase-level difficulty ladder for one arrangement's raw wire
     dict (as stored in a sloppak's arrangements/*.json).
 
@@ -1971,6 +2086,14 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     _phrase_mechanical_cost). The two are independent: `max_difficulty`
     answers "how much does this phrase get thinned across the ladder",
     `difficulty_cost` answers "how hard is this phrase to play at all" (#72/B1).
+
+    `is_bass`, when given, overrides the bass/non-bass name-sniff used to
+    pick the melody-shape pitch approximation's 5-string interval row
+    (#103/B5) -- pass the EFFECTIVE value (after any manifest entry
+    override; see _generate_one) when the caller has one. `None` (the
+    default) falls back to sniffing `arr`'s own type/name, matching
+    lib/sloppak.py's arrangement_is_bass() but over only the embedded
+    values -- correct for a caller with no manifest context.
     """
     kind = _instrument_kind(arr.get("type", ""), arr.get("name", ""))
     if kind == "drums":
@@ -2070,7 +2193,18 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             notes, chords, time_window_ms=tempo.time_window_ms,
             hand_shapes=hand_shapes, chord_templates=chord_templates,
         )
-        _score_groups(groups_all, n_strings, beat_times, tempo=tempo)
+        # is_bass, when the caller passed one (the EFFECTIVE value, after
+        # any manifest entry override -- see _generate_one), overrides the
+        # embedded-only fallback so the 5-string interval row (#103/B5,
+        # see _string_intervals) matches what core would actually resolve.
+        effective_is_bass = (
+            is_bass if is_bass is not None
+            else _is_bass_arrangement(arr.get("type", ""), arr.get("name", ""))
+        )
+        _score_groups(
+            groups_all, n_strings, beat_times, tempo=tempo, tuning=tuning,
+            is_bass=effective_is_bass,
+        )
         # A phrase-local ln check alone can't tell "the target was pruned
         # away" apart from "the target is simply in the next phrase" --
         # compute cross-phrase survivorship once up front (issue #68
@@ -2290,7 +2424,7 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
     # reads, so this is a clean, expected skip, not an error.
     entry_type = str(entry.get("type") or "").strip().lower()
     if entry_type in ("drums", "drum"):
-        return None, None, "unsupported-instrument-drums"
+        return None, None, None, "unsupported-instrument-drums"
 
     rel = str(entry.get("file", "")).strip()
     if not rel:
@@ -2304,7 +2438,17 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
     # stat the .jsonc suffix and read_text itself) doesn't apply here —
     # detect .jsonc by the manifest-declared relpath instead.
     arr = parse_jsonc(text) if rel.lower().endswith(".jsonc") else json.loads(text)
-    return rel, arr, None
+    # `arr` is returned exactly as read -- a read-only load, matching this
+    # function's pre-existing contract. `entry` is also returned so a
+    # caller can resolve the EFFECTIVE tuning (the manifest entry's own
+    # `tuning` overrides the embedded arrangement JSON's, mirroring
+    # lib/sloppak.py's load_song(): `if "tuning" in entry: arr.tuning =
+    # list(entry["tuning"])`) without that override leaking into whatever
+    # the caller does with `arr` next -- in particular, _generate_one
+    # writes `arr` straight back into the pack, and the override must
+    # never end up persisted into the arrangement file merely because a
+    # generation run happened to read it for scoring.
+    return rel, arr, entry, None
 
 
 def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log,
@@ -2315,7 +2459,7 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
     # the original zip before either writes, then race to os.replace() —
     # whichever finishes last silently discards the other's phrases.
     with _lock_for_pack(pack_path):
-        rel, arr, skip_reason = _load_manifest_and_arrangement(pack_path, arrangement_index)
+        rel, arr, entry, skip_reason = _load_manifest_and_arrangement(pack_path, arrangement_index)
         if skip_reason:
             instrument = "drums" if skip_reason == "unsupported-instrument-drums" else None
             response = {"ok": True, "skipped": skip_reason, "arrangement_index": arrangement_index}
@@ -2349,8 +2493,24 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
                 "arrangement_index": arrangement_index, "instrument": instrument,
             }
 
+        # Score against the EFFECTIVE tuning/name/type (manifest entry
+        # override, when present) on a shallow copy, so the override --
+        # read purely for scoring -- never ends up written back into the
+        # pack below via `arr["phrases"] = phrases`. The arrangement
+        # file's own fields are left exactly as authored. A malformed
+        # manifest `tuning` (not a list -- e.g. an int or null) is
+        # ignored rather than raising: `list(...)` on a non-list would
+        # otherwise surface as an uncaught 500 well past this route's
+        # normal error handling.
+        scoring_arr = arr
+        effective_tuning = entry.get("tuning") if entry else None
+        if isinstance(effective_tuning, list):
+            scoring_arr = dict(arr, tuning=list(effective_tuning))
+        effective_type = (entry.get("type") if entry else None) or arr.get("type", "")
+        effective_name = (entry.get("name") if entry else None) or arr.get("name", "")
+        is_bass = _is_bass_arrangement(effective_type, effective_name)
         phrases = generate_phrases_for_arrangement(
-            arr, n_levels=n_levels, section_times=section_times
+            scoring_arr, n_levels=n_levels, section_times=section_times, is_bass=is_bass,
         )
         if phrases is None:
             return {
@@ -2555,7 +2715,7 @@ def setup(app, context):
             raise HTTPException(400, "no DLC library configured")
         pack_path = _resolve_pack(Path(dlc_root), body.filename.strip())
         try:
-            _, arr, skip_reason = _load_manifest_and_arrangement(
+            _, arr, entry, skip_reason = _load_manifest_and_arrangement(
                 pack_path, body.arrangement_index
             )
         except HTTPException:
@@ -2569,20 +2729,42 @@ def setup(app, context):
         if _instrument_kind(arr.get("type", ""), arr.get("name", "")) != "fretted":
             raise HTTPException(400, "chord grouping requires a fretted arrangement")
         chords = arr.get("chords", [])
-        tuning = arr.get("tuning", [])
+        # Resolve the EFFECTIVE tuning (manifest entry override, when
+        # present) here too, same as generation -- this endpoint is
+        # read-only (never writes the pack), so applying it directly is
+        # safe; it just needs to match what playback actually resolves to.
+        # A malformed manifest `tuning` (not a list) falls through to the
+        # embedded value instead of raising -- the isinstance check below
+        # would otherwise never get a chance to catch it as a 400: a bare
+        # `list(entry["tuning"])` on a non-list raises TypeError, an
+        # uncaught 500, before that check ever runs.
+        manifest_tuning = entry.get("tuning") if entry else None
+        tuning = list(manifest_tuning) if isinstance(manifest_tuning, list) else arr.get("tuning", [])
         templates = arr.get("templates") or arr.get("chordTemplates") or []
         if not all(isinstance(value, list) for value in (chords, tuning, templates)):
             raise HTTPException(400, "malformed arrangement")
         analyze = getattr(app.state, "chordr_analyze_chart_chords_v1", None)
         if not callable(analyze):
             raise HTTPException(503, "Chordr server analysis is not active")
+        # Same EFFECTIVE name/type resolution as generation's is_bass
+        # (manifest entry first, embedded fallback) -- a manifest entry
+        # authored as a bass part must still select Chordr's bass
+        # base-string row even when the embedded arrangement's own
+        # type/name doesn't say so. Now uses _is_bass_arrangement (core's
+        # real substring semantics) for consistency with generation's
+        # is_bass, instead of this endpoint's previous narrower
+        # \bbass\b word-boundary match -- see the updated
+        # test_chord_preview_does_not_infer_bass_from_name_fragment for
+        # the resulting "Ambassador" behavior change (matches core, not
+        # a new bug: core's own arrangement_is_bass() has always used a
+        # bare substring, so this was already surprising there).
+        effective_type = (entry.get("type") if entry else None) or arr.get("type", "")
+        effective_name = (entry.get("name") if entry else None) or arr.get("name", "")
         analysis_context = {
             "tuning": tuning,
             "capo": arr.get("capo", 0) or 0,
             "stringCount": len(tuning) or 6,
-            "isBass": bool(re.search(
-                r"\bbass\b", f"{arr.get('type') or ''} {arr.get('name') or ''}", re.IGNORECASE
-            )),
+            "isBass": _is_bass_arrangement(effective_type, effective_name),
         }
         try:
             analysis = analyze(

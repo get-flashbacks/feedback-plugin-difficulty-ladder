@@ -136,6 +136,51 @@ contract.
   generated-window builders clamp their final window's end to the song's
   actual duration, so unlike an internal edge, that one really is the
   song's end.
+- **A single-note line's turning points get retention value (#103/B5).**
+  Beginners remember a melody's rising-and-falling shape before its exact
+  intervals (Dowling, 1978) — strong as a perception finding, though that
+  keeping the shape specifically aids learning is inferred, not tested
+  (moderate evidence). Each note that is a strict local high or low among
+  the arrangement's single-note groups, no further than
+  `tempo.fret_jump_window_seconds` from its nearest single-note neighbor
+  on either side, gets the same modest retention push a downbeat or phrase
+  boundary gets, so a thinned tier still traces the melody's contour
+  instead of collapsing to whichever notes happened to score hardest.
+  Chord and multi-note cluster groups never participate — chord-heavy
+  passages are unaffected by construction, not by a special case. Pitch
+  direction is approximated from string/fret using standard tuning
+  intervals, rather than an exact MIDI pitch, since only the rise/fall
+  *direction* between neighboring notes matters for finding a turning
+  point, not its precise size. Only the 5-string row is instrument-
+  dependent, matching feedBack core's own `base_open_string_midis`
+  contract: a 5-string bass is all perfect fourths, while a 5-string
+  non-bass borrows the 6-string guitar's low strings instead (one major
+  third higher up) — a name/type sniff for "bass" picks the right row,
+  mirroring `lib/song.py`'s `arrangement_is_bass()` (a case-insensitive
+  "bass" substring in the name, or an exact `type == "bass"`). The sniff
+  runs against the EFFECTIVE name/type — a manifest entry's own
+  `name`/`type`, when it declares one, takes precedence over the
+  embedded arrangement JSON's, same as `tuning` below — so a manifest
+  entry authored as a bass part still gets the bass row even when the
+  embedded arrangement's own name/type doesn't say so. The offset added
+  on top is the EFFECTIVE
+  tuning — a manifest entry's own `tuning`, when the pack's manifest
+  declares one (and is actually a list; a malformed override is ignored
+  rather than raising), takes precedence over the embedded arrangement
+  JSON's, mirroring `lib/sloppak.py`'s `load_song()`; this is resolved
+  for scoring only, on a copy, and is never written back into the arrangement
+  file. Two single-note groups that shouldn't be
+  compared at all — either side of an intervening chord section, or the
+  end of one authored phrase and the start of an unrelated one — are
+  excluded from each other's neighbor comparison when they're more than
+  `tempo.fret_jump_window_seconds` apart (the same tempo-relative "long
+  enough that this isn't one continuous passage" threshold the fret-jump
+  bonus already uses). This is a time-gap heuristic, not true phrase
+  awareness: two genuinely separate phrases close enough in time to fall
+  inside that window can still be compared as if they were one
+  continuous line. A real fix needs the same phrase/section boundaries
+  the generator's windowing already has threaded into this scan, which
+  is a larger change than this item's effort-S scope covers.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty

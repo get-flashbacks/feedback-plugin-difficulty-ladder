@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   this at the very start and very end of the song (both are genuine
   boundaries even when the windows aren't authored phrases), not at
   internal window edges (#105).
+- Give a modest retention push to each local pitch high or low in a
+  single-note line, no further than `tempo.fret_jump_window_seconds` from
+  its nearest single-note neighbor, so a thinned tier still traces the
+  melody's shape instead of just its hardest notes — and so a note at the
+  end of one phrase isn't compared against the start of an unrelated one
+  across an intervening chord section or long rest. Chord/cluster groups
+  never qualify, so chord-heavy passages are unaffected. A 5-string
+  arrangement's pitch approximation now distinguishes bass (all perfect
+  fourths) from non-bass (borrows the 6-string guitar's low strings,
+  matching feedBack core's own `base_open_string_midis` contract) via a
+  name/type sniff (#106).
 - Score technique coordination demand: a group using more than one distinct
   technique at once, or switching technique from the last technique-bearing
   group before it, now scores above `_tech_score`'s previous
@@ -47,6 +58,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Kept generated Keys tiers monotonic by preserving an easier tier's octave
   representative when harder tiers add octave-equivalent middle voices.
+- A manifest entry's own `tuning`, when a pack's manifest declares one,
+  now takes precedence over the embedded arrangement JSON's for scoring
+  (matching `lib/sloppak.py`'s `load_song()`), instead of always reading
+  the embedded value. Resolved on a copy for the generation run only —
+  never written back into the arrangement file, so authored data isn't
+  silently normalized to the manifest's value. The read-only
+  `analyze-chords` preview resolves the same effective tuning for its
+  Chordr context. A malformed manifest `tuning` (not a list) is now
+  ignored rather than crashing the request.
+- The melody-shape bass/non-bass sniff (#106) now resolves the
+  EFFECTIVE name/type (a manifest entry's own `name`/`type` override,
+  same precedence as `tuning`), not just the embedded arrangement's —
+  a manifest entry authored as a bass part over a differently-labeled
+  embedded arrangement was reading the wrong 5-string interval row. The
+  `analyze-chords` preview's own `isBass` Chordr-context field resolves
+  the same effective name/type, now also matching feedBack core's exact
+  bass-detection substring semantics (a bare case-insensitive "bass" in
+  the name, not a narrower word-boundary match) for consistency with
+  generation's own `is_bass`. A manifest entry's `name`/`type` is
+  unschema'd YAML and can be a non-string (a list, number, ...); the
+  shared bass classifier now coerces it with `str()` first (matching
+  `lib/sloppak.py`'s own coercion) instead of raising.
 
 ### Changed
 - Split generated-note mechanical cost from rhythmic retention value internally,

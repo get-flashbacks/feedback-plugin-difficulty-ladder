@@ -192,6 +192,153 @@ def test_downbeat_group_ranks_into_a_lower_tier_than_an_equally_hard_off_grid_gr
     assert groups[0]["level"] <= groups[1]["level"]  # nosec B101 - pytest assertion
 
 
+def test_melody_turning_points_identifies_local_highs_and_lows_only():
+    """#106/B5: a strict local high or low among the single-note sequence
+    is a turning point; a monotonic run and a repeated pitch are not."""
+    groups = [
+        {"time": 0.0, "notes": [{"s": 5, "f": 0, "sus": 0}]},   # rising ->
+        {"time": 0.5, "notes": [{"s": 5, "f": 2, "sus": 0}]},   # rising ->
+        {"time": 1.0, "notes": [{"s": 5, "f": 5, "sus": 0}]},   # local high (peak)
+        {"time": 1.5, "notes": [{"s": 5, "f": 2, "sus": 0}]},   # falling
+        {"time": 2.0, "notes": [{"s": 5, "f": 0, "sus": 0}]},   # local low (valley)
+        {"time": 2.5, "notes": [{"s": 5, "f": 3, "sus": 0}]},   # rising into a plateau
+        {"time": 3.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},   # repeated pitch, not a turn
+    ]
+    turning = routes._melody_turning_points(groups, tuning=(), n_strings=6, tempo=routes._TempoParams())
+    assert turning == {2, 4}  # nosec B101 - pytest assertion
+
+
+def test_melody_turning_points_does_not_cross_a_chord_section_between_phrases():
+    """A pullfrog-flagged bug: single-note groups either side of an
+    intervening chord section aren't musically adjacent, so an ascending
+    phrase's last note must not be scored as a local high just because
+    the next SINGLE-note group (skipping the chord in between) happens to
+    be lower -- that's the start of an unrelated phrase, not a turn
+    within this one."""
+    groups = [
+        _single(0.0, 0), _single(0.5, 3), _single(1.0, 6),  # phrase A: rising to f=6
+        {"time": 1.5, "notes": [  # an intervening chord section
+            {"s": 5, "f": 1, "sus": 0}, {"s": 4, "f": 1, "sus": 0},
+        ]},
+        _single(3.0, 0), _single(3.5, 3), _single(4.0, 6),  # phrase B: rising again, from f=0
+    ]
+    turning = routes._melody_turning_points(groups, tuning=(), n_strings=6, tempo=routes._TempoParams())
+    assert turning == set(), (  # nosec B101 - pytest assertion
+        "phrase A's last note (f=6) and phrase B's first note (f=0) are "
+        "both monotonic run endpoints, separated by a gap far larger than "
+        "tempo.fret_jump_window_seconds -- neither is a real turning point"
+    )
+
+
+def test_five_string_bass_uses_bass_intervals_not_guitar_intervals():
+    """A pullfrog-flagged bug: on a 5-string BASS, the row must be
+    bass-tuned (standard B-E-A-D-G, all perfect fourths ->
+    0,5,10,15,20), not the guitar row's one-major-third shape (…,19,24).
+    D-open (string 3, ->15) to G-open (string 4, ->20 bass / 19 guitar) to
+    F# (string 3 fret 4, ->19) is a genuine local high on the middle
+    note -- but the guitar-shaped table's 19/19 tie between the peak and
+    the next note made the strict `>` comparison reject it outright, not
+    just misjudge its size."""
+    groups = [
+        _single(0.0, 0, s=3),  # D open -> 15
+        _single(0.5, 0, s=4),  # G open -> 20 (bass) / 19 (guitar-shaped table)
+        _single(1.0, 4, s=3),  # F# -> 19
+    ]
+    turning = routes._melody_turning_points(
+        groups, tuning=(), n_strings=5, tempo=routes._TempoParams(), is_bass=True,
+    )
+    assert turning == {1}  # nosec B101 - pytest assertion
+
+
+def test_five_string_non_bass_uses_the_guitar_shaped_row():
+    """A pullfrog-flagged bug (round 2): feedBack core's own
+    `base_open_string_midis(5, is_bass)` explicitly supports a non-bass
+    5-string arrangement by borrowing the 6-string guitar's low strings
+    (…,15,19), not the bass shape (…,15,20). Applying the bass row
+    unconditionally to every 5-string chart -- `is_bass` defaults to
+    False, so this is exactly what a caller gets without opting in --
+    turns a real tie into a false turning point: string 3 fret 4 (F#) and
+    string 4 fret 0 (G) are BOTH 19 under the correct guitar-shaped row
+    (a genuine plateau, not a turn), but 19 and 20 under the wrongly-
+    applied bass row, which breaks the tie into a false local high."""
+    groups = [
+        _single(0.0, 4, s=3),  # F# -> 19 (both rows agree; string 3 is unaffected)
+        _single(0.5, 0, s=4),  # G open -> 19 (guitar-shaped, correct) / 20 (bass-shaped, wrong)
+        _single(1.0, 2, s=3),  # E -> 17 (both rows agree)
+    ]
+    turning = routes._melody_turning_points(groups, tuning=(), n_strings=5, tempo=routes._TempoParams())
+    assert turning == set(), (  # nosec B101 - pytest assertion
+        "a real tie (19, 19) under the guitar-shaped row must not become "
+        "a false turning point by wrongly applying the bass row"
+    )
+
+
+def _single(t, f, s=5):
+    """A single-note group fixture at time `t`, string `s` (default 5),
+    fret `f` -- the recurring shape the melody-turning-point tests build
+    sequences out of."""
+    return {"time": t, "notes": [{"s": s, "f": f, "sus": 0}]}
+
+
+def test_melody_turning_point_survives_thinning_over_an_equally_hard_neighbor():
+    """#106/B5 acceptance criterion: on a single-note fixture, a local high
+    or low note earns a lower retention_score than an equally hard note
+    that isn't one. group[1] (f=6, at t=0.5) is mechanically identical in
+    both fixtures -- same own fretting, same neighbor jump from group[0],
+    same onset times feeding density/syncopation -- so the only thing that
+    can move its retention_score is whether group[2]'s pitch makes it a
+    turning point (a peak, in `turn`) or not (a monotonic rise, in
+    `no_turn`)."""
+    turn = [
+        _single(0.0, 3),
+        _single(0.5, 6),  # local high -> turning point
+        _single(1.0, 3),
+    ]
+    no_turn = [
+        _single(0.0, 3),
+        _single(0.5, 6),  # monotonic rise -> not a turn
+        _single(1.0, 9),
+    ]
+    routes._score_groups(turn, n_strings=6)
+    routes._score_groups(no_turn, n_strings=6)
+    assert turn[1]["cost"] == no_turn[1]["cost"], (  # nosec B101 - pytest assertion
+        "group[1] must be mechanically identical in both fixtures; only "
+        "the turning-point retention nudge should tell them apart"
+    )
+    assert turn[1]["retention_score"] < no_turn[1]["retention_score"]  # nosec B101 - pytest assertion
+    assert (
+        no_turn[1]["retention_score"] - turn[1]["retention_score"]
+        == pytest.approx(routes._MELODY_TURNING_POINT_RETENTION_BONUS)
+    )  # nosec B101 - pytest assertion
+
+
+def test_melody_turning_point_bonus_never_applies_to_a_chord_or_cluster_group():
+    """#106/B5 acceptance criterion: chord-heavy passages are unaffected --
+    a group with more than one note never earns the turning-point bonus,
+    even at a time/pitch position that would otherwise be a local high in
+    a single-note line."""
+    single_note_peak = [
+        _single(0.0, 3),
+        _single(0.5, 6),  # a real turning point
+        _single(1.0, 3),
+    ]
+    chord_at_same_position = [
+        _single(0.0, 3),
+        {"time": 0.5, "notes": [  # same pitch, but a chord -- must not qualify
+            {"s": 5, "f": 6, "sus": 0}, {"s": 4, "f": 6, "sus": 0},
+        ]},
+        _single(1.0, 3),
+    ]
+    routes._score_groups(single_note_peak, n_strings=6)
+    routes._score_groups(chord_at_same_position, n_strings=6)
+    assert single_note_peak[1]["retention_score"] < chord_at_same_position[1]["retention_score"], (  # nosec B101
+        "the chord group's retention_score must not receive the "
+        "single-note turning-point discount"
+    )
+    turning = routes._melody_turning_points(chord_at_same_position, tuning=(), n_strings=6, tempo=routes._TempoParams())
+    assert 1 not in turning  # nosec B101 - pytest assertion, the chord group never qualifies
+
+
 def test_authored_phrase_keeps_its_first_and_last_group_at_the_bottom_tier():
     """#105 acceptance criterion: on an authored-phrase fixture, the lowest
     tier keeps the phrase's first and last group whenever the rest of the
@@ -641,7 +788,7 @@ def test_unsupported_drums_skip_preserves_instrument_classification():
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), patch.object(
         routes,
         "_load_manifest_and_arrangement",
-        return_value=(None, None, "unsupported-instrument-drums"),
+        return_value=(None, None, None, "unsupported-instrument-drums"),
     ):
         result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=None)
 
@@ -747,7 +894,7 @@ def test_generate_one_reports_unsupported_instrument_type_distinctly_from_drums(
     fake_arr = {"type": "vocals"}
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
          patch.object(routes, "_load_manifest_and_arrangement",
-                      return_value=("arrangements/vocals.json", fake_arr, None)):
+                      return_value=("arrangements/vocals.json", fake_arr, {}, None)):
         result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=None)
 
     assert result == {
@@ -1128,11 +1275,12 @@ def test_syncopation_score_zero_when_already_on_the_strongest_position():
     assert routes._syncopation_score(0, times_sorted, beat_times, tempo) == 0.0  # nosec B101
 
 
-def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
+def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None, tuning=()):
     """Independent oracle for the current fretted retention formula."""
     tempo = tempo or routes._TempoParams()
     legacy = deepcopy(groups)
     times_sorted = [float(g["time"]) for g in legacy]
+    turning_points = routes._melody_turning_points(legacy, tuning, n_strings, tempo)
     prev_categories = set()
     for gi, group in enumerate(legacy):
         notes = group["notes"]
@@ -1183,6 +1331,8 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None):
             + 0.15 * (1.0 - sustain_ease)
         )
         group["score"] -= 0.12 * routes._beat_value(group["time"], beat_times, tempo)
+        if gi in turning_points:
+            group["score"] -= routes._MELODY_TURNING_POINT_RETENTION_BONUS
         if gi:
             previous = routes._group_anchor_note(legacy[gi - 1])
             current = routes._group_anchor_note(group)
@@ -1366,10 +1516,14 @@ def test_movement_cost_generates_nested_ladder_fixture():
     # measure data) is both the first AND the last window, so both its
     # start (0.0) and its end (3.0, the song's actual end -- caught in PR
     # #123 review) get the boundary-retention bonus at the bottom tier.
+    # #103/B5: this is also a genuine single-note melodic line (fret 3-4-5
+    # repeating), so t=1.5 (fret 3, a local low between the fret-5 groups on
+    # either side of it) is a real turning point and earns the bottom tier
+    # too, alongside the two phrase boundaries.
     assert [(level["difficulty"], [n["t"] for n in level["notes"]])
             for level in phrases[0]["levels"]] == [
-        (0, [0.0, 3.0]),
-        (1, [0.0, 0.5, 1.5, 2.0, 3.0]),
+        (0, [0.0, 1.5, 3.0]),
+        (1, [0.0, 1.0, 1.5, 2.5, 3.0]),
         (2, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]),
     ]
 
@@ -1863,6 +2017,166 @@ def _write_pack(root, name, arrangements, song_timeline_sections=None):
     return pack_dir
 
 
+def test_load_manifest_and_arrangement_returns_the_raw_entry_alongside_the_arrangement(tmp_path):
+    """A pullfrog-flagged bug (round 1): lib/sloppak.py's load_song() (the
+    path the player actually uses) applies a manifest entry's own
+    `tuning` over whatever the embedded arrangement JSON carries --
+    `if "tuning" in entry: arr.tuning = list(entry["tuning"])`. This
+    generator must resolve the same effective tuning for scoring, or it
+    scores contour (and fret-position cost) against a tuning the player
+    never actually hears.
+
+    Round 2: mutating the returned `arr` in place to apply that override
+    (an earlier version of this fix) meant the override got serialized
+    straight back into the pack's arrangement file the next time a
+    generation run wrote `arr["phrases"] = phrases` -- silently
+    normalizing authored data nobody asked to change. `arr` is therefore
+    returned exactly as read; the manifest `entry` is returned alongside
+    it so a caller resolves the effective tuning itself, on a copy, only
+    where scoring needs it."""
+    embedded_tuning = [0, 0, 0, 0, 0, 0]        # standard, baked into the file
+    manifest_tuning = [-2, 0, 0, 0, 0, 0]       # drop-D override, in the manifest entry
+    arr = _arrangement(_simple_notes(0, 2), n_beats=8)
+    arr["tuning"] = embedded_tuning
+    pack_dir = tmp_path / "song.feedpak"
+    (pack_dir / "arrangements").mkdir(parents=True)
+    (pack_dir / "arrangements" / "lead.json").write_text(json.dumps(arr))
+    manifest = {"arrangements": [{"file": "arrangements/lead.json", "tuning": manifest_tuning}]}
+    (pack_dir / "manifest.yaml").write_text(yaml.safe_dump(manifest))
+
+    _rel, loaded_arr, entry, skip_reason = routes._load_manifest_and_arrangement(pack_dir, 0)
+
+    assert skip_reason is None  # nosec B101 - pytest assertion
+    assert loaded_arr["tuning"] == embedded_tuning, (  # nosec B101 - pytest assertion
+        "the returned arrangement must be a read-only load -- untouched by "
+        "any manifest override"
+    )
+    assert entry["tuning"] == manifest_tuning  # nosec B101 - pytest assertion
+
+
+def test_generate_one_scores_the_manifest_tuning_but_persists_the_embedded_one(tmp_path):
+    """End-to-end version of the above, through _generate_one: the
+    manifest's tuning override must reach scoring (proven indirectly via
+    generate_phrases_for_arrangement's tuning kwarg) without that override
+    ending up written back into the pack's arrangement file."""
+    embedded_tuning = [0, 0, 0, 0, 0, 0]
+    manifest_tuning = [-2, 0, 0, 0, 0, 0]
+    # At least MIN_EVENTS_FOR_GENERATION (8) events, or _generate_one skips
+    # before ever reaching arr["phrases"] = phrases / the write-back below
+    # -- a real gap in an earlier version of this test (caught in review):
+    # a 4-event arrangement "passed" this test without ever exercising the
+    # write path it claims to cover.
+    arr = _arrangement(_simple_notes(0, 4), n_beats=16)
+    arr["tuning"] = embedded_tuning
+    pack_dir = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    manifest_path = pack_dir / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["arrangements"][0]["tuning"] = manifest_tuning
+    manifest_path.write_text(yaml.safe_dump(manifest))
+
+    seen_tuning = []
+    real_generate = routes.generate_phrases_for_arrangement
+
+    def _spy_generate(arr_arg, **kwargs):
+        seen_tuning.append(arr_arg.get("tuning"))
+        return real_generate(arr_arg, **kwargs)
+
+    with patch.object(routes, "generate_phrases_for_arrangement", side_effect=_spy_generate):
+        result = routes._generate_one(pack_dir, 0, n_levels=4, force=False, log=_TEST_LOG)
+
+    assert result["ok"] is True  # nosec B101 - pytest assertion
+    assert result.get("phrases", 0) > 0, (  # nosec B101 - pytest assertion
+        "must actually generate (and therefore write back) phrases -- "
+        "otherwise this test never reaches the code path it's testing"
+    )
+    assert seen_tuning == [manifest_tuning]  # nosec B101 - pytest assertion
+    persisted = json.loads((pack_dir / "arrangements/lead.json").read_text())
+    assert persisted.get("phrases"), (  # nosec B101 - pytest assertion
+        "phrases must actually have been written to the pack"
+    )
+
+
+def test_generate_one_resolves_is_bass_from_the_manifest_type_override():
+    """A pullfrog-flagged bug: lib/sloppak.py's load_song() applies a
+    manifest entry's `type`/`name` override before core's
+    arrangement_is_bass() runs, same precedence as `tuning`. A manifest
+    entry declaring `type: bass` over an embedded `type: lead` must
+    still resolve is_bass=True for the melody-shape pitch approximation
+    -- reading only the embedded arr (the previous version of this fix)
+    missed exactly this case."""
+    seen_is_bass = []
+    real_generate = routes.generate_phrases_for_arrangement
+
+    def _spy_generate(arr_arg, *, is_bass=None, **kwargs):
+        seen_is_bass.append(is_bass)
+        return real_generate(arr_arg, is_bass=is_bass, **kwargs)
+
+    class _Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    fake_arr = {"type": "lead", "name": "Lead"}  # embedded: NOT bass
+    fake_entry = {"type": "bass"}  # manifest override: IS bass
+    with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
+         patch.object(routes, "_load_manifest_and_arrangement",
+                      return_value=("arrangements/lead.json", fake_arr, fake_entry, None)), \
+         patch.object(routes, "generate_phrases_for_arrangement", side_effect=_spy_generate), \
+         patch.object(routes, "_write_member_bytes"):
+        routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG)
+
+    assert seen_is_bass == [True]  # nosec B101 - pytest assertion
+
+
+@pytest.mark.parametrize("malformed_tuning", [123, None, "not-a-list"])
+def test_generate_one_ignores_a_malformed_manifest_tuning_instead_of_crashing(malformed_tuning):
+    """A pullfrog-flagged bug: `list(entry["tuning"])` ran before any
+    list-shape check, so a manifest with `tuning: 123` (or any non-list)
+    raised an uncaught TypeError -- a 500 well outside this route's own
+    error handling -- instead of falling back to the embedded value."""
+    class _Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    fake_arr = {"type": "lead", "tuning": [0, 0, 0, 0, 0, 0]}
+    fake_entry = {"tuning": malformed_tuning}
+    with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
+         patch.object(routes, "_load_manifest_and_arrangement",
+                      return_value=("arrangements/lead.json", fake_arr, fake_entry, None)), \
+         patch.object(routes, "generate_phrases_for_arrangement", return_value=None):
+        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG)
+
+    assert result["ok"] is True  # nosec B101 - pytest assertion
+
+
+def test_generate_one_ignores_a_non_string_manifest_type_override():
+    """A pullfrog-flagged bug: _generate_one's is_bass resolution feeds
+    the manifest entry's `type` straight into _is_bass_arrangement,
+    which must not raise when that value is a non-string (a YAML
+    list, dict, or number)."""
+    class _Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    fake_arr = {"type": "lead", "name": "Lead"}
+    fake_entry = {"type": ["bass"]}
+    with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
+         patch.object(routes, "_load_manifest_and_arrangement",
+                      return_value=("arrangements/lead.json", fake_arr, fake_entry, None)), \
+         patch.object(routes, "generate_phrases_for_arrangement", return_value=None):
+        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG)
+
+    assert result["ok"] is True  # nosec B101 - pytest assertion
+
+
 # Chordr's service can be stubbed: these tests pin the preview's HTTP and
 # forwarding contract without requiring the sibling plugin to be installed.
 _CHORD_PREVIEW_URL = f"/api/plugins/{routes.PLUGIN_ID}/analyze-chords"
@@ -1901,9 +2215,9 @@ def test_chord_preview_forwards_fretted_data_without_writing(tmp_path):
     assert before == {p.relative_to(pack): p.read_bytes() for p in pack.rglob("*") if p.is_file()}
 
 
-def test_chord_preview_does_not_infer_bass_from_name_fragment(tmp_path):
+def test_chord_preview_does_not_infer_bass_from_an_unrelated_name(tmp_path):
     arr = _arrangement([])
-    arr["name"] = "Ambassador Lead"
+    arr["name"] = "Lead Guitar"
     _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
     client = _client_for(tmp_path)
     contexts = []
@@ -1912,6 +2226,54 @@ def test_chord_preview_does_not_infer_bass_from_name_fragment(tmp_path):
     )
     assert _preview(client).status_code == 200
     assert contexts[0]["isBass"] is False
+
+
+def test_chord_preview_matches_core_substring_semantics_including_surprising_cases(tmp_path):
+    """#106/B5 follow-up (pullfrog): this endpoint's isBass now uses
+    _is_bass_arrangement, matching lib/song.py's arrangement_is_bass()
+    exactly -- a bare case-insensitive "bass" substring in the name, not
+    a \\bbass\\b word-boundary match. That is core's real, if surprising,
+    behavior (not a bug introduced here): "Ambassador" contains "bass"
+    as a substring, so core would already treat an arrangement literally
+    named "Ambassador Lead" as a bass part, and this endpoint must agree
+    with core rather than being more conservative than it."""
+    arr = _arrangement([])
+    arr["name"] = "Ambassador Lead"
+    _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    client = _client_for(tmp_path)
+    contexts = []
+    client.app.state.chordr_analyze_chart_chords_v1 = (
+        lambda chords, *, context, templates: contexts.append(context) or {}
+    )
+    assert _preview(client).status_code == 200  # nosec B101 - pytest assertion
+    assert contexts[0]["isBass"] is True  # nosec B101 - pytest assertion
+
+
+@pytest.mark.parametrize("bad_type", [["bass"], {"x": 1}, 0, 1])
+def test_is_bass_arrangement_coerces_non_string_type_instead_of_raising(bad_type):
+    """A pullfrog-flagged bug: a manifest entry's `type`/`name` is
+    unschema'd YAML, so either can come through as a list, dict, or
+    number. A bare `.strip()`/`.lower()` on that raises AttributeError;
+    lib/sloppak.py's load_song() str()'s a truthy manifest override
+    before comparing it, and this helper must match that instead of
+    crashing."""
+    assert routes._is_bass_arrangement(bad_type, "Lead") in (True, False)  # nosec B101
+
+
+def test_chord_preview_ignores_a_non_string_manifest_type_override(tmp_path):
+    """Route-level version of the above: a manifest entry whose `type`
+    is a YAML list (`type: [bass]`) must not 500 the request."""
+    arr = _arrangement([])
+    arr.update(type="lead", name="Lead")
+    pack = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    manifest_path = pack / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["arrangements"][0]["type"] = ["bass"]
+    manifest_path.write_text(yaml.safe_dump(manifest))
+
+    client = _client_for(tmp_path)
+    client.app.state.chordr_analyze_chart_chords_v1 = lambda chords, *, context, templates: {}
+    assert _preview(client).status_code == 200  # nosec B101 - pytest assertion
 
 
 def test_chord_preview_infers_bass_from_legacy_name(tmp_path):
@@ -1925,6 +2287,30 @@ def test_chord_preview_infers_bass_from_legacy_name(tmp_path):
     )
     assert _preview(client).status_code == 200
     assert contexts[0]["isBass"] is True
+
+
+def test_chord_preview_resolves_is_bass_from_the_manifest_type_override(tmp_path):
+    """A pullfrog-flagged bug: analyze_chords's `isBass` context field
+    still read only the embedded arrangement's type/name after the
+    generation-side fix, so a manifest entry authored as `type: bass`
+    over an embedded `type: lead` reached Chordr as isBass=False --
+    diverging from what feedBack core (and generation, after the
+    previous fix) actually resolve."""
+    arr = _arrangement([])
+    arr.update(type="lead", name="Lead")
+    pack = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    manifest_path = pack / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["arrangements"][0]["type"] = "bass"
+    manifest_path.write_text(yaml.safe_dump(manifest))
+
+    client = _client_for(tmp_path)
+    contexts = []
+    client.app.state.chordr_analyze_chart_chords_v1 = (
+        lambda chords, *, context, templates: contexts.append(context) or {}
+    )
+    assert _preview(client).status_code == 200  # nosec B101 - pytest assertion
+    assert contexts[0]["isBass"] is True  # nosec B101 - pytest assertion
 
 
 def test_chord_preview_rejects_missing_library_and_invalid_filenames(tmp_path):
@@ -1982,6 +2368,29 @@ def test_chord_preview_rejects_malformed_field_shapes(tmp_path, field, value):
     arr[field] = value
     _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
     assert _preview(_client_for(tmp_path)).status_code == 400
+
+
+def test_chord_preview_ignores_a_malformed_manifest_tuning_override(tmp_path):
+    """A pullfrog-flagged bug: a bare `list(entry["tuning"])` on a
+    manifest tuning that isn't a list (an int, null, a string) raised an
+    uncaught TypeError -- a 500 -- before the endpoint's own
+    isinstance-based malformed-arrangement check ever got a chance to
+    run. A malformed manifest override must fall back to the embedded
+    (valid) tuning instead of crashing the request."""
+    arr = _arrangement([], chords=[{"t": 1.0, "id": 0, "notes": [{"s": 0, "f": 2}]}])
+    arr.update(tuning=[0] * 6, templates=[{"name": "F#"}])
+    pack = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    manifest_path = pack / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["arrangements"][0]["tuning"] = 123  # malformed: not a list
+    manifest_path.write_text(yaml.safe_dump(manifest))
+
+    client = _client_for(tmp_path)
+    client.app.state.chordr_analyze_chart_chords_v1 = lambda chords, *, context, templates: {
+        "grouped": [{"parentIndex": 0, "continuation": False}]
+    }
+    resp = _preview(client)
+    assert resp.status_code == 200  # nosec B101 - pytest assertion
 
 
 def test_chord_preview_preserves_missing_member_and_manifest_404(tmp_path):
@@ -2476,7 +2885,7 @@ def test_generate_one_reports_requested_cap_separately_from_actual_depth():
     ]
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
          patch.object(routes, "_load_manifest_and_arrangement",
-                      return_value=("arrangements/lead.json", fake_arr, None)), \
+                      return_value=("arrangements/lead.json", fake_arr, {}, None)), \
          patch.object(routes, "_instrument_kind", return_value="fretted"), \
          patch.object(routes, "generate_phrases_for_arrangement", return_value=fake_phrases), \
          patch.object(routes, "_write_member_bytes"):
@@ -3237,13 +3646,13 @@ def test_missing_arrangement_type_detects_unsupported_by_name_issue_102():
     keys_arr["type"] = "keys"
 
     load_results = {
-        0: ("arrangements/lead.json", _make_arr("Lead"), None),  # supported fretted
-        1: ("arrangements/combo.json", _make_arr("Combo"), None),  # supported fretted
-        2: ("arrangements/bass.json", _make_arr("Bass"), None),  # supported fretted
-        3: ("arrangements/sax.json", _make_arr("Sax"), None),  # unsupported by name
-        4: ("arrangements/keys.json", keys_arr, None),  # supported keys
-        5: ("arrangements/drums.json", _make_arr("Drums"), None),  # unsupported by name
-        6: ("arrangements/drums2.json", _make_arr("Drums 2"), None),  # unsupported by name
+        0: ("arrangements/lead.json", _make_arr("Lead"), {}, None),  # supported fretted
+        1: ("arrangements/combo.json", _make_arr("Combo"), {}, None),  # supported fretted
+        2: ("arrangements/bass.json", _make_arr("Bass"), {}, None),  # supported fretted
+        3: ("arrangements/sax.json", _make_arr("Sax"), {}, None),  # unsupported by name
+        4: ("arrangements/keys.json", keys_arr, {}, None),  # supported keys
+        5: ("arrangements/drums.json", _make_arr("Drums"), {}, None),  # unsupported by name
+        6: ("arrangements/drums2.json", _make_arr("Drums 2"), {}, None),  # unsupported by name
     }
 
     def _mock_load_manifest(pack_path, idx):
