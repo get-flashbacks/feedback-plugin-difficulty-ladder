@@ -37,11 +37,14 @@ evaluated and either shipped, rejected, or deliberately deferred there.
 Also worth knowing before poking around:
 - **`README.md`** — user-facing settings table and the "Possible
   Upgrades" section, which covers both already-implemented features (e.g.
-  chord-preview generation, `staged_chords`) and design notes for what's
-  still proposed — don't assume everything under that heading is
-  unbuilt. A settle-point table/write-up for roadmap C2 is proposed in
-  PR #132 (see above) — check whether it has merged before assuming it's
-  there.
+  chord-preview generation, `staged_chords`, both marked as shipped in the
+  section itself) and design notes for what's still proposed — don't
+  assume everything under that heading is unbuilt. A settle-point table/write-up for roadmap C2 is proposed in
+  PR #132 (see above), but that PR covers only the Sensitivity dimension
+  of C2's table — its own body states the Reaction-speed dimension stays
+  open. Checking whether #132 has merged is not the whole check before
+  citing C2 as fully documented; confirm which dimension(s) actually
+  landed.
 - **`PLAYER_CONTEXT.md`** — the multi-player `(session_id, player_id)`
   contract shared with Split Screen, `note_detect`, karaoke, and Section
   Map; read this before touching anything that keys state by player.
@@ -86,7 +89,7 @@ Also worth knowing before poking around:
 
 `screen.js` reaches directly into two other plugins' globals — `window.createNoteDetector` and `window.feedBackSplitscreen`/`window.slopsmithSplitscreen` — despite the event-bus best practice stated above; this is a real, pre-existing exception, not a hypothetical one, worth being explicit about since there's no manifest-level version enforcement for either:
 
-- **`feedback-plugin-notedetect`** (`window.createNoteDetector`) — the `ownSource`-instance factory split-screen adaptive scoring depends on needs **v1.15.2**; stable, persisted (not synthetic-per-highway) player-context propagation needs the higher **v1.33.0** (see #130 — these are the real gating floors, not a bare presence check). Wrapped to register per-panel highways and inspect their state for adaptive difficulty.
+- **`feedback-plugin-notedetect`** (`window.createNoteDetector`) — split-screen panels are only registered when their detector was built with the `ownSource` instance factory (`screen.js:2119`), so **v1.15.2** is the real gate for that path; **v1.33.0** is a fidelity floor rather than a gate, since older providers fall back to unpersisted, per-highway player identities (see #130). Wrapped to register per-panel highways and inspect their state for adaptive difficulty.
 - **`feedback-plugin-splitscreen`** (`window.feedBackSplitscreen`, preferred, falling back to the legacy `window.slopsmithSplitscreen` — same `||` pattern used everywhere else in this codebase for the slopsmith→feedBack rename) — verified present as of splitscreen **v1.14.5**. Globals are used to detect and gate whether splitscreen is active before registering per-panel highways; difficulty-ladder maintains the per-panel score state itself, keyed by each highway.
 
 Both are feature-detected and optional — difficulty-ladder works standalone without either installed. See [feedback-plugin-splitscreen#47](https://github.com/get-flashbacks/feedback-plugin-splitscreen/issues/47) for why a `typeof` check alone doesn't catch a downstream contract change (that issue documents two other plugins' integrations going silently dead this way).
