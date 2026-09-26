@@ -11,9 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README: document where auto-adjust actually settles for each Sensitivity
   setting (roadmap C2, #55) — a settle-point table, the "strict has the
   tightest settle point but moves the slider most often" finding, and the
-  confidence/limits of the simulation. No behaviour change; completes the
-  README half of C2's stated deliverable (`tools/settle_points.js` itself
-  landed in #128).
+  confidence/limits of the simulation. No behaviour change; covers the
+  Sensitivity half of C2's stated deliverable (`tools/settle_points.js`
+  itself landed in #128) — the Reaction-speed half stays open under #55,
+  per review on #132.
 - Developer tool `tools/settle_points.js` (not loaded by the plugin):
   simulates synthetic players against the real auto-adjust controller
   (`commitPhraseResult`) and reports where accuracy settles for each
