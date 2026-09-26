@@ -36,9 +36,12 @@ weight is arbitrary or before proposing a new one; it's probably already
 evaluated and either shipped, rejected, or deliberately deferred there.
 Also worth knowing before poking around:
 - **`README.md`** — user-facing settings table and the "Possible
-  Upgrades" design notes for anything not yet built. A settle-point
-  table/write-up for roadmap C2 is proposed in PR #132 (see above) —
-  check whether it has merged before assuming it's there.
+  Upgrades" section, which covers both already-implemented features (e.g.
+  chord-preview generation, `staged_chords`) and design notes for what's
+  still proposed — don't assume everything under that heading is
+  unbuilt. A settle-point table/write-up for roadmap C2 is proposed in
+  PR #132 (see above) — check whether it has merged before assuming it's
+  there.
 - **`PLAYER_CONTEXT.md`** — the multi-player `(session_id, player_id)`
   contract shared with Split Screen, `note_detect`, karaoke, and Section
   Map; read this before touching anything that keys state by player.
