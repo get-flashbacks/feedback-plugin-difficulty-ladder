@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact for sensitivities 2-3 but only partial for sensitivity 1, whose
   post-burn-in window rarely re-equilibrates) — per a second review round
   on #132.
+- README: corrected two more figures from a third review round on #132 —
+  sensitivity 1's reaction-1 mean (stated as a single-slope 0.83; the
+  section's own union convention gives 0.79–0.83) and the burn-in
+  paragraph's "narrow vs. wide" example (was quoting the pooled per-phrase
+  p10/p90 column, not the per-run settle range the paragraph is about,
+  and didn't reproduce as stated).
 - Developer tool `tools/settle_points.js` (not loaded by the plugin):
   simulates synthetic players against the real auto-adjust controller
   (`commitPhraseResult`) and reports where accuracy settles for each

@@ -400,10 +400,11 @@ movement column a lot, but its effect on the settle range differs by
 setting (`--sens=1,2 --react=1,2,3 --notes=16 --drop=0`): at sensitivity
 2, moves/100 goes from 1–6 (reaction 1) to 5–12 (reaction 2) to 11–19
 (reaction 3), while the settle range barely shifts (0.75–0.82 / 0.76–0.81
-/ 0.77–0.80). Sensitivity 1 is not similarly stable — its mean rises to
-0.83 and its per-run spread widens to 0.76–0.86 at reaction 1, against
-0.80 and 0.77–0.84 at reaction 2 (see the burn-in caveat below for why
-sensitivity 1's spread is less trustworthy than 2/3's to begin with).
+/ 0.77–0.80). Sensitivity 1 is not similarly stable — its mean (union
+across slopes) rises to 0.79–0.83 and its per-run spread widens to
+0.76–0.86 at reaction 1, against 0.80 and 0.77–0.84 at reaction 2 (see
+the burn-in caveat below for why sensitivity 1's spread is less
+trustworthy than 2/3's to begin with).
 Roadmap C2 (#103) calls for a table across *both* dimensions; this
 section documents only Sensitivity at a fixed Reaction speed — the
 Reaction-speed dimension stays open under #55.
@@ -461,8 +462,9 @@ sensitivity 1: at 0.4–0.5 moves per 100 phrases, its post-burn-in window
 sees roughly one slider move across the 300 measured phrases, so it
 rarely re-equilibrates after burn-in ends. Its reported range (0.77–0.84)
 is the union across starts, not evidence of a single stable equilibrium
-the way 2/3's identical-across-starts numbers are — one start/slope
-combination lands as narrow as 0.80–0.80, another as wide as 0.78–0.84.
+the way 2/3's identical-across-starts numbers are — the per-run settle
+itself varies by start/slope combination too (0.77–0.83 at slope 0.20
+regardless of start; as wide as 0.78–0.84 at slope 0.05, start 10).
 Finding 1's "sensitivity 1 is closest" ranking rests on this least-settled
 row; take it as directional, not as precise as the table formatting
 implies.
