@@ -39,11 +39,12 @@ Also worth knowing before poking around:
   Upgrades" section, which covers both already-implemented features (e.g.
   chord-preview generation, `staged_chords`, both marked as shipped in the
   section itself) and design notes for what's still proposed — don't
-  assume everything under that heading is unbuilt. A settle-point table/write-up for roadmap C2 is proposed in
-  PR #132 (see above), but that PR covers only the Sensitivity dimension
-  of C2's table — its own body states the Reaction-speed dimension stays
-  open. Checking whether #132 has merged is not the whole check before
-  citing C2 as fully documented; confirm which dimension(s) actually
+  assume everything under that heading is unbuilt. A settle-point
+  table/write-up for roadmap C2 is proposed in PR #132 (see above), but
+  that PR covers only the Sensitivity dimension of C2's table — its own
+  body states the Reaction-speed dimension stays open. Checking whether
+  #132 has merged is not the whole check before citing C2 as fully
+  documented; confirm which dimension(s) actually
   landed.
 - **`PLAYER_CONTEXT.md`** — the multi-player `(session_id, player_id)`
   contract shared with Split Screen, `note_detect`, karaoke, and Section
