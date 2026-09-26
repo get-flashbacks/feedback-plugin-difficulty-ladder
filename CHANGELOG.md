@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- README: document where auto-adjust actually settles for each Sensitivity
+  setting (roadmap C2, #55) — a settle-point table, the "strict has the
+  tightest settle point but moves the slider most often" finding, and the
+  confidence/limits of the simulation. No behaviour change; covers the
+  Sensitivity half of C2's stated deliverable (`tools/settle_points.js`
+  itself landed in #128) — the Reaction-speed half stays open under #55,
+  per review on #132.
+- README: corrected the Reaction-speed note (sensitivity 2's settle range
+  was quoted for all three reaction speeds; sensitivity 1 actually shifts
+  with reaction speed), the Wilson et al. citation (the "85% rule" is a
+  training-accuracy prescription for gradient-descent learning rate, not
+  a settle-point target, and the figure varies 85/82/75% by noise model —
+  not a flat "80-85% band"), and the burn-in claim (start-independence is
+  exact for sensitivities 2-3 but only partial for sensitivity 1, whose
+  post-burn-in window rarely re-equilibrates) — per a second review round
+  on #132.
+- README: corrected two more figures from a third review round on #132 —
+  sensitivity 1's reaction-1 mean (stated as a single-slope 0.83; the
+  section's own union convention gives 0.79–0.83) and the burn-in
+  paragraph's "narrow vs. wide" example (was quoting the pooled per-phrase
+  p10/p90 column, not the per-run settle range the paragraph is about,
+  and didn't reproduce as stated).
 - Developer tool `tools/settle_points.js` (not loaded by the plugin):
   simulates synthetic players against the real auto-adjust controller
   (`commitPhraseResult`) and reports where accuracy settles for each

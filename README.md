@@ -379,6 +379,104 @@ remembered difficulty for fretted and keys arrangements. The card is read-only,
 appears only after at least one classified arrangement has a saved mastery, and
 does not change the starting difficulty for new songs.
 
+**Where auto-adjust settles (roadmap C2, #55)** — Sensitivity and Reaction
+speed don't map to a target accuracy directly; where the controller
+actually settles was measured by simulation (`tools/settle_points.js`
+drives the real `commitPhraseResult`, not a re-implementation), since the
+controller is an EMA with a dead band rather than the simple weighted
+up-down rule the roadmap originally assumed a settle-point formula for.
+20 seeds × 400 phrases per setting, 16 notes/phrase, drop resistance off,
+reaction speed 2 unless noted. Reproduce with
+`node tools/settle_points.js --sens=1,2,3 --react=2 --notes=16 --drop=0`:
+
+| Sensitivity | Mean accuracy | Settles across runs | Slider moves / 100 phrases |
+|---|---|---|---|
+| 1 (lenient) | 0.80 | 0.77–0.84 | 0.4–0.5 |
+| 2 (default) | 0.78–0.79 | 0.76–0.81 | 5–12 |
+| 3 (strict) | 0.77 | 0.76–0.78 | 25–35 |
+
+This table only varies Sensitivity. Reaction speed also moves the
+movement column a lot, but its effect on the settle range differs by
+setting (`--sens=1,2 --react=1,2,3 --notes=16 --drop=0`): at sensitivity
+2, moves/100 goes from 1–6 (reaction 1) to 5–12 (reaction 2) to 11–19
+(reaction 3), while the settle range barely shifts (0.75–0.82 / 0.76–0.81
+/ 0.77–0.80). Sensitivity 1 is not similarly stable — its mean (union
+across slopes) rises to 0.79–0.83 and its per-run spread widens to
+0.76–0.86 at reaction 1, against 0.80 and 0.77–0.84 at reaction 2 (see
+the burn-in caveat below for why sensitivity 1's spread is less
+trustworthy than 2/3's to begin with).
+Roadmap C2 (#103) calls for a table across *both* dimensions; this
+section documents only Sensitivity at a fixed Reaction speed — the
+Reaction-speed dimension stays open under #55.
+
+Findings, in order of confidence:
+- **All three settings land slightly below the ~0.80–0.85 figure roadmap
+  C2 (#103) cites** — a target the plugin itself doesn't declare anywhere
+  in its settings or code; the controller's only actual targets are the
+  hit-rate thresholds in `thresholds()`. That figure traces to Wilson,
+  Shenhav, Straccia & Cohen's "Eighty Five Percent Rule" (*Nature
+  Communications* 10:4646, 2019), which derives the *training* accuracy
+  that maximizes the rate of learning under gradient-descent rules for a
+  broad class of classifiers — about 85% for Gaussian label noise, less
+  for heavier-tailed noise (82% Laplacian, 75% Cauchy) — not a level a
+  controller should settle at during ordinary play. Comparing it to this
+  section's steady-state settle points is a category mismatch on top of
+  the motor-learning extrapolation: the paper prescribes a difficulty to
+  hold *while learning*, and the simulated player here explicitly has no
+  learning process to hold it for (constant skill, no fatigue — see
+  Confidence below). Roadmap C1 (#54, reviewing this rule and its limits)
+  is still open; treat every comparison against 0.80–0.85 in this section
+  as indicative at best, not a target the controller is failing. Sensitivity
+  1 reads closest to it, but see the burn-in caveat below for why that
+  row's own settle point is the least trustworthy of the three.
+- **"Strict" has the *tightest* settle point of the three, not the
+  loosest** — despite moving the slider far more often. The settle
+  ordering (0.80 / 0.79 / 0.77) sits within 0.01 of the sensitivity
+  thresholds' own dead-band midpoints (`thresholds()` in `screen.js`), so
+  it follows directly from those thresholds — no simulation needed to
+  explain *that* part. What the simulation adds is the movement column:
+  the frequent moves are mostly per-phrase noise (a single miss swings a
+  short phrase's hit rate a lot) amplified by strict's bigger step and
+  narrower dead band, not evidence the setting is unstable in the sense
+  its name implies.
+- **Short phrases are the dominant source of that noise.** At every
+  sensitivity, the hit rate the controller actually observes spans wider
+  with fewer notes per phrase — roughly 0.50–1.00 (10th–90th percentile)
+  at 6 notes, 0.56–0.94 at 16, 0.68–0.90 at 40
+  (`--notes=6,16,40 --react=2 --slopes=0.1 --drop=0`); the per-sensitivity
+  spans at 16 notes are 0.69–0.94 / 0.63–0.94 / 0.56–0.94, so "independent
+  of sensitivity" describes the conclusion (fewer notes always widens it),
+  not identical numbers across sensitivities.
+
+**Confidence:** moderate that the *direction* of each finding holds — it's
+consistent across every slope, seed set, and note count tested. Low
+confidence in the *exact numbers* — the simulated player is a smooth
+logistic curve with constant skill (no learning/fatigue), every phrase has
+the same note count, and the slider maps straight to success probability
+rather than the chart's real discrete tiers. No real player data was used,
+and none of this is a claim about actual players. Every run above
+discards the first 100 (of 400) phrases as burn-in. A `--start` sweep
+(10/30/50/70) confirms this fully for sensitivities 2 and 3 — byte-
+identical settle ranges at every start — but only partially for
+sensitivity 1: at 0.4–0.5 moves per 100 phrases, its post-burn-in window
+sees roughly one slider move across the 300 measured phrases, so it
+rarely re-equilibrates after burn-in ends. Its reported range (0.77–0.84)
+is the union across starts, not evidence of a single stable equilibrium
+the way 2/3's identical-across-starts numbers are — the per-run settle
+itself varies by start/slope combination too (0.77–0.83 at slope 0.20
+regardless of start; as wide as 0.78–0.84 at slope 0.05, start 10).
+Finding 1's "sensitivity 1 is closest" ranking rests on this least-settled
+row; take it as directional, not as precise as the table formatting
+implies.
+
+**Not done here:** no setting has been retuned as a result of these
+numbers (e.g. weighting the EMA by note count, or adjusting strict's step
+size/dead band) — that's a separate decision pending review of the data
+above, not something this measurement does on its own authority. The
+Reaction-speed half of C2's table, the broader comparison against
+Elo/Glicko, Kalman, and IRT estimators, and the synthetic
+learner/plateau/fatigue player scenarios all remain open under #55.
+
 All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 
 ## Plugin metadata
