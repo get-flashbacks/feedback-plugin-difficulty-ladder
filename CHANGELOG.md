@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Sensitivity half of C2's stated deliverable (`tools/settle_points.js`
   itself landed in #128) — the Reaction-speed half stays open under #55,
   per review on #132.
+- README: corrected the Reaction-speed note (sensitivity 2's settle range
+  was quoted for all three reaction speeds; sensitivity 1 actually shifts
+  with reaction speed), the Wilson et al. citation (the "85% rule" is a
+  training-accuracy prescription for gradient-descent learning rate, not
+  a settle-point target, and the figure varies 85/82/75% by noise model —
+  not a flat "80-85% band"), and the burn-in claim (start-independence is
+  exact for sensitivities 2-3 but only partial for sensitivity 1, whose
+  post-burn-in window rarely re-equilibrates) — per a second review round
+  on #132.
 - Developer tool `tools/settle_points.js` (not loaded by the plugin):
   simulates synthetic players against the real auto-adjust controller
   (`commitPhraseResult`) and reports where accuracy settles for each

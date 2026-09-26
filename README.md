@@ -395,26 +395,39 @@ reaction speed 2 unless noted. Reproduce with
 | 2 (default) | 0.78–0.79 | 0.76–0.81 | 5–12 |
 | 3 (strict) | 0.77 | 0.76–0.78 | 25–35 |
 
-This table only varies Sensitivity; Reaction speed also moves the last
-column a lot while barely moving where accuracy settles. At sensitivity 2,
-moves/100 goes from 1–6 (reaction 1) to 5–12 (reaction 2) to 11–19
-(reaction 3), while the settle range stays within 0.76–0.81 across all
-three (`--sens=1,2 --react=1,2,3 --notes=16 --drop=0`). Roadmap C2 (#103)
-calls for a table across *both* dimensions; this section documents only
-Sensitivity at a fixed Reaction speed — the Reaction-speed dimension
-stays open under #55.
+This table only varies Sensitivity. Reaction speed also moves the
+movement column a lot, but its effect on the settle range differs by
+setting (`--sens=1,2 --react=1,2,3 --notes=16 --drop=0`): at sensitivity
+2, moves/100 goes from 1–6 (reaction 1) to 5–12 (reaction 2) to 11–19
+(reaction 3), while the settle range barely shifts (0.75–0.82 / 0.76–0.81
+/ 0.77–0.80). Sensitivity 1 is not similarly stable — its mean rises to
+0.83 and its per-run spread widens to 0.76–0.86 at reaction 1, against
+0.80 and 0.77–0.84 at reaction 2 (see the burn-in caveat below for why
+sensitivity 1's spread is less trustworthy than 2/3's to begin with).
+Roadmap C2 (#103) calls for a table across *both* dimensions; this
+section documents only Sensitivity at a fixed Reaction speed — the
+Reaction-speed dimension stays open under #55.
 
 Findings, in order of confidence:
-- **All three settings land slightly below the ~0.80–0.85 band roadmap
-  C2 (#103) targets** — a target the plugin itself doesn't declare
-  anywhere in its settings or code; the controller's only actual targets
-  are the hit-rate thresholds in `thresholds()`, and the 0.80–0.85 figure
-  traces to Wilson et al.'s ~85% rule for gradient-descent classifiers,
-  extrapolated to motor learning. Roadmap C1 (reviewing that rule and its
-  limits) is still open, so treat the "shortfall" as measured against a
-  provisional target, not a defect against a declared one. Sensitivity 1
-  is closest to it either way, and the gap is small enough on its own not
-  to be a case for retuning.
+- **All three settings land slightly below the ~0.80–0.85 figure roadmap
+  C2 (#103) cites** — a target the plugin itself doesn't declare anywhere
+  in its settings or code; the controller's only actual targets are the
+  hit-rate thresholds in `thresholds()`. That figure traces to Wilson,
+  Shenhav, Straccia & Cohen's "Eighty Five Percent Rule" (*Nature
+  Communications* 10:4646, 2019), which derives the *training* accuracy
+  that maximizes the rate of learning under gradient-descent rules for a
+  broad class of classifiers — about 85% for Gaussian label noise, less
+  for heavier-tailed noise (82% Laplacian, 75% Cauchy) — not a level a
+  controller should settle at during ordinary play. Comparing it to this
+  section's steady-state settle points is a category mismatch on top of
+  the motor-learning extrapolation: the paper prescribes a difficulty to
+  hold *while learning*, and the simulated player here explicitly has no
+  learning process to hold it for (constant skill, no fatigue — see
+  Confidence below). Roadmap C1 (#54, reviewing this rule and its limits)
+  is still open; treat every comparison against 0.80–0.85 in this section
+  as indicative at best, not a target the controller is failing. Sensitivity
+  1 reads closest to it, but see the burn-in caveat below for why that
+  row's own settle point is the least trustworthy of the three.
 - **"Strict" has the *tightest* settle point of the three, not the
   loosest** — despite moving the slider far more often. The settle
   ordering (0.80 / 0.79 / 0.77) sits within 0.01 of the sensitivity
@@ -441,9 +454,18 @@ logistic curve with constant skill (no learning/fatigue), every phrase has
 the same note count, and the slider maps straight to success probability
 rather than the chart's real discrete tiers. No real player data was used,
 and none of this is a claim about actual players. Every run above
-discards the first 100 (of 400) phrases as burn-in — a `--start` sweep
-(10/30/50/70) confirms the settle ranges don't depend on where the slider
-started once burn-in is discarded.
+discards the first 100 (of 400) phrases as burn-in. A `--start` sweep
+(10/30/50/70) confirms this fully for sensitivities 2 and 3 — byte-
+identical settle ranges at every start — but only partially for
+sensitivity 1: at 0.4–0.5 moves per 100 phrases, its post-burn-in window
+sees roughly one slider move across the 300 measured phrases, so it
+rarely re-equilibrates after burn-in ends. Its reported range (0.77–0.84)
+is the union across starts, not evidence of a single stable equilibrium
+the way 2/3's identical-across-starts numbers are — one start/slope
+combination lands as narrow as 0.80–0.80, another as wide as 0.78–0.84.
+Finding 1's "sensitivity 1 is closest" ranking rests on this least-settled
+row; take it as directional, not as precise as the table formatting
+implies.
 
 **Not done here:** no setting has been retuned as a result of these
 numbers (e.g. weighting the EMA by note count, or adjusting strict's step
