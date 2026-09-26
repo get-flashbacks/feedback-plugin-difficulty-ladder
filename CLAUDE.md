@@ -23,8 +23,10 @@ don't assume "gameplay-loop plugin" means the interesting code is all in
   (`commitPhraseResult`) and moves the mastery slider via an EMA with a
   dead band (see `thresholds()` for the actual up/down hit-rate cutoffs
   per Sensitivity setting — there is no simple closed-form settle-point
-  formula; see `tools/settle_points.js` and README's "Where auto-adjust
-  settles" section if you need to reason about where a setting lands).
+  formula; use `tools/settle_points.js` to reason about where a setting
+  actually lands. A README section documenting its output is proposed in
+  PR #132, not yet merged as of this writing — check whether it has
+  landed before citing it as existing).
 
 **The design rationale for nearly everything in `routes.py` lives in
 issue #103** (the science-grounded roadmap: motor learning / music
@@ -33,10 +35,10 @@ what's shipped vs. still open) — read it before assuming a scoring term's
 weight is arbitrary or before proposing a new one; it's probably already
 evaluated and either shipped, rejected, or deliberately deferred there.
 Also worth knowing before poking around:
-- **`README.md`** — user-facing settings table, the "Possible Upgrades"
-  design notes for anything not yet built, and (as of the roadmap C2 work)
-  a settle-point table with citations for what's actually measured vs.
-  heuristic.
+- **`README.md`** — user-facing settings table and the "Possible
+  Upgrades" design notes for anything not yet built. A settle-point
+  table/write-up for roadmap C2 is proposed in PR #132 (see above) —
+  check whether it has merged before assuming it's there.
 - **`PLAYER_CONTEXT.md`** — the multi-player `(session_id, player_id)`
   contract shared with Split Screen, `note_detect`, karaoke, and Section
   Map; read this before touching anything that keys state by player.
@@ -81,35 +83,50 @@ Also worth knowing before poking around:
 
 `screen.js` reaches directly into two other plugins' globals — `window.createNoteDetector` and `window.feedBackSplitscreen`/`window.slopsmithSplitscreen` — despite the event-bus best practice stated above; this is a real, pre-existing exception, not a hypothetical one, worth being explicit about since there's no manifest-level version enforcement for either:
 
-- **`feedback-plugin-notedetect`** (`window.createNoteDetector`) — verified present as of notedetect **v1.32.0**; the `ownSource`-instance factory and player-context propagation used for split-screen adaptive scoring need higher floors (**v1.15.2**, **v1.33.0** respectively — see #130). Wrapped to register per-panel highways and inspect their state for adaptive difficulty.
+- **`feedback-plugin-notedetect`** (`window.createNoteDetector`) — the `ownSource`-instance factory split-screen adaptive scoring depends on needs **v1.15.2**; stable, persisted (not synthetic-per-highway) player-context propagation needs the higher **v1.33.0** (see #130 — these are the real gating floors, not a bare presence check). Wrapped to register per-panel highways and inspect their state for adaptive difficulty.
 - **`feedback-plugin-splitscreen`** (`window.feedBackSplitscreen`, preferred, falling back to the legacy `window.slopsmithSplitscreen` — same `||` pattern used everywhere else in this codebase for the slopsmith→feedBack rename) — verified present as of splitscreen **v1.14.5**. Globals are used to detect and gate whether splitscreen is active before registering per-panel highways; difficulty-ladder maintains the per-panel score state itself, keyed by each highway.
 
 Both are feature-detected and optional — difficulty-ladder works standalone without either installed. See [feedback-plugin-splitscreen#47](https://github.com/get-flashbacks/feedback-plugin-splitscreen/issues/47) for why a `typeof` check alone doesn't catch a downstream contract change (that issue documents two other plugins' integrations going silently dead this way).
 
 **Backend dependency on Chordr, not just frontend ones:** `routes.py`'s
-`/group-chords` route (and the opt-in `staged_chords` generator field) call
+`analyze_chords` handler (`POST /api/plugins/difficulty_ladder/analyze-chords`
+— documented under that path in README.md; the opt-in `staged_chords`
+generator field consumes the same capability) calls
 `app.state.chordr_analyze_chart_chords_v1`, populated only if the Chordr
 plugin has registered it — otherwise the route 503s. Auditable floor:
 Chordr **v0.5.0**. This is a hard dependency for that one feature, not for
 the plugin as a whole, which still loads and generates ordinary ladders
 with Chordr absent.
 
-**Core (feedBack) version floors are tracked externally, not restated
-here** — issues #129 (generation/tier-semantics floor) and #130 (this
-section's peer floors, formalized into a manifest-facing table) are the
-live source of truth as of 2026-09-26; check their current state rather
-than trusting a specific commit/version cited in an older doc snapshot,
-including this one.
+**Splitscreen's real minimum is unestablished** beyond "checked against
+v1.14.5" — issue #130 itself calls that a proxy, not a confirmed floor;
+don't treat it as one. Core (feedBack) floors for generation/tier-
+semantics live in issue **#129**. All floors on this page are moving
+targets under active audit as of 2026-09-26 — issues **#129** and
+**#130** are the live source of truth; re-check their current state
+rather than trusting any specific commit/version cited in a doc
+snapshot, this one included.
 
 ## Testing
 
 ```bash
 node --test                                            # JS: screen.js, settle_points.js (154 tests)
-python3 -m pytest tests/test_dd_generation.py \
-  -k "not fastapi and not client and not chord_preview and not generate_library and not generate_route"
-                                                        # Python generator tests (native deps missing in some sandboxes)
+python3 -m pytest tests/test_dd_generation.py -q       # Python generator tests — CI's own invocation
 node tools/settle_points.js                            # auto-adjust settle-point simulation, see README
 ```
+
+The pytest file bootstraps `sys.path` from a **sibling `feedBack` checkout**
+(`tests/test_dd_generation.py`'s `_PLUGIN_DIR.parent / "feedBack" / "lib"`)
+and imports `pydantic` at module scope — without both, the whole file fails
+at collection, not per-test. Needs `pytest pydantic fastapi httpx PyYAML`
+installed and `feedBack` checked out next to this repo (CI does exactly
+this). If your sandbox lacks the sibling checkout or those deps, a filtered
+subset still exercises the pure-scoring/tier-assignment code without the
+FastAPI-route tests:
+`-k "not chord_preview and not generate_library and not generate_route"`
+deselects 27 of 287 (16 chord-preview-route, 9 generate-library-route, 2
+generate-route tests) — a fallback, not the real suite; run the unfiltered
+form whenever the prerequisites are available.
 
 ## Versioning
 
