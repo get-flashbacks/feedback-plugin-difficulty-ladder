@@ -407,13 +407,25 @@
     }
     /* eslint-enable security/detect-object-injection */
 
-    // Canonical definition lives in routes.py's _instrument_kind(); this is
-    // a faithful port, not an independent reimplementation. The two are kept
-    // in sync via the shared fixture in tests/fixtures/instrument_kind_cases.json
-    // (see tests/test_dd_generation.py and tests/screen.test.js) rather than
-    // by hand — do not edit this function without updating that fixture and
-    // re-running both suites. The WebSocket calls the field arrangement_type
-    // because its top-level `type` is the message discriminator.
+    // Mirrors routes.py's _instrument_kind() — the generator-eligibility
+    // classifier ('fretted'/'keys'/'drums'/'unsupported') — for the one
+    // caller below that needs to know whether the backend would generate
+    // a ladder for this arrangement. This is a faithful port, not an
+    // independent reimplementation; the two are kept in sync via the
+    // shared fixture in tests/fixtures/instrument_kind_cases.json (see
+    // tests/test_dd_generation.py and tests/screen.test.js) rather than by
+    // hand — do not edit this function without updating that fixture and
+    // re-running both suites. The WebSocket calls the field
+    // arrangement_type because its top-level `type` is the message
+    // discriminator.
+    //
+    // NOT the only instrument classifier in this file: _songContextFields()
+    // below runs a separate, differently-scoped classification (player-
+    // context/mastery-profile identity — vocabulary 'guitar'/'keys'/'voice'/
+    // 'legacy-unknown', no name-sniffing fallback) for an unrelated purpose.
+    // The two can and do disagree on the same input (e.g. a blank-type
+    // "Vocals" arrangement is 'unsupported' here, 'voice' there) — this
+    // fixture covers only this function, not that one.
     function _instrumentKind(arrType, arrName) {
         var t = typeof arrType === 'string' ? arrType.trim().toLowerCase() : '';
         var n = typeof arrName === 'string' ? arrName.trim() : '';
