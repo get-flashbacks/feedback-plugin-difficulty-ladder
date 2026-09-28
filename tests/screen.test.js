@@ -12,7 +12,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const fs = require('node:fs');
 
 function freshPlugin({ stored = {}, onSet = null } = {}) {
     const listeners = new Map();
@@ -1859,9 +1858,7 @@ test('_rememberSongInstrument persists classification before the first mastery v
 
 test('_instrumentKind matches the shared cross-language fixture', () => {
     const mod = freshPlugin();
-    const cases = JSON.parse(
-        fs.readFileSync(path.join(__dirname, 'fixtures', 'instrument_kind_cases.json'), 'utf8')
-    );
+    const cases = require('./fixtures/instrument_kind_cases.json');
     for (const c of cases) {
         assert.equal(
             mod._instrumentKind(c.type, c.name),
