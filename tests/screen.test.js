@@ -1856,13 +1856,16 @@ test('_rememberSongInstrument persists classification before the first mastery v
     assert.equal(mod._dominantSongMastery({ filename: 'new.feedpak' }), null);
 });
 
-test('_instrumentKind mirrors the generator classifier for song_info metadata', () => {
+test('_instrumentKind matches the shared cross-language fixture', () => {
     const mod = freshPlugin();
-    assert.equal(mod._instrumentKind('bass', 'Bass'), 'fretted');
-    assert.equal(mod._instrumentKind('', 'Synth Pad'), 'keys');
-    assert.equal(mod._instrumentKind('piano', 'Grand'), 'keys');
-    assert.equal(mod._instrumentKind('drums', 'Kit'), 'drums');
-    assert.equal(mod._instrumentKind('vocals', 'Lead Vox'), 'unsupported');
+    const cases = require('./fixtures/instrument_kind_cases.json');
+    for (const c of cases) {
+        assert.equal(
+            mod._instrumentKind(c.type, c.name),
+            c.expected,
+            `${c.issue}: type=${JSON.stringify(c.type)} name=${JSON.stringify(c.name)}`
+        );
+    }
 });
 
 test('song ready upgrades numeric mastery with authoritative instrument metadata', () => {
