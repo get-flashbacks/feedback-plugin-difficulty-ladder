@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- README: new "Host and peer compatibility" section (#129, #130) —
+  documents the known source-level core-commit floors for
+  generation/loading vs. full concurrent-player/tier-semantics behavior
+  (no tested `minHost` exists yet), and a peer compatibility matrix
+  (Chordr, Note Detect, Split Screen, Section Map) distinguishing
+  required-for-one-feature from optional peers, their lowest auditable
+  versions, and degraded behavior when absent/older. Documentation only —
+  no runtime behavior change; integration tests and capability probing
+  against missing/minimum/current peer versions remain open follow-up
+  work under #130.
 - README: document where auto-adjust actually settles for each Sensitivity
   setting (roadmap C2, #55) — a settle-point table, the "strict has the
   tightest settle point but moves the slider most often" finding, and the
