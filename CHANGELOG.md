@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Instrument labels stored under the pre-#136 `_instrumentKind()` verdict
+  are now cleared instead of persisting forever (#141). That fix is
+  prevent-only: a record already written as `fretted`/`keys` for an
+  arrangement the backend refuses to ladder (a blank-`type` "Vocals" or
+  "Drums", or a `vocals` type whose name merely started with a keys word)
+  was never rewritten, because the only writer fires solely for
+  `fretted`/`keys`, and the one-shot `songMasteryV1` migration had already
+  copied such a label into a durable v2 `guitar` node that kept it in the
+  Profile baseline's Fretted/Keys aggregate. Both the v1 record and the
+  migration-owned v2 node are now dropped as soon as the loaded song's
+  metadata or a generation response reports the arrangement as
+  `drums`/`unsupported`. Only `guitar`/`keys` nodes carrying the
+  migration's own `legacy_claim_player_id` marker are touched — the
+  same gate the v1 side applies, so an unlabelled `legacy-unknown`
+  value is left alone — and one that also holds a live `bestMastery`
+  keeps it, so played progress is never deleted.
 - `screen.js`'s `_instrumentKind()` had silently drifted from `routes.py`'s
   `_instrument_kind()`: it ran the keys-name regex unconditionally instead
   of only when `type` is blank, and never checked the drums/unsupported
