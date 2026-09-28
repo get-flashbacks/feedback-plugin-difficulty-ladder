@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no runtime behavior change; integration tests and capability probing
   against missing/minimum/current peer versions remain open follow-up
   work under #130.
+- README: fixed three factual errors caught by review — the Chordr row
+  named a nonexistent route (`POST /group-chords`, actually
+  `POST /api/plugins/difficulty_ladder/analyze-chords`) and a symbol not
+  in this repo (`_registerChartTransform`), and wrongly listed
+  `staged_chords` as Chordr-gated when it's a Chordr-independent local
+  option; the Section Map row cited a Difficulty Ladder version
+  (`v0.9.13`) that was never released (the real floor for the
+  `sections.v2` contract is `v0.12.0`, per `CHANGELOG.md`) and implied
+  Section Map inspects a `schema` field it never reads; the core table
+  cited a `v0.3.0-alpha.1` tag that doesn't exist (feedBack core has no
+  tags/releases, only a `VERSION` file, currently `0.3.0-alpha.2`).
 - README: document where auto-adjust actually settles for each Sensitivity
   setting (roadmap C2, #55) — a settle-point table, the "strict has the
   tightest settle point but moves the slider most often" finding, and the
