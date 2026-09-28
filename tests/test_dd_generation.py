@@ -800,81 +800,21 @@ def test_unsupported_drums_skip_preserves_instrument_classification():
     }
 
 
-# ── Issue #66: explicit allowlist for supported generator instruments ───────
+# ── Issue #66/#102: explicit allowlist for supported generator instruments ──
+# Cross-language contract: this matrix also drives tests/screen.test.js's
+# _instrumentKind cross-check. Edit tests/fixtures/instrument_kind_cases.json,
+# not the assertions below, when adding a case.
 
-@pytest.mark.parametrize("arr_type", ["lead", "rhythm", "bass", "combo", "chord", "humstrum"])
-def test_instrument_kind_allows_every_known_fretted_type(arr_type):
-    assert routes._instrument_kind(arr_type, "some name") == "fretted"
-
-
-@pytest.mark.parametrize("arr_type", ["Lead", " RHYTHM ", "Bass"])
-def test_instrument_kind_fretted_types_are_case_and_whitespace_insensitive(arr_type):
-    assert routes._instrument_kind(arr_type, "") == "fretted"
+with open(Path(__file__).parent / "fixtures" / "instrument_kind_cases.json") as _f:
+    _INSTRUMENT_KIND_CASES = json.load(_f)
 
 
-def test_instrument_kind_blank_type_still_falls_back_to_fretted():
-    # feedpakr (the GP importer) never sets `type` at all for fretted/keys
-    # arrangements -- an absent/blank type must keep working exactly like
-    # before this fix, or the vast majority of real packs would suddenly be
-    # reported as unsupported.
-    assert routes._instrument_kind("", "Lead") == "fretted"
-    assert routes._instrument_kind(None, "Lead") == "fretted"
-
-
-@pytest.mark.parametrize("arr_type", ["piano", "keys", "Piano", " KEYS "])
-def test_instrument_kind_allows_known_keys_types(arr_type):
-    assert routes._instrument_kind(arr_type, "some name") == "keys"
-
-
-def test_instrument_kind_still_name_sniffs_keys_when_type_is_blank():
-    assert routes._instrument_kind("", "Keys") == "keys"
-    assert routes._instrument_kind("", "Synth Pad") == "keys"
-
-
-@pytest.mark.parametrize("arr_type", ["drums", "drum", "Drums"])
-def test_instrument_kind_recognizes_drum_types(arr_type):
-    assert routes._instrument_kind(arr_type, "some name") == "drums"
-
-
-@pytest.mark.parametrize("arr_type", ["vocals", "harmony", "notation", "bonus-track", "bogus"])
-def test_instrument_kind_returns_unsupported_for_an_unrecognized_non_empty_type(arr_type):
-    # The bug: an unknown non-drum type used to fall through to the fretted
-    # heuristic (silently mis-scoring content this generator has no business
-    # reading) instead of being explicitly rejected.
-    assert routes._instrument_kind(arr_type, "some name") == "unsupported"
-
-
-def test_instrument_kind_detects_drums_by_name_when_type_is_blank():
-    # Issue #102: missing type should not silently mean fretted for names
-    # identifying drums. Name-sniff for "Drums", "Drum 2", etc.
-    assert routes._instrument_kind("", "Drums") == "drums"
-    assert routes._instrument_kind("", "Drums 2") == "drums"
-    assert routes._instrument_kind(None, "Drum Kit") == "drums"
-    assert routes._instrument_kind("", "  Percussion  ") == "drums"
-
-
-def test_instrument_kind_detects_unsupported_by_name_when_type_is_blank():
-    # Issue #102: missing type should not silently mean fretted for names
-    # identifying unsupported instruments (Sax, Vocals, etc.). Narrow to only
-    # unambiguous non-fretted names to avoid false positives (e.g., "Harmony"
-    # guitar, "Strings" arrangement are common fretted part names).
-    assert routes._instrument_kind("", "Sax") == "unsupported"
-    assert routes._instrument_kind("", "Saxophone") == "unsupported"
-    assert routes._instrument_kind("", "Vocals") == "unsupported"
-    assert routes._instrument_kind(None, "Violin") == "unsupported"
-    assert routes._instrument_kind("", "  Cello  ") == "unsupported"
-    assert routes._instrument_kind("", "Flute") == "unsupported"
-    assert routes._instrument_kind("", "Trumpet") == "unsupported"
-
-
-def test_instrument_kind_blank_type_with_fretted_names_still_defaults_to_fretted():
-    # When type is blank and name doesn't match unsupported patterns,
-    # should still default to fretted for backward compatibility with
-    # legacy packs that omit type.
-    assert routes._instrument_kind("", "Lead") == "fretted"
-    assert routes._instrument_kind("", "Rhythm") == "fretted"
-    assert routes._instrument_kind(None, "Combo") == "fretted"
-    assert routes._instrument_kind("", "My Custom Arrangement") == "fretted"
+@pytest.mark.parametrize(
+    "case", _INSTRUMENT_KIND_CASES,
+    ids=[f"{c['issue']}:{c['type']!r}/{c['name']!r}" for c in _INSTRUMENT_KIND_CASES],
+)
+def test_instrument_kind_matches_shared_fixture(case):
+    assert routes._instrument_kind(case["type"], case["name"]) == case["expected"]
 
 
 def test_generate_phrases_for_arrangement_skips_an_unsupported_instrument_type():

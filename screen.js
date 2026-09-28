@@ -407,17 +407,33 @@
     }
     /* eslint-enable security/detect-object-injection */
 
-    // Mirrors routes.py's _instrument_kind() for authoritative song_info
-    // metadata. The WebSocket calls the field arrangement_type because its
-    // top-level `type` is the message discriminator.
+    // Canonical definition lives in routes.py's _instrument_kind(); this is
+    // a faithful port, not an independent reimplementation. The two are kept
+    // in sync via the shared fixture in tests/fixtures/instrument_kind_cases.json
+    // (see tests/test_dd_generation.py and tests/screen.test.js) rather than
+    // by hand — do not edit this function without updating that fixture and
+    // re-running both suites. The WebSocket calls the field arrangement_type
+    // because its top-level `type` is the message discriminator.
     function _instrumentKind(arrType, arrName) {
-        var type = typeof arrType === 'string' ? arrType.trim().toLowerCase() : '';
-        var name = typeof arrName === 'string' ? arrName.trim() : '';
-        if (type === 'drums' || type === 'drum') return 'drums';
-        if (type === 'piano' || type === 'keys'
-            || /^(keys|piano|keyboard|synth)/i.test(name)) return 'keys';
-        if (!type || ['lead', 'rhythm', 'bass', 'combo', 'chord', 'humstrum'].indexOf(type) !== -1)
+        var t = typeof arrType === 'string' ? arrType.trim().toLowerCase() : '';
+        var n = typeof arrName === 'string' ? arrName.trim() : '';
+
+        // Explicit type always takes precedence.
+        if (t === 'drums' || t === 'drum') return 'drums';
+        if (t === 'piano' || t === 'keys') return 'keys';
+
+        // When type is blank, name-sniff for unsupported instruments and
+        // keys before defaulting to fretted (feedpakr omits `type` for
+        // fretted/keys, so blank-type is the common case, not the edge one).
+        if (t === '') {
+            if (/^(keys|piano|keyboard|synth)/i.test(n)) return 'keys';
+            if (/^(drums?|percussion|kit)/i.test(n)) return 'drums';
+            if (/^(sax|saxophone|vocals?|voices?|violin|cello|flute|trumpet|trombone|lyrics?|notation)/i.test(n)) return 'unsupported';
             return 'fretted';
+        }
+
+        // Non-blank type: explicit allowlist.
+        if (['lead', 'rhythm', 'bass', 'combo', 'chord', 'humstrum'].indexOf(t) !== -1) return 'fretted';
         return 'unsupported';
     }
 

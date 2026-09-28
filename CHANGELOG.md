@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `screen.js`'s `_instrumentKind()` had silently drifted from `routes.py`'s
+  `_instrument_kind()`: it ran the keys-name regex unconditionally instead
+  of only when `type` is blank, and never checked the drums/unsupported
+  name patterns at all. A blank-`type` arrangement named e.g. "Vocals" was
+  misclassified as `fretted` client-side (and remembered/mastery-tracked
+  as such) while the backend correctly refused to generate a ladder for
+  it. `_instrumentKind()` is now a faithful port of the Python logic, and
+  both implementations are driven by a shared fixture
+  (`tests/fixtures/instrument_kind_cases.json`) so they can't silently
+  diverge again.
+
 ### Added
 - README: new "Host and peer compatibility" section (#129, #130) —
   documents the known source-level core-commit floors for
