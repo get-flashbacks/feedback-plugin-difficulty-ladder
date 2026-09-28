@@ -1898,6 +1898,281 @@ test('song-wide generation remembers every supported arrangement classifier', ()
     });
 });
 
+function playArrangement(mod, info) {
+    global.window.feedBack = { currentSong: { filename: info.filename } };
+    global.window.highway = {
+        getSongInfo: () => ({
+            arrangement_index: info.arrangement_index,
+            arrangement_type: info.arrangement_type,
+            arrangement: info.arrangement,
+        }),
+        hasPhraseData: () => false,
+    };
+    mod.onSongEvent();
+}
+
+test('a stale pre-fix label is cleared once the loaded arrangement has no ladder', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::1': { mastery: 68, instrument: 'fretted' } });
+
+    playArrangement(mod, {
+        filename: 'song.feedpak', arrangement_index: 1,
+        arrangement_type: '', arrangement: 'Vocals',
+    });
+
+    assert.deepEqual(mod.loadSongMasteryMap(), {}, 'the stale v1 record is gone');
+    assert.deepEqual(mod.aggregateMasteryByInstrument(mod.loadSongMasteryMap()), [],
+        'the Profile baseline aggregate no longer counts the cleared label');
+    // song:ready resolves the legacy-default compatibility context before the
+    // repair runs, so on a first-contact install the one-shot migration has
+    // already copied the stale label into the v2 tree by then.
+    const migrated = playerContext({
+        profile_id: 'legacy-default', profile_hash: null, player_id: 'main',
+        song_id: 'song.feedpak', arrangement_id: '1', instrument: 'guitar',
+        role: 'instrumental', skill: 'overall',
+    });
+    assert.equal(mod.readProgress(migrated), null, 'no v2 node for the cleared label');
+});
+
+test('a migrated stale label is cleared too, under the profile that claimed the migration', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::1': { mastery: 68, instrument: 'fretted' } });
+    // An install that already ran the one-shot songMasteryV1 migration: the
+    // stale label now lives in v2, which is what the Profile baseline reads.
+    mod.migrateLegacyData(playerContext({ compatibility_adapter: true }));
+    const migrated = playerContext({
+        song_id: 'song.feedpak', arrangement_id: '1', instrument: 'guitar',
+        role: 'instrumental', skill: 'overall',
+    });
+    assert.equal(mod.readProgress(migrated).currentDifficulty, 68, 'precondition: the label is in v2');
+
+    playArrangement(mod, {
+        filename: 'song.feedpak', arrangement_index: 1,
+        arrangement_type: '', arrangement: 'Drums',
+    });
+
+    assert.equal(mod.readProgress(migrated), null, 'the migrated node is gone, not just the v1 record');
+    assert.deepEqual(mod.loadSongMasteryMap(), {});
+    const playerSongs = mod.loadProgressStore().profiles[mod._nodeKey('hash-1')]
+        .players[mod._nodeKey('player-1')].songs;
+    assert.deepEqual(playerSongs, {}, 'the emptied arrangement/song husks are pruned too');
+    const persisted = JSON.parse(global.localStorage.getItem('difficulty_ladder.progress.v2'));
+    assert.deepEqual(
+        Object.keys(persisted.profiles[mod._nodeKey('hash-1')].players[mod._nodeKey('player-1')].songs),
+        [],
+        'the repair is persisted immediately, not left in the 150ms flush debounce'
+    );
+});
+
+// The pre-fix classifier also ran its keys-name regex unconditionally, so a
+// non-blank type the backend rejects could be stored as 'keys'.
+test('a stale pre-fix keys label is cleared for a rejected arrangement type', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::0': { mastery: 55, instrument: 'keys' } });
+
+    playArrangement(mod, {
+        filename: 'song.feedpak', arrangement_index: 0,
+        arrangement_type: 'vocals', arrangement: 'Keyboard Vocals',
+    });
+
+    assert.deepEqual(mod.loadSongMasteryMap(), {});
+});
+
+test('a ladder-eligible arrangement keeps its label, and an unlabelled legacy record is left alone', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({
+        'song.feedpak::0': { mastery: 61, instrument: 'fretted' },
+        'song.feedpak::1': { mastery: 44, instrument: 'keys' },
+        'saxsong.feedpak::0': 52,
+    });
+
+    playArrangement(mod, {
+        filename: 'song.feedpak', arrangement_index: 0,
+        arrangement_type: '', arrangement: 'Rhythm',
+    });
+    playArrangement(mod, {
+        filename: 'song.feedpak', arrangement_index: 1,
+        arrangement_type: 'piano', arrangement: 'Grand',
+    });
+    // Same song, same blank-type reject as above — the repair must not reach
+    // across to an unrelated record, nor touch a bare numeric legacy record
+    // (which carries no instrument claim to contradict and migrates to
+    // 'legacy-unknown', contributing to no aggregate group).
+    playArrangement(mod, {
+        filename: 'saxsong.feedpak', arrangement_index: 0,
+        arrangement_type: '', arrangement: 'Sax',
+    });
+
+    assert.deepEqual(mod.loadSongMasteryMap(), {
+        'song.feedpak::0': { mastery: 61, instrument: 'fretted' },
+        'song.feedpak::1': { mastery: 44, instrument: 'keys' },
+        'saxsong.feedpak::0': 52,
+    });
+});
+
+// The v1 side keeps a bare numeric record (it claims no group to contradict),
+// so the v2 side must keep its migration output too — otherwise the repair
+// deletes a real remembered value that contributes to no aggregate group and
+// can never be restored.
+test('a bare numeric legacy record keeps both its v1 record and its migrated v2 value', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'saxsong.feedpak::0': 52 });
+    mod.migrateLegacyData(playerContext({ compatibility_adapter: true }));
+    const unmapped = mod.readProgress(playerContext({
+        song_id: 'saxsong.feedpak', arrangement_id: '0', instrument: 'legacy-unknown', role: 'instrumental',
+    }));
+    assert.equal(unmapped.currentDifficulty, 52, 'precondition: the value migrated to a legacy-unknown node');
+
+    playArrangement(mod, {
+        filename: 'saxsong.feedpak', arrangement_index: 0,
+        arrangement_type: '', arrangement: 'Sax',
+    });
+
+    assert.deepEqual(mod.loadSongMasteryMap(), { 'saxsong.feedpak::0': 52 });
+    assert.equal(mod.readProgress(playerContext({
+        song_id: 'saxsong.feedpak', arrangement_id: '0', instrument: 'legacy-unknown', role: 'instrumental',
+    })).currentDifficulty, 52, 'the unlabelled v2 value survives a repair pass');
+    assert.deepEqual(mod.aggregateMasteryByInstrument(mod.loadSongMasteryMap()), [],
+        'and it still contributes to no instrument group, before or after');
+});
+
+// The repair is one-shot: a second visit of the same un-laddered song must not
+// rewrite the whole progress store, which would mean a stringify + setItem on
+// every song load forever.
+test('a repaired un-laddered song is not rewritten on the next visit', () => {
+    const mod = freshPlugin();
+    const played = playerContext({
+        song_id: 'song.feedpak', arrangement_id: '1', instrument: 'guitar', role: 'instrumental',
+    });
+    mod.writeProgress(played, { bestMastery: 87 });
+    mod.saveSongMasteryMap({ 'song.feedpak::1': { mastery: 68, instrument: 'fretted' } });
+    mod.migrateLegacyData(playerContext({ compatibility_adapter: true }));
+    const song = {
+        filename: 'song.feedpak', arrangement_index: 1,
+        arrangement_type: '', arrangement: 'Vocals',
+    };
+    playArrangement(mod, song);
+    // Count the persisted writes rather than diffing store contents: a second
+    // repair that only restamps updatedAt can land inside the same millisecond
+    // as the first and come out byte-identical while still writing.
+    var writes = 0;
+    var setItem = global.localStorage.setItem.bind(global.localStorage);
+    global.localStorage.setItem = function (storageKey, value) {
+        if (storageKey === 'difficulty_ladder.progress.v2') writes += 1;
+        return setItem(storageKey, value);
+    };
+    try {
+        playArrangement(mod, song);
+    } finally {
+        global.localStorage.setItem = setItem;
+    }
+
+    assert.equal(writes, 0, 'a second load of an already-repaired song rewrites nothing');
+    assert.equal(mod.readProgress(played).bestMastery, 87, 'and still keeps the played mastery');
+});
+
+test('a generation row with no usable arrangement index clears nothing', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::0': { mastery: 68, instrument: 'fretted' } });
+    for (const index of [null, '', undefined, 'x', -1]) {
+        mod.rememberGeneratedInstruments('song.feedpak', 0, {
+            arrangements: [{ arrangement_index: index, instrument: 'unsupported' }],
+        });
+    }
+    assert.deepEqual(mod.loadSongMasteryMap(), {
+        'song.feedpak::0': { mastery: 68, instrument: 'fretted' },
+    }, 'Number() coerces null and \'\' to 0, so a row without an int index must not clear arrangement 0');
+});
+
+test('the repair clears only migration-written nodes, never live progress', () => {
+    const mod = freshPlugin();
+    const live = playerContext({
+        song_id: 'song.feedpak', arrangement_id: '1', instrument: 'guitar', role: 'lead',
+    });
+    mod.writeProgress(live, { currentDifficulty: 55, bestMastery: 40 });
+    mod.saveSongMasteryMap({ 'song.feedpak::1': { mastery: 68, instrument: 'fretted' } });
+    mod.migrateLegacyData(playerContext({ compatibility_adapter: true }));
+
+    playArrangement(mod, {
+        filename: 'song.feedpak', arrangement_index: 1,
+        arrangement_type: '', arrangement: 'Vocals',
+    });
+
+    assert.deepEqual(mod.loadSongMasteryMap(), {});
+    const survivor = mod.readProgress(live);
+    assert.equal(survivor.currentDifficulty, 55, 'played progress for the same arrangement survives');
+    assert.equal(survivor.bestMastery, 40);
+});
+
+// The migration stamps any node whose currentDifficulty is still unset, which
+// includes one live scoring already created — so the stamp proves where the
+// difficulty came from, not that the node is migration-only.
+test('a stamped node that also holds played mastery keeps it and loses the migrated difficulty', () => {
+    const mod = freshPlugin();
+    const played = playerContext({
+        song_id: 'song.feedpak', arrangement_id: '1', instrument: 'guitar', role: 'instrumental',
+    });
+    mod.writeProgress(played, { bestMastery: 87 });
+    mod.saveSongMasteryMap({ 'song.feedpak::1': { mastery: 68, instrument: 'fretted' } });
+    mod.migrateLegacyData(playerContext({ compatibility_adapter: true }));
+    assert.equal(mod.readProgress(played).currentDifficulty, 68,
+        'precondition: the stale label was stamped onto the already-played node');
+
+    playArrangement(mod, {
+        filename: 'song.feedpak', arrangement_index: 1,
+        arrangement_type: '', arrangement: 'Vocals',
+    });
+
+    const repaired = mod.readProgress(played);
+    assert.equal(repaired.currentDifficulty, null, 'the migrated difficulty is gone');
+    assert.equal(repaired.bestMastery, 87, 'the played mastery is not');
+});
+
+test('a migrated stale label is cleared even when the v1 record is already gone', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::1': { mastery: 68, instrument: 'fretted' } });
+    mod.migrateLegacyData(playerContext({ compatibility_adapter: true }));
+    const migrated = playerContext({
+        song_id: 'song.feedpak', arrangement_id: '1', instrument: 'guitar', role: 'instrumental',
+    });
+    assert.equal(mod.readProgress(migrated).currentDifficulty, 68);
+    mod.saveSongMasteryMap({}); // the v1 record is gone and can never come back
+
+    playArrangement(mod, {
+        filename: 'song.feedpak', arrangement_index: 1,
+        arrangement_type: '', arrangement: 'Vocals',
+    });
+
+    assert.equal(mod.readProgress(migrated), null,
+        'the v2 node must not depend on the v1 record still being present');
+});
+
+test('authoritative generation rows clear the mislabeled arrangements of the whole song', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({
+        'mixed.feedpak::0': { mastery: 70, instrument: 'fretted' },
+        'mixed.feedpak::1': { mastery: 55, instrument: 'keys' },
+        'mixed.feedpak::2': { mastery: 40, instrument: 'fretted' },
+        'mixed.feedpak::3': { mastery: 30, instrument: 'keys' },
+    });
+
+    mod.rememberGeneratedInstruments('mixed.feedpak', 1, {
+        arrangements: [
+            { arrangement_index: 0, instrument: 'fretted' },
+            { arrangement_index: 1, instrument: 'keys' },
+            { arrangement_index: 2, instrument: 'drums' },
+            // No instrument at all: an unclassified skip, not a verdict.
+            { arrangement_index: 3 },
+        ],
+    });
+
+    assert.deepEqual(mod.loadSongMasteryMap(), {
+        'mixed.feedpak::0': { mastery: 70, instrument: 'fretted' },
+        'mixed.feedpak::1': { mastery: 55, instrument: 'keys' },
+        'mixed.feedpak::3': { mastery: 30, instrument: 'keys' },
+    });
+});
+
 test('aggregateMasteryByInstrument computes averages and medians by authoritative classifier', () => {
     const mod = freshPlugin();
     assert.deepEqual(mod.aggregateMasteryByInstrument({

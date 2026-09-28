@@ -449,6 +449,138 @@
         return 'unsupported';
     }
 
+    // ---- Stale-label repair (issue #141) ----
+    // The repair side of the classifier fix above, which is prevent-only: a
+    // label already written under the old verdict is never rewritten, because
+    // _rememberSongInstrument() fires solely for 'fretted'/'keys' and there is
+    // no clearing path at all. A record the old classifier stored as 'fretted'
+    // (blank-type "Vocals"/"Drums") or 'keys' (any type whose name started
+    // with a keys word) therefore survives forever, and the one-shot
+    // songMasteryV1 migration bakes a v1 'fretted' into a durable v2 'guitar'
+    // node, so the stale label outlives the v1 record it came from.
+    //
+    // Repair is on-contact, not a sweep: a v1 key is
+    // `filename::arrangement` and carries no type or name, so the only things
+    // that know what an arrangement actually is are the loaded song's metadata
+    // (onSongEvent) and the backend's own per-arrangement rows
+    // (rememberGeneratedInstruments). Both call in with the current verdict.
+    //
+    // Every key read/written below is either songKeyOf()'s
+    // `filename + '::' + arrangementKey` — the literal '::' means it can never
+    // equal "__proto__"/"constructor"/"prototype" — or _nodeKey()/_profileKey()-
+    // derived, so no bracket access can reach an inherited property.
+    /* eslint-disable security/detect-object-injection */
+    function _clearStaleSongInstrument(key) {
+        if (!key) return;
+        var map = loadSongMasteryMap();
+        var record = _plainObject(map[key]);
+        // Only a record carrying an eligibility label can be a stale one: a
+        // bare numeric legacy record makes no instrument claim to contradict,
+        // and the migrator maps it to 'legacy-unknown' rather than to a group.
+        if (record && (record.instrument === 'fretted' || record.instrument === 'keys')) {
+            delete map[key];
+            saveSongMasteryMap(map);
+        }
+        // Deliberately not gated on the v1 record: the migrated v2 node is
+        // durable on its own, so requiring the clearable v1 record to still be
+        // there would strand it — a v1 record that went missing (cleared here
+        // on a visit whose v2 write was lost to a closed tab, a partial
+        // storage wipe) can never come back to re-trigger this.
+        _clearMigratedMasteryNode(key);
+    }
+    /* eslint-enable security/detect-object-injection */
+
+    // The v1 record is the aggregate's fallback source, but the v2 tree is
+    // what the Profile baseline prefers, so clearing v1 alone would leave the
+    // stale label on screen for every install that has already migrated. The
+    // migration records the profile that claimed it, and stamps every node it
+    // writes with legacy_claim_player_id, so the node is findable under
+    // (claimed_by, claimed_player_id) and identifiable as migration-written.
+    //
+    // The stamp is not proof that the whole node is migration-owned: the
+    // migration also stamps a pre-existing node whose currentDifficulty was
+    // still unset, and that node can hold a live bestMastery. So the repair
+    // splits the two fields. bestMastery is written only by live scoring (the
+    // migration never writes it), so it is the player's and is always kept.
+    // currentDifficulty is the field the stale label feeds, and for an
+    // arrangement the backend will not ladder it is a difficulty the plugin
+    // will never apply anyway, so it is dropped either way — on a node that
+    // also has played mastery that means the node is kept with its difficulty
+    // cleared, and on a migration-only node the node goes with it.
+    /* eslint-disable security/detect-object-injection */
+    function _clearMigratedMasteryNode(key) {
+        var identity = _legacySongIdentity(key);
+        if (!identity) return;
+        var store = loadProgressStore();
+        var migration = _plainObject(store.migrations.songMasteryV1);
+        if (!migration) return; // never migrated: nothing was baked into v2
+        var profile = _plainObject(store.profiles[migration.claimed_by]);
+        var player = profile && _plainObject(profile.players)
+            ? profile.players[_nodeKey(migration.claimed_player_id)] : null;
+        var songs = _plainObject(player) ? player.songs : null;
+        var song = songs ? songs[_nodeKey(identity.song_id)] : null;
+        var arrangements = _plainObject(song) ? song.arrangements : null;
+        var arrangement = arrangements ? arrangements[_nodeKey(identity.arrangement_id)] : null;
+        var instruments = _plainObject(arrangement) ? arrangement.instruments : null;
+        if (!instruments) return;
+        var cleared = false;
+        // A v1 key is 1:1 with (song, arrangement) and the migration writes at
+        // most one node per key, so under one arrangement every node the
+        // migration stamped is a stale one. Which instrument it landed on is
+        // not re-derived from the old label — that label is not carried into
+        // the node — but the node's own instrument value tells us, so both
+        // gates below read off data already in the store.
+        Object.keys(instruments).forEach(function (instrumentKey) {
+            var instrumentNode = instruments[instrumentKey];
+            // Same gate as the v1 side above, on the migrated value: only a
+            // 'fretted' or 'keys' label migrates into 'guitar' or 'keys'. A
+            // bare numeric record migrates into 'legacy-unknown', which is not
+            // a claim the verdict can contradict — and it never reaches the
+            // Profile aggregate (_v2MasteryMapForBaseline maps only those two)
+            // or the library badge, so deleting it would lose a real value that
+            // nothing else can restore.
+            if (!_plainObject(instrumentNode)
+                || (instrumentNode.instrument !== 'guitar' && instrumentNode.instrument !== 'keys')) return;
+            var roles = instrumentNode.roles;
+            if (!_plainObject(roles)) return;
+            Object.keys(roles).forEach(function (roleKey) {
+                var skills = _plainObject(roles[roleKey]) && roles[roleKey].skills;
+                if (!_plainObject(skills)) return;
+                Object.keys(skills).forEach(function (skillKey) {
+                    var node = _plainObject(skills[skillKey]);
+                    if (!node || !_id(node.legacy_claim_player_id)) return;
+                    if (_pct(node.bestMastery) === null) {
+                        delete skills[skillKey];
+                    } else if (_pct(node.currentDifficulty) !== null) {
+                        // Guarded on the field actually being set: the node is
+                        // kept, and a later visit of the same un-laddered song
+                        // would otherwise re-null an already-null difficulty
+                        // and count as a repair, turning a one-shot write into
+                        // a full-store rewrite on every song load.
+                        node.currentDifficulty = null;
+                        node.updatedAt = new Date().toISOString();
+                    } else return;
+                    cleared = true;
+                });
+                if (!Object.keys(skills).length) delete roles[roleKey];
+            });
+            if (!Object.keys(roles).length) delete instruments[instrumentKey];
+        });
+        if (!cleared) return;
+        // Leave the tree shaped as it was before the migration reached this
+        // arrangement rather than a chain of emptied husks.
+        if (!Object.keys(instruments).length) {
+            delete arrangements[_nodeKey(identity.arrangement_id)];
+            if (!Object.keys(arrangements).length) delete songs[_nodeKey(identity.song_id)];
+        }
+        saveProgressStore(store);
+        // One-shot repair, not a hot gameplay path: persist immediately so a
+        // tab closed right after a song load can't leave the v1 record cleared
+        // while this write is still only in the 150ms debounce.
+        flushProgressStore();
+    }
+    /* eslint-enable security/detect-object-injection */
+
     // ---- Library card badge (issue #4) ----
     // Surfaces the songMastery map above as a library-card decoration via the
     // Host's registration API (window.feedBack.libraryCardActions) — never a
@@ -2639,10 +2771,27 @@
             rows = [{ arrangement_index: currentArrangement, instrument: data.instrument }];
         }
         rows.forEach(function (row) {
-            if (!row || (row.instrument !== 'fretted' && row.instrument !== 'keys')) return;
-            var index = Number(row.arrangement_index);
-            if (!Number.isInteger(index) || index < 0) return;
-            _rememberSongInstrument(songKeyOf({ filename: filename, arrangement_index: index }), row.instrument);
+            if (!row) return;
+            // Validate the raw field rather than a Number() coercion of it:
+            // Number(null) and Number('') are both 0, which would make a row
+            // carrying no usable index clear arrangement 0 — now a delete
+            // rather than a write. The backend always sends an int here.
+            if (!Number.isInteger(row.arrangement_index) || row.arrangement_index < 0) return;
+            var index = row.arrangement_index;
+            var key = songKeyOf({ filename: filename, arrangement_index: index });
+            if (row.instrument === 'drums' || row.instrument === 'unsupported') {
+                // Issue #141: these rows are the backend's own verdict for
+                // every arrangement of this song, so one generate pass repairs
+                // the mislabeled siblings too — the song-info path only ever
+                // sees the arrangement the user has open. A row with no
+                // instrument at all is an unclassified skip (unknown index,
+                // other skip reason) and is no evidence of ineligibility, so
+                // it clears nothing.
+                _clearStaleSongInstrument(key);
+                return;
+            }
+            if (row.instrument !== 'fretted' && row.instrument !== 'keys') return;
+            _rememberSongInstrument(key, row.instrument);
             if (index === currentArrangement) _songInstrument = row.instrument;
         });
     }
@@ -2792,6 +2941,10 @@
             if (instrument === 'fretted' || instrument === 'keys') {
                 _songInstrument = instrument;
                 _rememberSongInstrument(key, instrument);
+            } else {
+                // Issue #141: an arrangement the backend will not ladder must
+                // not keep a label the pre-fix classifier wrote for it.
+                _clearStaleSongInstrument(key);
             }
         }
         mountControls();
