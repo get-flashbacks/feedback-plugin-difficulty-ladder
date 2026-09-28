@@ -348,12 +348,14 @@ Loading/generating ladders and getting fully correct *live* adaptive
 behavior have different core requirements, and conflating them into one
 number would either be too strict (blocking generation on hosts that
 support it fine) or too lax (silently mis-rendering phrase tiers on hosts
-that don't). Until a tagged core release has been audited end-to-end, this
-documents the known source-level floors instead:
+that don't). feedBack core has no tags or releases (it versions itself
+via a root `VERSION` file, currently `0.3.0-alpha.2`), so until a
+release-qualified audit exists against a version core actually ships,
+this documents the known source-level floors instead:
 
 | Capability | Core requirement | Evidence |
 |---|---|---|
-| Loading / generating ladders (`routes.py`) | `dlc_paths._resolve_dlc_path` (core `0dcc913`, Jul 10) and `sloppak.read_member_bytes` (core `d876ded`, Jul 13) | Direct imports in `routes.py`; the tagged `v0.3.0-alpha.1` predates both |
+| Loading / generating ladders (`routes.py`) | `dlc_paths._resolve_dlc_path` (core `0dcc913`, Jul 10) and `sloppak.read_member_bytes` (core `d876ded`, Jul 13) | Direct imports in `routes.py`; feedBack core has no tags/releases and versions itself via a root `VERSION` file (currently `0.3.0-alpha.2`) — both commits postdate that version line, which is the load-bearing fact until a release-qualified audit exists |
 | Correct phrase-tier semantics (mastery slider ↔ `getPhrases().top_difficulty`) | Core `e5339c0` (Sep 23) — switched mastery selection to tier-number semantics and exposed `top_difficulty` | `screen.js` consumes `top_difficulty` when present but only *falls back* when it's absent — that doesn't prove older-core rendering agrees with the HUD/attempt records |
 | Full concurrent-player support (`playerContexts`, `player-difficulty.v1`) | Core `7633211` (Sep 17) | Older hosts fall back to a legacy per-player-unaware compatibility path — see [`PLAYER_CONTEXT.md`](PLAYER_CONTEXT.md) |
 
@@ -361,8 +363,8 @@ These are source/history findings (inspected against plugin revision
 `d6e60f6`), not an end-to-end certification of any specific older host —
 treat `e5339c0` (or a tested descendant) as the candidate baseline for
 full adaptive-difficulty behavior, and the two `Jul` commits as the floor
-for generation working at all, until a real release lets `minHost` be set
-honestly. Related: [#87](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder/issues/87)
+for generation working at all, until a release-qualified audit lets
+`minHost` be set honestly. Related: [#87](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder/issues/87)
 and [#88](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder/issues/88)
 implement the player-context features this table only versions.
 
@@ -373,18 +375,26 @@ ladders — each is a feature-scoped optional dependency, not a hard one:
 
 | Peer | Feature it enables | Required / optional | Lowest auditable version | Degraded behavior when absent/older |
 |---|---|---|---|---|
-| [Chordr](https://github.com/get-flashbacks/feedback-plugin-chordr) | `POST /group-chords` chord-grouping preview (`routes.py`, `_registerChartTransform`-adjacent), and the `staged_chords` chord-landmark generator stage | Required, for that feature only | v0.5.0 (first version registering `app.state.chordr_analyze_chart_chords_v1`) | Route returns HTTP 503; `staged_chords` generation degrades to the unstaged path |
+| [Chordr](https://github.com/get-flashbacks/feedback-plugin-chordr) | The read-only chord-grouping preview at `POST /api/plugins/difficulty_ladder/analyze-chords` (`routes.py:3319`), which calls `app.state.chordr_analyze_chart_chords_v1` (`routes.py:3355`) | Required, for that route only | v0.5.0 (first version registering `app.state.chordr_analyze_chart_chords_v1`) | Route returns HTTP 503 when Chordr is absent. `staged_chords` (the chord-landmark generator stage, `GenerateIn.staged_chords`) is **not** Chordr-gated — it's a plugin-local option that re-derives chord identity from the arrangement's own templates and works identically with Chordr absent or missing |
 | [Note Detect](https://github.com/get-flashbacks/feedback-plugin-notedetect) | Split-screen adaptive scoring (`window.createNoteDetector`) | Optional | v1.15.2 for the factory/`ownSource` split-panel registration path at all; v1.33.0 for stable `player_context` propagation | Below 1.15.2: split-panel instances aren't registered for adaptive scoring. 1.15.2–1.33.0: works, but panel identity is unpersisted and per-highway rather than stable |
-| [Split Screen](https://github.com/get-flashbacks/feedback-plugin-splitscreen) | Per-panel difficulty state (`window.feedBackSplitscreen`/`window.slopsmithSplitscreen`) | Optional | Checked against v1.14.5 — **not a confirmed floor**, only the version this integration has actually been tested against (issue #130 makes the same caveat) | Feature-detected via `typeof` checks; an older/incompatible Split Screen is treated as absent rather than partially supported |
-| [Section Map](https://github.com/get-flashbacks/feedback-plugin-sectionmap) | Glass-fill difficulty indicators via `difficulty:sections-updated` | Consumer of this plugin's event, not the other way around | Difficulty Ladder v0.9.13 is the floor for the `difficulty_ladder.sections.v2` schema Section Map currently reads (the event itself shipped in v0.2.0, the v2 schema in v0.9.13) | See `INTEGRATION.md` for the full contract |
+| [Split Screen](https://github.com/get-flashbacks/feedback-plugin-splitscreen) | Per-panel difficulty state (`window.feedBackSplitscreen`/`window.slopsmithSplitscreen`) | Optional | Checked against v1.14.5 — **not a confirmed floor**, only the version this integration has actually been tested against (issue #130 makes the same caveat) | Feature-detected via a bare `typeof ss.isActive === 'function'` presence check (`screen.js:2119`, `screen.js:2419`) — that catches a missing global or a missing `isActive` method, but not a present `isActive` whose contract moved underneath it, which is exactly the silent-death case splitscreen#47 (below) describes |
+| [Section Map](https://github.com/get-flashbacks/feedback-plugin-sectionmap) | Glass-fill difficulty indicators via the `difficulty:sections-updated` event, rendering only its `sectionDifficulties[].fillPercentage`/`.glassSize` fields | Consumer of this plugin's event, not the other way around | Difficulty Ladder v0.12.0 — where `CHANGELOG.md` documents the `difficulty_ladder.sections.v2` payload contract (the event itself shipped in v0.2.0); Section Map does not actually inspect a `schema` field, so this floor is about when the current fill-percentage payload shape stabilized, not a version string Section Map validates | See `INTEGRATION.md` for the full contract |
 
 A `typeof` check alone doesn't catch a downstream contract change on an
 otherwise-present global — see
 [feedback-plugin-splitscreen#47](https://github.com/get-flashbacks/feedback-plugin-splitscreen/issues/47),
 which documents two other plugins' integrations going silently dead this
-way. Capability probing (rather than a bare presence check) and
-integration tests against missing/minimum/current peer versions are
-tracked as follow-up work in #130 — not yet implemented here.
+way (the Split Screen row above is exactly this kind of gap). Capability
+probing (rather than a bare presence check) and integration tests against
+missing/minimum/current peer versions are tracked as follow-up work in
+#130 — not yet implemented here.
+
+These peer floors are a snapshot inspected against plugin revision
+`d6e60f6` (same as the core table above), not a continuously-verified
+contract — `CLAUDE.md` → *Plugin dependencies* carries the same four
+numbers and is this repo's own warning that they're moving targets under
+active audit in #129/#130; treat this README section as that snapshot for
+the same facts, not an independent source.
 
 ## Settings
 
