@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Internal-only: `routes.py` is reorganized into two clearly marked halves —
+  a pure chart-scoring core and the pack-I/O/HTTP half — with section
+  banners naming each region's concern, the two HTTP-only constants
+  (`PLUGIN_ID`, `MAX_PROCESSING_SECONDS`) moved down to the half that uses
+  them, and a module map in the docstring (#137). No behavior change: the
+  public entry point, import paths and generated ladders are byte-identical
+  (verified by hashing generated phrases for a spread of instrument types
+  before and after). A new `pure-core-has-no-io` CI job now fails if the
+  pure region references `Path`/`zipfile`/`sloppak`/`os`/`time`/`threading`/
+  FastAPI/pydantic/yaml names or calls anything defined below the seam, so
+  the boundary can't quietly erode.
+
 ### Fixed
 - Instrument labels stored under the pre-#136 `_instrumentKind()` verdict
   are now cleared instead of persisting forever (#141). That fix is

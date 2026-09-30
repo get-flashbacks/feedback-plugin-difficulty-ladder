@@ -202,6 +202,85 @@ jobs:
           print("OK: no async handlers doing unwrapped blocking work")
           PY
 
+  pure-core-has-no-io:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: routes.py's pure scoring core must stay free of I/O and HTTP
+        run: |
+          python3 - <<'PY'
+          import ast, os, sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          routes_path = os.path.join(plugin_dir, "routes.py")
+          if not os.path.isfile(routes_path):
+              print("No routes.py — skipping")
+              raise SystemExit(0)
+
+          PURE_BANNER = "Pure chart-scoring core"
+          SEAM_BANNER = "Pack I/O, request models, and HTTP"
+
+          src = open(routes_path, encoding="utf-8").read()
+          lines = src.splitlines()
+
+          def banner_line(marker):
+              for i, line in enumerate(lines, start=1):
+                  if line.startswith("#") and marker in line:
+                      return i
+              return None
+
+          start = banner_line(PURE_BANNER)
+          seam = banner_line(SEAM_BANNER)
+          if start is None or seam is None or seam <= start:
+              print(f"::error file={routes_path}::expected a '{PURE_BANNER}' region followed by a '{SEAM_BANNER}' banner")
+              sys.exit(1)
+
+          tree = ast.parse(src, filename=routes_path)
+
+          # Nodes inside the pure region; everything else (the imports/header
+          # above the banner, and the I/O+HTTP half from the seam down) is out.
+          def in_pure(node):
+              return start <= node.lineno < seam
+
+          pure_nodes = [n for n in tree.body if in_pure(n)]
+          rest_nodes = [n for n in tree.body if not in_pure(n)]
+
+          # Names that mean "this code touches the disk, the network or the
+          # framework" — the pure half must reference none of them.
+          FORBIDDEN = {
+              "Path", "zipfile", "sloppak", "safe_join", "parse_jsonc",
+              "HTTPException", "BaseModel", "Field", "StrictBool",
+              "yaml", "os", "threading", "time", "open",
+          }
+          bad = []
+          for node in pure_nodes:
+              for sub in ast.walk(node):
+                  if isinstance(sub, ast.Name) and sub.id in FORBIDDEN:
+                      bad.append(f"line {sub.lineno}: pure core references {sub.id}")
+                  elif isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) \
+                          and sub.value.id in FORBIDDEN:
+                      bad.append(f"line {sub.lineno}: pure core references {sub.value.id}.{sub.attr}")
+
+          # And the reverse direction: the pure half must not call anything
+          # defined below the seam (currently only _generate_one, and only in
+          # comments — a real call here is a regression, not a hypothetical).
+          io_defs = set()
+          for node in rest_nodes:
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                  io_defs.add(node.name)
+          for node in pure_nodes:
+              for sub in ast.walk(node):
+                  if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) \
+                          and sub.func.id in io_defs:
+                      bad.append(f"line {sub.lineno}: pure core calls {sub.func.id}(...), which is defined below the seam")
+
+          if bad:
+              for b in sorted(set(bad)):
+                  print(f"::error file={routes_path}::{b}")
+              sys.exit(1)
+          print(f"OK: pure scoring core (lines {start}-{seam - 1}) references no I/O, HTTP or framework names")
+          PY
+
   version-bumped-on-change:
     runs-on: ubuntu-latest
     steps:
