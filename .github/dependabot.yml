@@ -1,30 +1,22 @@
-# Group minor/patch action updates to limit PR noise.
 version: 2
 updates:
-- package-ecosystem: github-actions
-  directory: /
-  schedule:
-    interval: monthly
-  open-pull-requests-limit: 5
-  # Only patch/minor bumps land automatically; major version bumps
-  # (which can change an action's inputs/outputs) still need a human
-  # to review and update the workflow.
-  ignore:
-  - dependency-name: '*'
-    update-types:
-    - version-update:semver-major
-  # Forward-looking guard: every action ref here is a floating major tag
-  # (@v4, @v6, @v0, ...), which Dependabot resolves to the newest release
-  # in that major, so there is nothing to batch. This group only engages
-  # once an action is pinned to a full semver, e.g.
-  # kentaro-m/auto-assign-action@v2.0.2. Note that a dependency matching
-  # a group's patterns counts as handled even for update-types the group
-  # excludes, so removing the major-version `ignore` above would not bring
-  # majors back as individual PRs.
-  groups:
-    minor-and-patch:
-      patterns:
-      - '*'
-      update-types:
-      - minor
-      - patch
+  # Keep GitHub Actions up to date, including SHA-pinned actions —
+  # Dependabot resolves the SHA to the tag it corresponds to and opens
+  # a PR bumping to the new release's SHA, keeping the pin fresh
+  # without giving up commit-pinning.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    # Patch/minor updates can open PRs; major version bumps
+    # (which can change an action's inputs/outputs) still need a human
+    # to review and update the workflow.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    # Group eligible version updates after the major-version ignore above.
+    # Security updates remain separate. This does not enable auto-merge.
+    groups:
+      compatible-updates:
+        patterns: ["*"]
