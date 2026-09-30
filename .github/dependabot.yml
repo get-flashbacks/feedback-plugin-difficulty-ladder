@@ -1,17 +1,20 @@
+# Group minor/patch version updates to limit PR noise.
+# Preserve existing schedules and major-version restrictions; no auto-merge.
 version: 2
 updates:
-  # Keep GitHub Actions up to date, including SHA-pinned actions —
-  # Dependabot resolves the SHA to the tag it corresponds to and opens
-  # a PR bumping to the new release's SHA, keeping the pin fresh
-  # without giving up commit-pinning.
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "monthly"
-    open-pull-requests-limit: 5
-    # Only patch/minor bumps land automatically; major version bumps
-    # (which can change an action's inputs/outputs) still need a human
-    # to review and update the workflow.
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
+- package-ecosystem: github-actions
+  directory: /
+  schedule:
+    interval: monthly
+  open-pull-requests-limit: 5
+  ignore:
+  - dependency-name: '*'
+    update-types:
+    - version-update:semver-major
+  groups:
+    minor-and-patch:
+      patterns:
+      - '*'
+      update-types:
+      - minor
+      - patch
