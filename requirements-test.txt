@@ -1,0 +1,5 @@
+# Direct dependencies required to collect and run the Python test suite.
+pytest==9.1.1
+fastapi==0.141.1
+httpx==0.28.1
+PyYAML==6.0.3
