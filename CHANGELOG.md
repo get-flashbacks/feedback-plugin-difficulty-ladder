@@ -22,10 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an allowlist rather than a denylist, so a new I/O or framework dependency
   has to be added to the allowlist deliberately rather than slipping through
   an unmaintained list — whether it is imported at the top of the file or
-  inside the region. Capability builtins (`open`, `eval`, `exec`,
-  `__import__`, …) are rejected too, so the gate also survives names that
-  reach a capability without an import. If the pure core is later moved into
-  its own module, the banner moves with it and this job keeps gating it.
+  inside the region, and whether or not some other binding in the region
+  happens to share that name (bindings are resolved per scope, so a
+  parameter cannot whitelist a sibling function). Capability builtins
+  (`open`, `eval`, `exec`, `__import__`, …) are rejected too, so the gate
+  also survives names that reach a capability without an import. A banner
+  that appears more than once, or a pure region with no statements, fails
+  the job rather than passing silently. If the pure core is later moved
+  into its own module, the banner moves with it and this job keeps gating
+  it.
 
 ### Fixed
 - Instrument labels stored under the pre-#136 `_instrumentKind()` verdict
