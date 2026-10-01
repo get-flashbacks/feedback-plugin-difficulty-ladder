@@ -261,10 +261,6 @@ jobs:
                                   out.add(a.arg)
                       elif isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)):
                           out.add(sub.id)
-                      elif isinstance(sub, ast.Import):
-                          out.update(a.asname or a.name.split(".")[0] for a in sub.names)
-                      elif isinstance(sub, ast.ImportFrom):
-                          out.update(a.asname or a.name for a in sub.names)
                       elif isinstance(sub, (ast.Global, ast.Nonlocal)):
                           out.update(sub.names)
                       elif isinstance(sub, ast.ExceptHandler) and sub.name:
@@ -310,7 +306,31 @@ jobs:
                   if name not in below:
                       below.add(name)
 
-              local = bound_names(pure_nodes) | set(dir(builtins))
+              # In-region imports are deliberately NOT treated as local bindings
+              # (see bound_names): a new dependency is a new capability, whether it
+              # is imported above the banner or inside the region.
+              #
+              # Builtins are exempt, except the ones that ARE capabilities — the
+              # bare `set(dir(builtins))` would otherwise short-circuit open() and
+              # __import__() before the allowlist is ever consulted.
+              CAPABILITY_BUILTINS = {"open", "input", "eval", "exec", "compile",
+                                      "__import__", "breakpoint"}
+              # Imports written INSIDE the region are still dependencies, and get
+              # the same allowlist treatment with the same message.
+              in_region_imports = {}
+              for node in pure_nodes:
+                  for sub in ast.walk(node):
+                      if isinstance(sub, ast.Import):
+                          for a in sub.names:
+                              root = a.name.split(".")[0]
+                              in_region_imports[a.asname or root] = (root, sub.lineno)
+                      elif isinstance(sub, ast.ImportFrom):
+                          if sub.level == 0 and sub.module:
+                              root = sub.module.split(".")[0]
+                              for a in sub.names:
+                                  in_region_imports[a.asname or a.name] = (root, sub.lineno)
+
+              local = bound_names(pure_nodes) | (set(dir(builtins)) - CAPABILITY_BUILTINS)
 
               bad = []
               for node in pure_nodes:
@@ -318,19 +338,21 @@ jobs:
                       if not isinstance(sub, ast.Name) or not isinstance(sub.ctx, ast.Load):
                           continue
                       name = sub.id
+                      if name in CAPABILITY_BUILTINS:
+                          bad.append(f"line {sub.lineno}: pure core calls the builtin capability {name}()")
+                          continue
                       if name in local:
                           continue
-                      root = header_imports.get(name)
+                      root = header_imports.get(name) or (in_region_imports.get(name) or (None,))[0]
                       if root is not None:
                           if root not in ALLOWED_ROOTS:
                               bad.append(f"line {sub.lineno}: pure core uses {name!r} "
                                          f"(module {root!r} is not one of {sorted(ALLOWED_ROOTS)})")
                       elif name in below:
                           bad.append(f"line {sub.lineno}: pure core uses {name!r}, which is defined below the seam")
-                      elif name in header_imports:
-                          bad.append(f"line {sub.lineno}: pure core uses {name!r}, from a disallowed module")
                       else:
-                          bad.append(f"line {sub.lineno}: pure core uses undefined name {name!r}")
+                          bad.append(f"line {sub.lineno}: pure core uses {name!r}, which is neither a local "
+                                     f"name, an allowed import, nor defined in this module")
               return bad
 
 
