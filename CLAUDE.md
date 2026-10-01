@@ -130,8 +130,7 @@ at collection, not per-test. The Python packages are declared in
 `requirements-test.txt`; CI installs that manifest and checks out `feedBack`
 next to this repo. If your sandbox lacks the sibling checkout or those
 dependencies, a filtered subset still exercises the pure-scoring/tier-assignment
-code without the
-FastAPI-route tests:
+code without the FastAPI-route tests:
 `-k "not chord_preview and not generate_library and not generate_route"`
 deselects 27 of 287 (16 chord-preview-route, 9 generate-library-route, 2
 generate-route tests) — a fallback, not the real suite; run the unfiltered
