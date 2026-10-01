@@ -302,7 +302,9 @@ claim marker prevents another player sharing that profile from reading it.
   — this plugin doesn't score notes itself, it observes an existing scorer.
 - Tracks a rolling accuracy average per song section (phrase) and nudges the
   master-difficulty slider (`window.setMastery`) up after a run of clean
-  sections, or down after a rough one.
+  sections, or down after a rough one. With the *Level up only* setting on,
+  the downward nudge never happens — step-ups, warm-up counting, bounds, and
+  the manual-override stand-down below are all unchanged.
 - Records monotonic best mastery at phrase finalization as the live difficulty
   percentage multiplied by the phrase hit rate. This never changes the separate
   current-difficulty target.
@@ -403,11 +405,12 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 | Setting | Effect |
 |---|---|
 | Difficulty mode | **Standard** (default) keeps difficulty fixed — no automatic movement. **Adaptive** enables today's live auto-adjust (`setMastery()` calls driven by accuracy). |
-| Resist isolated difficulty drops | Require two consecutive below-threshold sections before a downward adjustment; upward adjustments remain immediate. Off by default. |
+| Resist isolated difficulty drops | Require two consecutive below-threshold sections before a downward adjustment; upward adjustments remain immediate. Off by default. Inert while *Level up only* is on. |
+| Level up only (#111) | Opt-in comfort switch: auto-adjust raises difficulty as usual but never lowers it, at any accuracy. The manual slider still works, and moving it still stands auto-adjust down entirely — both directions — exactly as without this setting. Off by default, and deliberately presented as a comfort option rather than a learning aid (a 2022 meta-analysis, McKay et al., found the self-controlled-practice benefit close to zero after bias correction). |
 | Glass-filling section HUD | Show/hide the in-player glass row. |
 | Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. |
 | Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
-| Difficulty drop speed (1×-2×) | Multiplies only the downward auto-adjust target so difficulty can ease off faster than it climbs. The default 1× preserves symmetric behavior. |
+| Difficulty drop speed (1×-2×) | Multiplies only the downward auto-adjust target so difficulty can ease off faster than it climbs. The default 1× preserves symmetric behavior. Inert while *Level up only* is on. |
 | Min / Max % | Hard bounds auto-adjust will never cross. |
 | Generate ladder depth cap (2-8) | Maximum difficulty tiers "⚙️ Generate Difficulties" can give a phrase when building a ladder for a song that doesn't have one yet — threaded into `/generate`'s existing `levels` parameter. |
 

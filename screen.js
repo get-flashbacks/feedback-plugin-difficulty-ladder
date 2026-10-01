@@ -893,6 +893,7 @@
     var settings = {
         autoAdjust: lsGet('autoAdjust', false),
         dropResistance: lsGet('dropResistance', false) === true,
+        levelUpOnly: lsGet('levelUpOnly', false) === true,
         showGlasses: lsGet('showGlasses', true),
         sensitivity: lsGet('sensitivity', 2),     // 1 (lenient) .. 3 (strict) — confidence thresholds + step size
         downStepRatio: lsGet('downStepRatio', 1), // 1..2 — downward target multiplier; upward target is unchanged
@@ -1275,6 +1276,19 @@
         const before = Math.round(target * index / RAMP_PHRASES);
         const after = Math.round(target * (index + 1) / RAMP_PHRASES);
         return Math.max(1, after - before);
+    }
+
+    // Which way this phrase's rolling accuracy says to move the slider — the
+    // one seam both the main and the split-highway ramp read, so a change here
+    // covers both. `levelUpOnly` (#111) is a comfort switch, not a learning
+    // one: a below-threshold phrase yields no direction at all rather than a
+    // 'down', which keeps the cold-start/warm-up accounting and the manual
+    // override detection untouched. Turning it back off resumes normal
+    // step-downs from the current position on the next qualifying phrase.
+    function rampDirection(emaHitRate, th) {
+        if (emaHitRate >= th.up) return 'up';
+        if (emaHitRate <= th.down && !settings.levelUpOnly) return 'down';
+        return null;
     }
 
     function songKeyOf(si) {
@@ -1763,7 +1777,7 @@
         }
 
         var th = thresholds();
-        var direction = _emaHitRate >= th.up ? 'up' : _emaHitRate <= th.down ? 'down' : null;
+        var direction = rampDirection(_emaHitRate, th);
         _downStreak = direction === 'down' && settings.dropResistance ? _downStreak + 1 : 0;
         if (direction == null) {
             _rampDirection = null;
@@ -2385,7 +2399,7 @@
             return;
         }
         var th = thresholds();
-        var direction = state.emaHitRate >= th.up ? 'up' : state.emaHitRate <= th.down ? 'down' : null;
+        var direction = rampDirection(state.emaHitRate, th);
         state.downStreak = direction === 'down' && settings.dropResistance ? state.downStreak + 1 : 0;
         if (!direction || (direction === 'down' && settings.dropResistance && state.downStreak < DOWN_CONFIRM_PHRASES)) {
             state.rampDirection = null;
@@ -3056,11 +3070,16 @@
         var short = e.key.slice(LS_PREFIX.length);
         if (Object.prototype.hasOwnProperty.call(settings, short)) {
             try { settings[short] = JSON.parse(e.newValue); } catch (_) {
-                if (short === 'dropResistance') settings[short] = false;
+                if (short === 'dropResistance' || short === 'levelUpOnly') settings[short] = false;
             }
             if (short === 'dropResistance') {
                 settings[short] = settings[short] === true;
                 _downStreak = 0;
+            }
+            if (short === 'levelUpOnly') {
+                settings[short] = settings[short] === true;
+                _rampDirection = null;
+                _rampProgress = 0;
             }
             if (short === 'autoAdjust' && settings.autoAdjust === true) {
                 _resetSplitManualOverrideForContext(_mainPlayerContext);
@@ -3080,6 +3099,11 @@
         if (Object.prototype.hasOwnProperty.call(patch, 'dropResistance')) {
             settings.dropResistance = patch.dropResistance === true;
             _downStreak = 0;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'levelUpOnly')) {
+            settings.levelUpOnly = patch.levelUpOnly === true;
+            _rampDirection = null;
+            _rampProgress = 0;
         }
         if (Object.prototype.hasOwnProperty.call(patch, 'minMastery')
             || Object.prototype.hasOwnProperty.call(patch, 'maxMastery')) {
@@ -3120,7 +3144,7 @@
             updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,
             startMasteryLifecycleSubscriptions, stopMasteryLifecycleSubscriptions,
             MASTERY_STREAK_PHRASES, MASTERY_STREAK_ACCURACY,
-            rampStep, WARMUP_PHRASES, RAMP_PHRASES,
+            rampStep, rampDirection, WARMUP_PHRASES, RAMP_PHRASES,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
