@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New `pure-core-has-no-io` CI job (#137). It locates the pure scoring core
   in whichever plugin module declares the banner, then fails if that region
   takes on any external module outside {`re`, `bisect`, `math`,
-  `dataclasses`, `itertools`} or uses a symbol defined below the seam. It is
+  `dataclasses`, `itertools`} or uses a symbol defined outside the region. It is
   an allowlist rather than a denylist, so a new I/O or framework dependency
   has to be added to the allowlist deliberately rather than slipping through
   an unmaintained list — whether it is imported at the top of the file or
