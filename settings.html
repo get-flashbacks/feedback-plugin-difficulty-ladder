@@ -1,7 +1,7 @@
 <div class="space-y-6 py-2">
     <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
         <h3 class="text-sm font-medium text-gray-200 mb-1">Difficulty mode</h3>
-        <p class="text-[11px] text-gray-500 mb-3">Standard keeps difficulty fixed at whatever you set it to. Adaptive raises or lowers the master-difficulty slider automatically between sections, based on your recent hit accuracy — requires a note-detection scorer (e.g. the note_detect plugin) to be active, and only affects songs with a phrase-level difficulty ladder.</p>
+        <p class="text-[11px] text-gray-500 mb-3">Standard keeps difficulty fixed at whatever you set it to. Adaptive raises or lowers the master-difficulty slider automatically between sections, based on your recent hit accuracy — requires a note-detection scorer (e.g. the note_detect plugin) to be active, and only affects songs with a phrase-level difficulty ladder. "Level up only" below narrows that to raises only.</p>
         <div class="flex gap-2">
             <label class="flex-1 flex items-center justify-center gap-1.5 text-xs rounded-lg px-3 py-2 cursor-pointer border border-gray-800/50 has-[:checked]:border-accent has-[:checked]:bg-accent/10 has-[:checked]:text-white text-gray-400 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent has-[:focus-visible]:ring-offset-1 has-[:focus-visible]:ring-offset-dark-900">
                 <input type="radio" name="dd-difficulty-mode" id="dd-mode-standard" class="sr-only" value="standard" onchange="window._ddSetMode('standard')">
@@ -17,12 +17,25 @@
     <div class="flex items-center justify-between bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
         <div>
             <h3 class="text-sm font-medium text-gray-200">Resist isolated difficulty drops</h3>
-            <p class="text-[11px] text-gray-500">Require two consecutive below-threshold sections before lowering difficulty. Upward adjustments are unchanged.</p>
+            <p class="text-[11px] text-gray-500">Require two consecutive below-threshold sections before lowering difficulty. Upward adjustments are unchanged. Inert while "Level up only" is on, since there are no drops to resist.</p>
         </div>
         <label class="relative inline-flex items-center cursor-pointer">
             <input type="checkbox" id="dd-drop-resistance" class="sr-only peer"
                    aria-label="Resist isolated difficulty drops"
                    onchange="window._ddSet('dropResistance', this.checked)">
+            <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
+        </label>
+    </div>
+
+    <div class="flex items-center justify-between bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
+        <div>
+            <h3 class="text-sm font-medium text-gray-200">Level up only</h3>
+            <p class="text-[11px] text-gray-500">Comfort option: never lower the difficulty for you. Adaptive still raises it when you're playing well, and moving the slider yourself always works — this only stops auto-adjust from stepping down after a rough section. Useful if you'd rather not lose material you've already learned. It has no measured learning benefit; pick it for comfort. Note that moving the slider yourself still stands auto-adjust down entirely, both directions, exactly as it does without this setting.</p>
+        </div>
+        <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" id="dd-level-up-only" class="sr-only peer"
+                   aria-label="Level up only"
+                   onchange="window._ddSet('levelUpOnly', this.checked)">
             <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
         </label>
     </div>
@@ -68,7 +81,7 @@
         <input type="range" id="dd-down-step-ratio" min="1" max="2" step="0.25" value="1"
                class="w-full accent-accent" aria-labelledby="dd-down-step-ratio-heading"
                oninput="window._ddSet('downStepRatio', parseFloat(this.value))">
-        <p class="text-[11px] text-gray-500 mt-2">How much faster Adaptive mode lowers difficulty than it raises it. 1× keeps both directions equal; up to 2× helps a suddenly frustrating section ease off faster. The normal ramp and drop resistance still apply.</p>
+        <p class="text-[11px] text-gray-500 mt-2">How much faster Adaptive mode lowers difficulty than it raises it. 1× keeps both directions equal; up to 2× helps a suddenly frustrating section ease off faster. The normal ramp and drop resistance still apply. With "Level up only" on there are no drops left to speed up.</p>
     </div>
 
     <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
@@ -200,6 +213,9 @@
 
             var resistanceEl = document.getElementById('dd-drop-resistance');
             if (resistanceEl) resistanceEl.checked = lsGet('dropResistance', false) === true;
+
+            var levelUpOnlyEl = document.getElementById('dd-level-up-only');
+            if (levelUpOnlyEl) levelUpOnlyEl.checked = lsGet('levelUpOnly', false) === true;
 
             var glassesEl = document.getElementById('dd-show-glasses');
             if (glassesEl) glassesEl.checked = lsGet('showGlasses', true) !== false;

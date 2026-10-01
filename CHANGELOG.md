@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Opt-in "Level up only" setting (#111). While on, Adaptive mode raises the
+  master-difficulty slider as usual but never lowers it: a below-threshold
+  phrase yields no ramp direction at all rather than a step-down, so
+  auto-adjust produces no automatic decrease at any accuracy. Off by default.
+  The manual slider is untouched, including its existing stand-down of
+  auto-adjust on originless drift, and turning the setting back off resumes
+  normal step-downs from the current position. Step-ups, warm-up accounting,
+  and mastery bounds are all unchanged. The direction decision is extracted
+  into a shared `rampDirection()` helper (alongside the existing shared
+  `rampStep`) so the main and split-highway ramps stay in lockstep. Ships as
+  a **comfort option, not a learning feature** — a 2022 meta-analysis
+  (McKay et al.) found the self-controlled-practice benefit close to zero
+  after bias correction. Persisted as `difficulty_ladder.levelUpOnly`
+  (boolean, default `false`) — the Song Mastery settings mapping that #85
+  defines should read it as a user-comfort preference, defaulting to off,
+  and must not derive it from a migrated value.
+
 ### Changed
+- Internal-only: the per-setting reaction to a settings change moves in
+  `screen.js` into one `_applySettingsChange()` helper shared by the
+  cross-tab `storage` listener and the same-tab
+  `difficulty_ladder:settings-changed` listener, which were repeating
+  the same four reactions. Both paths still apply exactly what they
+  applied before; a new setting now has one place to hook, and the
+  `storage` listener no longer grows a branch per setting (adding
+  `levelUpOnly` had pushed it past CodeFactor's complexity threshold).
 - Internal-only: `routes.py` is reorganized into two clearly marked halves —
   a pure chart-scoring core and the pack-I/O/HTTP half — with section
   banners naming each region's concern, the HTTP-only constants

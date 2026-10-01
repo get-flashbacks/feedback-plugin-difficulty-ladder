@@ -2296,6 +2296,14 @@ function setDropResistance(value) {
     });
 }
 
+function setLevelUpOnly(value) {
+    global.localStorage.setItem('difficulty_ladder.levelUpOnly', JSON.stringify(value));
+    global.window.dispatchEvent({
+        type: 'difficulty_ladder:settings-changed',
+        detail: { levelUpOnly: value },
+    });
+}
+
 test('rampStep() increments total the exact full step at every sensitivity', () => {
     const mod = freshPlugin();
     mod.settings.sensitivity = 1;
@@ -2640,6 +2648,23 @@ test('drop resistance requires two consecutive below-threshold signals when enab
     assert.equal(calls[0], 45);
 });
 
+test('a single low phrase steps down as soon as drop resistance is switched off', () => {
+    // The confirming pair is only owed while the setting is on, so switching it
+    // off must not leave the first low phrase below the threshold waiting for a
+    // second one that will never be required.
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    setDropResistance(true);
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(0.0);
+    assert.equal(calls.length, 0, 'one low phrase is not enough while the setting is on');
+
+    setDropResistance(false);
+    mod.commitPhraseResult(0.0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 45);
+});
+
 test('manual mastery change invalidates a resisted drop before the first auto-apply', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
@@ -2677,6 +2702,199 @@ test('drop resistance does not delay upward adjustments', () => {
     for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
     assert.equal(calls.length, 1);
     assert.equal(calls[0], 55);
+});
+
+// ── Level up only (#111) ───────────────────────────────────────────────────
+// An opt-in COMFORT switch, not a learning aid: Adaptive still raises the
+// slider, but no accuracy level produces an automatic decrease. It removes
+// the downward branch of the ramp-direction decision only — warm-up
+// accounting, mastery bounds, and the manual-override stand-down are all
+// unchanged, and the manual slider remains fully under the player's control.
+
+test('levelUpOnly defaults to off and loads true only from a persisted boolean true', () => {
+    const key = 'difficulty_ladder.levelUpOnly';
+    assert.equal(freshPlugin().settings.levelUpOnly, false);
+    assert.equal(freshPlugin({ stored: { [key]: JSON.stringify('false') } }).settings.levelUpOnly, false);
+    assert.equal(freshPlugin({ stored: { [key]: JSON.stringify(true) } }).settings.levelUpOnly, true);
+});
+
+test('malformed levelUpOnly storage updates reset the setting to false', () => {
+    const mod = freshPlugin();
+    mod.settings.levelUpOnly = true;
+
+    global.window.dispatchEvent({
+        type: 'storage',
+        key: 'difficulty_ladder.levelUpOnly',
+        newValue: 'not-json',
+    });
+
+    assert.equal(mod.settings.levelUpOnly, false);
+});
+
+test('a valid levelUpOnly storage event from another tab is applied', () => {
+    const mod = freshPlugin();
+    assert.equal(mod.settings.levelUpOnly, false);
+
+    global.window.dispatchEvent({
+        type: 'storage',
+        key: 'difficulty_ladder.levelUpOnly',
+        newValue: 'true',
+    });
+
+    assert.equal(mod.settings.levelUpOnly, true);
+});
+
+test('rampDirection() withholds the downward direction at every accuracy while levelUpOnly is on', () => {
+    const mod = freshPlugin();
+    mod.settings.sensitivity = 2;
+    const th = mod.thresholds();
+
+    mod.settings.levelUpOnly = false;
+    assert.equal(mod.rampDirection(th.up, th), 'up');
+    assert.equal(mod.rampDirection(0, th), 'down', 'a zero hit rate is a downward signal by default');
+    assert.equal(mod.rampDirection(th.down, th), 'down', 'the down threshold is inclusive');
+    assert.equal(mod.rampDirection(th.up - 0.01, th), null, 'the neutral band is untouched');
+
+    mod.settings.levelUpOnly = true;
+    assert.equal(mod.rampDirection(th.up, th), 'up', 'step-ups are unaffected');
+    for (const hitRate of [0, 0.1, th.down, th.down - 0.01, 0.68]) {
+        assert.equal(mod.rampDirection(hitRate, th), null, `hit rate ${hitRate} must not yield a direction`);
+    }
+    assert.equal(mod.rampDirection(th.up - 0.01, th), null, 'the neutral band still reads as no direction');
+});
+
+test('levelUpOnly suppresses every automatic decrease on the main ramp', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    setLevelUpOnly(true);
+    const calls = attachHighwayStub(50);
+
+    for (let i = 0; i < mod.WARMUP_PHRASES + mod.RAMP_PHRASES * 4; i++) mod.commitPhraseResult(0.0);
+
+    assert.deepEqual(calls, [], 'a zero hit rate over many phrases never moved the slider');
+    assert.equal(global.window.highway.getMastery(), 0.5);
+});
+
+test('levelUpOnly does not delay upward adjustments', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    setLevelUpOnly(true);
+    const calls = attachHighwayStub(50);
+
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 55);
+});
+
+test('a partially-completed downward ramp resumes from the first increment once levelUpOnly is turned off', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2; // rampStep(0) === 5
+    const calls = attachHighwayStub(50);
+
+    mod.commitPhraseResult(0.0);
+    mod.commitPhraseResult(0.0);
+    assert.deepEqual(calls, [45], 'the WARMUP_PHRASES-th phrase is the first that can step down');
+
+    setLevelUpOnly(true);
+    for (let i = 0; i < mod.RAMP_PHRASES; i++) mod.commitPhraseResult(0.0);
+    assert.deepEqual(calls, [45], 'the ramp parked mid-way cannot keep stepping down');
+
+    setLevelUpOnly(false);
+    mod.commitPhraseResult(0.0);
+    assert.equal(calls[calls.length - 1], 40, 'the abandoned ramp restarts at 5 rather than resuming at its next increment');
+});
+
+test('levelUpOnly cannot be worked around by a faster down-step ratio', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    mod.settings.downStepRatio = 2;
+    setLevelUpOnly(true);
+    const calls = attachHighwayStub(50);
+
+    for (let i = 0; i < mod.WARMUP_PHRASES + mod.RAMP_PHRASES * 3; i++) mod.commitPhraseResult(0.0);
+
+    assert.deepEqual(calls, []);
+});
+
+test('levelUpOnly and drop resistance compose — neither can produce a decrease', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    setDropResistance(true);
+    setLevelUpOnly(true);
+    const calls = attachHighwayStub(50);
+
+    for (let i = 0; i < mod.WARMUP_PHRASES + mod.RAMP_PHRASES * 3; i++) mod.commitPhraseResult(0.0);
+
+    assert.deepEqual(calls, []);
+});
+
+test('levelUpOnly leaves the manual-override stand-down intact', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    setLevelUpOnly(true);
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, 1);
+
+    // The compatibility getter exposes the changed value but no origin, so a
+    // manual move stands auto-adjust down exactly as it does without the
+    // setting — the comfort switch must not become an auto-adjust exemption.
+    global.window.highway.getMastery = () => 0.42;
+    mod.commitPhraseResult(1.0);
+
+    assert.equal(mod.settings.autoAdjust, false);
+    assert.equal(mod.settings.levelUpOnly, true, 'the comfort preference itself is left alone');
+    assert.equal(calls.length, 1, 'stood down instead of moving the slider over the manual value');
+});
+
+test('levelUpOnly never lowers a Split Screen highway', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    setLevelUpOnly(true);
+    let mastery = 0.75;
+    const highway = {
+        getMastery: () => mastery,
+        setMastery: value => { mastery = value; },
+    };
+
+    const rough = mod.newSplitScoreState();
+    for (let i = 0; i < mod.WARMUP_PHRASES + mod.RAMP_PHRASES * 3; i++)
+        mod.commitSplitPhraseResult(rough, highway, 0);
+    assert.equal(mastery, 0.75);
+
+    const clean = mod.newSplitScoreState();
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++)
+        mod.commitSplitPhraseResult(clean, highway, 1);
+    assert.equal(Math.round(mastery * 100), 80, 'the same highway still steps up');
+});
+
+test('a Split Screen highway resumes stepping down once levelUpOnly is turned off', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    setLevelUpOnly(true);
+    const state = mod.newSplitScoreState();
+    let mastery = 0.75;
+    const highway = {
+        getMastery: () => mastery,
+        setMastery: value => { mastery = value; },
+    };
+
+    for (let i = 0; i < mod.WARMUP_PHRASES + mod.RAMP_PHRASES * 2; i++)
+        mod.commitSplitPhraseResult(state, highway, 0);
+    assert.equal(mastery, 0.75);
+
+    setLevelUpOnly(false);
+    mod.commitSplitPhraseResult(state, highway, 0);
+    assert.equal(Math.round(mastery * 100), 70, 'the ramp restarted from its first 5% increment');
 });
 
 test('min/maxMastery still clamps a ramped next value and stops repeat calls once saturated', () => {
