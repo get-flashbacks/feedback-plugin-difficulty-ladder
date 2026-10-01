@@ -2711,6 +2711,433 @@ test('originless programmatic mastery drift conservatively disables autoAdjust',
     assert.equal(calls.length, 1, 'stood down instead of fighting originless drift');
 });
 
+// ── Resume warm-up start (#112, roadmap C4) ────────────────────────────────
+// A new session starts slightly below the remembered difficulty so the
+// player's first sections don't dip into misses; WARMUP_PHRASES still holds
+// the ramp off and the existing ramp closes the gap afterwards.
+
+function resumeHighway() {
+    const hw = {
+        hasPhraseData: () => true,
+        setMastery: (frac) => { hw.mastery = frac; },
+    };
+    hw.mastery = 0.5;
+    return hw;
+}
+
+test('a new session resumes one partial ramp step below the remembered difficulty', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2; // ramp step 15
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+
+    assert.equal(hw.mastery, 0.72, '80 - round(15 * 0.5) = 72');
+    assert.equal(mod.readProgress(ctx).currentDifficulty, 80,
+        'the warm-up start is live-only — the remembered value is the peak the ramp last settled on');
+});
+
+test('the resume offset never exceeds one ramp step at any sensitivity', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    for (const [sensitivity, offset] of [[1, 5], [2, 8], [3, 10]]) {
+        mod.settings.sensitivity = sensitivity;
+        const step = mod.thresholds().step;
+        const start = mod._resumeStartPct(80);
+        assert.equal(80 - start, offset, `sensitivity ${sensitivity}`);
+        assert.ok(80 - start <= step, `sensitivity ${sensitivity}: offset ${80 - start} exceeds one step (${step})`);
+    }
+});
+
+// The load-bearing same-session case. song:ready re-fires on a reconnect
+// without _songKey changing, and the player-context relink and split-panel
+// re-register paths re-enter the same function — all inside the warm-up
+// window this concession exists for. Re-deriving the start from the store
+// there would hand the player their old peak back and cancel it, because the
+// start is deliberately not re-recorded.
+test('a re-restore inside the warm-up window puts the player back where the start left them', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.72);
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.72, 'the remembered value is still the peak, so the peak must not be re-applied');
+    assert.equal(mod.readProgress(ctx).currentDifficulty, 80, 'and the re-apply is live-only too');
+});
+
+test('a re-restore repeats the start it already gave, not a fresh price for it', () => {
+    const mod = freshPlugin();
+    // The player has the song loaded in Standard mode, then switches to Adaptive.
+    mod.settings.autoAdjust = false;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.8, 'precondition: Standard mode resumes the remembered value');
+
+    mod.settings.autoAdjust = true;
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.8, 'the song was not warmed up, so re-pricing it now would be a silent step-down');
+});
+
+test('a re-restore picks up a difficulty the ramp re-recorded since the start', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    mod.writeProgress(ctx, { currentDifficulty: 87 }); // the ramp's first adjustment up
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.87, 'the warm-up start is spent once the ramp has moved on');
+});
+
+test('a resume that cannot reach the highway does not spend the warm-up start', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, { hasPhraseData: () => true }), false);
+
+    // Bump the step so a *first* start would be visibly different from a
+    // replayed one, which is the only way this assertion can tell the two.
+    mod.settings.sensitivity = 3;
+    const hw = resumeHighway();
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.7, 'nothing was handed out, so the next attempt is a first start');
+});
+
+test('a record the ramp moved before any restore keeps its own value, not a concession', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext({ player_id: 'main' });
+    global.window.highway = resumeHighway();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    // song:ready arrives before phrase data, so the restore cannot run.
+    mod.upsertPlayerContext(ctx);
+    mod.upsertPlayerContext(ctx);
+
+    mod._onMasteryApplied(78, ctx); // the ramp's own adjustment, mid-song
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, global.window.highway), true);
+    assert.equal(global.window.highway.mastery, 0.78,
+        'a record that was already live this session must not be handed a first concession on a reconnect');
+});
+
+test('a record with no remembered difficulty yet does not spend the warm-up start', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { bestMastery: 40 }); // a played record with no currentDifficulty
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), false);
+    mod.writeProgress(ctx, { currentDifficulty: 60 }); // the ramp's first move, mid-song
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.52, 'nothing was resumed earlier, so this song was never warmed up');
+});
+
+test('each song gets its own warm-up start within one session', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const lead = playerContext({ player_id: 'player-1', song_id: 'lead.feedpak' });
+    const rhythm = { ...lead, song_id: 'rhythm.feedpak' };
+    mod.writeProgress(lead, { currentDifficulty: 80 });
+    mod.writeProgress(rhythm, { currentDifficulty: 60 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(lead, hw), true);
+    assert.equal(hw.mastery, 0.72, 'the first resume of a record is a cold start');
+    assert.equal(mod._maybeRestoreSongMastery(rhythm, hw), true);
+    assert.equal(hw.mastery, 0.52, 'a different song in the same session is its own cold start');
+    assert.equal(mod._maybeRestoreSongMastery(lead, hw), true);
+    assert.equal(hw.mastery, 0.72, 'coming back to it re-uses its start rather than taking a second one');
+    assert.equal(mod._maybeRestoreSongMastery(rhythm, hw), true);
+    assert.equal(hw.mastery, 0.52, 'and likewise for the other');
+});
+
+test('a fresh page load takes the offset again, and an abandoned warm-up leaves the peak intact', () => {
+    const stored = {};
+    const capture = (key, value) => { stored[key] = value; };
+    const ctx = playerContext();
+
+    const first = freshPlugin({ stored, onSet: capture });
+    first.settings.autoAdjust = true;
+    first.writeProgress(ctx, { currentDifficulty: 80 });
+    first.flushProgressStore();
+    assert.equal(first._maybeRestoreSongMastery(ctx, resumeHighway()), true);
+    first.flushProgressStore();
+    assert.equal(stored['difficulty_ladder.progress.v2'].includes('"currentDifficulty":80'), true,
+        'precondition: the persisted peak survives a session that never reached the ramp');
+
+    // A new page load is a new session (the remembered start is module state).
+    const second = freshPlugin({ stored, onSet: capture });
+    second.settings.autoAdjust = true;
+    const hw = resumeHighway();
+    assert.equal(second._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.72);
+});
+
+test('the resume offset stops at the configured minimum difficulty', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.minMastery = 78;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+
+    assert.equal(hw.mastery, 0.78, 'never below the player\'s own floor');
+});
+
+test('no resume offset in Standard mode, where no ramp could close the gap', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = false;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+
+    assert.equal(hw.mastery, 0.8, 'Standard mode resumes exactly where it left off');
+});
+
+test('the compatibility path applies a resume start through window.setMastery without persisting it', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.upsertPlayerContext(playerContext({
+        player_id: 'main', compatibility_adapter: true, session_id: undefined,
+    }));
+    const ctx = playerContext({ player_id: 'main', compatibility_adapter: true });
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const applied = [];
+    global.window.highway = { hasPhraseData: () => true };
+    global.window.setMastery = (pct) => { applied.push(pct); };
+    mod.onSongEvent(); // installs the persistence hook around window.setMastery
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, global.window.highway), true);
+
+    assert.deepEqual(applied, [72]);
+    assert.equal(mod.readProgress(ctx).currentDifficulty, 80,
+        'the wrapped setMastery hook must not make the warm-up start the remembered value');
+});
+
+// Applying a start runs host code synchronously, so the flag around it has to
+// nest rather than clear — otherwise the outer apply resumes as if it were an
+// ordinary adjustment and persists the start.
+test('a host that re-enters the resume during the apply still cannot persist the start', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    let reentered = false;
+    global.window.feedBack = {
+        capabilities: {
+            dispatch: () => {
+                // Once, not on every dispatch: a handler that re-entered each
+                // time would recurse until the stack gives out.
+                if (!reentered) {
+                    reentered = true;
+                    mod._maybeRestoreSongMastery(ctx, { hasPhraseData: () => true });
+                }
+                return true;
+            },
+        },
+        emit: () => {},
+    };
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, { hasPhraseData: () => true }), true);
+
+    assert.equal(reentered, true, 'precondition: the nested restore really ran');
+    assert.equal(mod.readProgress(ctx).currentDifficulty, 80);
+});
+
+test('a manual move back onto the remembered peak survives the next re-restore', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext({ player_id: 'main' });
+    const hw = resumeHighway();
+    global.window.highway = hw;
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    mod.upsertPlayerContext(ctx); // the cold start, through a real entry point
+    assert.equal(hw.mastery, 0.72);
+
+    // The player drags the slider back up to the peak. The stored value is
+    // unchanged, so only the fact of the write distinguishes this from
+    // "nothing has happened since the start".
+    mod._onMasteryApplied(80, ctx);
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.8, 'the player\'s own move wins over the start they were given');
+});
+
+test('no warm-up start when there is no room below the floor', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext();
+
+    // The player raised Min % after the session that set 80, so the stored
+    // value now sits below their own floor. Offsetting would be a step *up*.
+    mod.settings.minMastery = 85;
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+
+    assert.equal(hw.mastery, 0.8, 'no offset rather than a silent step up past the floor');
+});
+
+test('no warm-up start for a song already sitting at the floor', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.minMastery = 80;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+
+    assert.equal(hw.mastery, 0.8);
+});
+
+test('a Min % raised after the cold start still floors the start it replays', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.72);
+
+    mod.settings.minMastery = 75;
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.75, 'the start is replayed, but never below the floor as it stands now');
+});
+
+test('every dimension of the record key gets its own warm-up start', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const base = playerContext();
+    const variants = [
+        { arrangement_id: 'alt' },
+        { instrument: 'bass' },
+        { role: 'harmony' },
+        { skill: 'guitar' },
+        { player_id: 'player-2' },
+    ];
+    for (const variant of variants) mod.writeProgress({ ...base, ...variant }, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+
+    for (const variant of variants) {
+        const ctx = { ...base, ...variant };
+        assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+        assert.equal(hw.mastery, 0.72, `precondition: ${JSON.stringify(variant)} is a cold start`);
+    }
+});
+
+test('a ramp adjustment back onto the remembered peak is resumed, not the start', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.72);
+
+    // The ramp walks the player back up to exactly where they were, which is
+    // the value the start was derived from — so the write, not the stored
+    // number, is what marks the start as spent.
+    assert.equal(mod._applyDifficultyForContext(ctx, 80, hw, 'adaptive'), true);
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.8);
+});
+
+// The premise of the whole feature: the existing ramp takes the player back
+// up out of the start. Driven through the real scoring path, not by writing
+// the store directly, so a change to the ramp's own clamping or dead band
+// cannot strand the player low while the unit tests stay green.
+test('the ramp climbs back out of a warm-up start and re-records the peak', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    mod.settings.maxMastery = 100;
+    const ctx = playerContext({ player_id: 'main', compatibility_adapter: true });
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const calls = attachHighwayStub(80);
+    global.window.highway.hasPhraseData = () => true;
+    mod.onSongEvent(); // wraps window.setMastery, which is how this host takes it
+    mod.upsertPlayerContext(ctx);
+
+    assert.equal(calls[0], 72, 'precondition: the session started below the peak');
+    assert.equal(mod.readProgress(ctx).currentDifficulty, 80, 'and left the peak remembered');
+
+    for (let i = 0; i < mod.WARMUP_PHRASES + mod.RAMP_PHRASES; i++) mod.commitPhraseResult(1.0);
+
+    assert.ok(Math.max(...calls) >= 80, `ramp should have climbed past the peak, got ${calls}`);
+    assert.equal(mod.readProgress(ctx).currentDifficulty, calls[calls.length - 1],
+        'and the value it settled on is the remembered one again');
+});
+
+test('the v3 dispatch path carries the warm-up start without persisting it', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const requests = [];
+    global.window.feedBack = {
+        capabilities: { dispatch: (name, payload) => { requests.push({ name, payload }); return true; } },
+        emit: () => {},
+    };
+    global.window.highway = { hasPhraseData: () => true };
+    const ctx = playerContext({ player_id: 'main' });
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, null), true);
+
+    assert.equal(requests[0].name, 'player-difficulty.v1');
+    assert.equal(requests[0].payload.current_difficulty, 72);
+    assert.equal(mod.readProgress(ctx).currentDifficulty, 80);
+});
+
+// The sticky behavior through a real entry point rather than the private
+// function, so a change in how upsertPlayerContext/onSongEvent normalize
+// their context — and so their persistence key — cannot turn a re-restore
+// into a second cold start unnoticed.
+test('a second song:ready for the same song is a re-restore, not a second cold start', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext({ player_id: 'main', compatibility_adapter: true });
+    const applied = [];
+    global.window.highway = {
+        hasPhraseData: () => true,
+        getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 0 }),
+    };
+    global.window.setMastery = (pct) => { applied.push(pct); };
+    mod.onSongEvent(); // installs the persistence hook around window.setMastery
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+
+    mod.upsertPlayerContext(ctx);
+    assert.deepEqual(applied, [72], 'the cold start');
+
+    mod.upsertPlayerContext(ctx);
+    assert.deepEqual(applied, [72, 72], 'a reconnect re-applies the start rather than the peak');
+});
+
 // ── Generate ladder depth cap (generateLevels) ──────────────────────────────
 
 test('currentTarget() clamps generateLevels to [2,8] and includes it in the /generate target', () => {

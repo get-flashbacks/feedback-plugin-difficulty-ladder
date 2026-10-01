@@ -843,6 +843,43 @@
         window.setMastery = wrapped;
     }
 
+    // The warm-up start handed to each progress record the first time this
+    // page session resumes it, with the remembered value it was derived from
+    // (see _maybeRestoreSongMastery). Keyed by the record's full persistence
+    // key, so no song or player inherits another's start — the state a second
+    // song must not inherit is exactly what this map must keep apart. One
+    // entry per record the player actually resumes, for the life of the page:
+    // a session touches a handful, and reloading the page ends the session.
+    var _resumeStarts = new Map();
+
+    // True while a resume's live start is being applied, so that start does
+    // not become the remembered difficulty. Persisting it would replace a
+    // peak the player earned with a value they only saw for the length of a
+    // warm-up, and — because the ramp can also sit inside the dead band and
+    // never move — would walk the remembered value down by one offset per
+    // session that ended before the first adjustment. The ramp's first move
+    // (or a manual slider move) re-persists from wherever it leaves the slider.
+    // Module state guarding a process-global hook: this holds while a single
+    // plugin instance is live, which is the normal runtime. A plugin-runtime
+    // re-run keeps the already-wrapped window.setMastery (see
+    // ensureMasterySaveHook) but gets fresh module state, so the guard would
+    // not reach the wrapper that does the writing.
+    var _applyingResumeStart = false;
+
+    // A write that is not a warm-up start is the player or the ramp speaking
+    // for the record, so from here on the stored value is the live truth: put
+    // the record's entry back to an exact baseline. Every write does this, not
+    // only one following a resume — a record whose restore never ran (nothing
+    // stored yet, phrase data not loaded at song:ready, no reachable setter) has
+    // been live in this session all along, and must not be handed a first
+    // concession on the next re-restore. Without this a manual move back onto
+    // the remembered peak — which re-writes the value the start was derived
+    // from, and so is indistinguishable from "nothing has happened yet" if only
+    // the store is consulted — would also be undone by that re-restore.
+    function _baselineResumeStart(context, value) {
+        _resumeStarts.set(persistenceContextKey(context), { source: value, start: value });
+    }
+
     function _onMasteryApplied(v, explicitContext) {
         var context = normalizePlayerContext(explicitContext || _mainPlayerContext);
         if (!_songKey || !context) return; // song/profile still loading
@@ -864,13 +901,40 @@
         // Slider drags fire oninput per pixel — window.setMastery() (and thus
         // this hook) can run many times a second. Skip the parse/stringify/
         // write when the stored value hasn't actually changed.
-        writeProgress(context, { currentDifficulty: pct });
+        // A resume's warm-up start is applied through this same hook on the
+        // compatibility path, and is the one value that must not overwrite the
+        // remembered difficulty (see _applyingResumeStart) — the ramp's first
+        // move re-persists from wherever it leaves the slider.
+        if (!_applyingResumeStart) {
+            writeProgress(context, { currentDifficulty: pct });
+            _baselineResumeStart(context, pct);
+        }
         _emitPlayerDifficultyChanged(context, pct, 'applied');
     }
 
     // Called once per song change (see onSongEvent). Applies this song's own
     // remembered difficulty, if any, over whatever global value core just
     // carried over from the previous song.
+    //
+    // Issue #112 (roadmap C4): a player's first sections of a session dip below
+    // the level they settled on last time, so resuming straight at the
+    // remembered peak makes early misses likely — and a rough patch this early
+    // can trigger a step-down nobody needed. The first resume of a record in a
+    // session therefore starts a partial ramp step lower (see
+    // _resumeStartPct) and lets the existing ramp climb back; WARMUP_PHRASES
+    // still holds the ramp off until there is real signal, so the concession
+    // composes with the warm-up window rather than replacing it.
+    //
+    // Which resume is a cold start is per record, so switching to another song
+    // mid-session still gets its own warm-up start. A *re*-restore of the
+    // record already in play — song:ready re-firing on a reconnect, a
+    // player-context relink, a split panel re-registering under a changed
+    // identity — must instead put the player back where the start left them:
+    // the start is deliberately not re-recorded (see _applyingResumeStart), so
+    // re-deriving it from the store here would hand back the peak and cancel
+    // the concession. It is re-derived only once something has re-recorded the
+    // difficulty since — the ramp's first adjustment, or a manual slider move
+    // (see _baselineResumeStart).
     function _maybeRestoreSongMastery(context, explicitHighway) {
         var ctx = normalizePlayerContext(context);
         if (!ctx) return false;
@@ -880,7 +944,56 @@
         var record = readProgress(ctx);
         var saved = record && _pct(record.currentDifficulty);
         if (saved === null) return false;
-        return _applyDifficultyForContext(ctx, saved, hw, 'restore');
+        var recordKey = persistenceContextKey(ctx);
+        var previous = _resumeStarts.get(recordKey);
+        var start;
+        if (!previous) {
+            start = _resumeStartPct(saved); // cold start: not resumed in this page session yet
+        } else if (saved === previous.source) {
+            // Nothing has re-recorded the difficulty since. Re-floored because
+            // the entry holds the number handed out at the time, and Min % can
+            // have been raised since.
+            start = Math.max(settings.minMastery, previous.start);
+        } else {
+            start = saved; // the ramp (or a manual move) has moved on; the store is the truth
+        }
+        var wasApplying = _applyingResumeStart;
+        _applyingResumeStart = true;
+        var applied;
+        try {
+            applied = _applyDifficultyForContext(ctx, start, hw, 'restore');
+        } finally {
+            // Restored, not cleared: applying a start runs host code
+            // synchronously (a capability dispatch handler, or window.setMastery
+            // fanning out through the difficulty:player-changed event), and that
+            // code can land here again. Clearing instead would let the outer
+            // apply persist its start and walk the remembered value down.
+            _applyingResumeStart = wasApplying;
+        }
+        // Recorded only once the player actually has it, so a restore that
+        // reached nothing spends nothing — the next attempt is a first start,
+        // and derives the same value from the unchanged store regardless.
+        if (applied) _resumeStarts.set(recordKey, { source: saved, start: start });
+        return applied;
+    }
+
+    // How far below a cold start begins, as a fraction of the ramp step
+    // `thresholds().step` already moves the slider in a single full step
+    // (RESUME_OFFSET_FRACTION, above). Applies only with auto-adjust on: the
+    // ramp is what climbs the gap, and in Standard mode nothing would, so the
+    // offset would strand the player below their own remembered difficulty
+    // until they moved the slider by hand.
+    function _resumeStartPct(savedPct) {
+        if (!settings.autoAdjust) return savedPct;
+        var offset = Math.round(thresholds().step * RESUME_OFFSET_FRACTION);
+        if (!isFinite(offset) || offset <= 0) return savedPct;
+        // No room below the floor to give, which is the normal state of a song
+        // the player has already bottomed out on — and also the case where the
+        // floor sits above `saved` (the player raised Min %, or hand-set the
+        // slider below it). Offsetting then would be a step *up*, the opposite
+        // of the concession, so decline instead.
+        if (savedPct <= settings.minMastery) return savedPct;
+        return Math.max(settings.minMastery, savedPct - offset);
     }
 
     function _restoreOrScheduleSections(context, highway) {
@@ -951,6 +1064,17 @@
     // sensitivity/reactionSpeed.
     const WARMUP_PHRASES = 2;  // phrases scored on a fresh song before auto-adjust may act
     const RAMP_PHRASES = 3;    // qualifying phrases a full th.step move is spread over
+    // Issue #112: how far below the remembered difficulty a cold start lands,
+    // as a fraction of the ramp step `thresholds().step` already moves the
+    // slider in one full step (10 / 15 / 20 by Sensitivity — the same step
+    // auto-adjust takes upward, before any Difficulty drop speed multiplier).
+    // Must stay at or below 1: a larger offset would drop the player further
+    // in one call than auto-adjust itself moves them, which reads as losing
+    // their place rather than easing them back in. At 0.5 the existing ramp
+    // closes the gap once it has the evidence to move. See _resumeStartPct
+    // for the auto-adjust gate and _maybeRestoreSongMastery for the
+    // once-per-record scope.
+    const RESUME_OFFSET_FRACTION = 0.5;
     const DOWN_CONFIRM_PHRASES = 2;
     const MASTERY_STREAK_PHRASES = 3;
     const MASTERY_STREAK_ACCURACY = 0.95;
@@ -1193,6 +1317,18 @@
         });
     }
 
+    // Shared tail of both apply paths below. The persistence write is skipped
+    // for a resume's warm-up start (see _applyingResumeStart) so the start the
+    // player is given is not mistaken for a difficulty they settled on.
+    function _finishDifficultyApply(ctx, value, hw, reason) {
+        if (!_applyingResumeStart) {
+            writeProgress(ctx, { currentDifficulty: value });
+            _baselineResumeStart(ctx, value);
+        }
+        _emitPlayerDifficultyChanged(ctx, value, reason);
+        scheduleSectionDifficultiesEmit(ctx, hw);
+    }
+
     function _applyDifficultyForContext(context, pct, explicitHighway, reason) {
         var ctx = normalizePlayerContext(context);
         var value = _pct(pct);
@@ -1208,18 +1344,14 @@
                     current_difficulty: value, reason: reason || 'adaptive',
                 });
                 if (dispatched === true) {
-                    writeProgress(ctx, { currentDifficulty: value });
-                    _emitPlayerDifficultyChanged(ctx, value, reason);
-                    scheduleSectionDifficultiesEmit(ctx, hw);
+                    _finishDifficultyApply(ctx, value, hw, reason);
                     return true;
                 }
             } catch (_) { /* fall through to the context-owned highway */ }
         }
         if (hw && typeof hw.setMastery === 'function' && !(ctx.compatibility_adapter && hw === window.highway)) {
             hw.setMastery(value / 100);
-            writeProgress(ctx, { currentDifficulty: value });
-            _emitPlayerDifficultyChanged(ctx, value, reason);
-            scheduleSectionDifficultiesEmit(ctx, hw);
+            _finishDifficultyApply(ctx, value, hw, reason);
             return true;
         }
         if (ctx.compatibility_adapter && typeof window.setMastery === 'function') {
@@ -3120,7 +3252,8 @@
             updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,
             startMasteryLifecycleSubscriptions, stopMasteryLifecycleSubscriptions,
             MASTERY_STREAK_PHRASES, MASTERY_STREAK_ACCURACY,
-            rampStep, WARMUP_PHRASES, RAMP_PHRASES,
+            rampStep, WARMUP_PHRASES, RAMP_PHRASES, RESUME_OFFSET_FRACTION,
+            _maybeRestoreSongMastery, _resumeStartPct,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,

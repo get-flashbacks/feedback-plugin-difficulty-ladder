@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A session's first start on a song now begins slightly below the difficulty
+  the player last settled on, and lets the existing ramp walk the gap back
+  (#112, roadmap C4). Resuming straight at a remembered peak makes the
+  player's first sections — which dip below their settled level — likely to
+  miss, and a rough patch that early can trigger a step-down nobody needed.
+  The concession is `RESUME_OFFSET_FRACTION` (0.5) of the ramp step
+  `thresholds().step` already moves in one full step, so it is at most one
+  step and usually half: 5 / 8 / 10 points at Sensitivity 1 / 2 / 3, floored
+  at `minMastery` (and skipped outright when the remembered value already sits
+  at or below it, so the concession is never a step *up*). It composes with
+  `WARMUP_PHRASES` rather than replacing
+  it — the ramp still stays quiet for a song's first section, and once the
+  rolling average clears its up-adjustment threshold it climbs back over the
+  gap (a session that settles mid-band plays out at the lower start). Scoped
+  per progress record for the life of the page session, so a re-restore of
+  the record already in play (`song:ready` re-firing on a reconnect, a
+  player-context relink, a split panel re-registering under a changed identity)
+  puts the player back where the start left them, while a *different* song
+  mid-session still gets its own warm-up start. Adaptive-mode only:
+  nothing climbs the gap back in Standard mode. The applied start is
+  live-only — every apply path skips its `currentDifficulty` write for it (and
+  the wrapped `window.setMastery` hook does too, which is the path the
+  compatibility adapter restores through), so the remembered peak survives a
+  session abandoned inside the warm-up window. Re-recording it there would
+  have replaced a peak the player earned with a value they saw for a couple of
+  sections, and — since the ramp can sit inside the dead band without moving —
+  walked the remembered value down by one offset per such session. The ramp's
+  first adjustment, or a manual slider move, re-persists from wherever it
+  leaves the slider.
+
 ### Changed
 - Internal-only: `routes.py` is reorganized into two clearly marked halves —
   a pure chart-scoring core and the pack-I/O/HTTP half — with section
