@@ -3069,6 +3069,40 @@ test('a ramp adjustment back onto the remembered peak is resumed, not the start'
     assert.equal(hw.mastery, 0.8);
 });
 
+// The same re-baseline through a Split Screen pane's own ramp: a tagged pane
+// applies its adjustment through the context-aware path (see
+// commitSplitPhraseResult), so the record is re-recorded and a re-restore
+// resumes what the pane's ramp reached rather than the start it was handed
+// before the ramp ran. Its drift guard is asserted as well, since a pane's
+// writes carry no origin metadata and standing itself down would end the ramp.
+test('a split pane\'s ramp adjustment re-baselines the record for the next re-restore', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext({ player_id: 'player-split' });
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    let mastery = 0.72;
+    const hw = {
+        hasPhraseData: () => true,
+        getMastery: () => mastery,
+        setMastery: (frac) => { mastery = frac; },
+    };
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(mastery, 0.72, 'precondition: the pane started half a step below the peak');
+
+    const state = mod.newSplitScoreState(ctx);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitSplitPhraseResult(state, hw, 1.0);
+
+    assert.ok(mastery > 0.72, `the pane's ramp should have climbed, got ${mastery}`);
+    const ramped = Math.round(mastery * 100);
+    assert.equal(state.manualOverride, false, 'precondition: the pane\'s own ramp is not drift');
+    assert.equal(mod.readProgress(ctx).currentDifficulty, ramped,
+        'the pane\'s adjustment is remembered like any other write');
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(Math.round(mastery * 100), ramped,
+        'a re-registered pane resumes the difficulty its ramp reached, not the start');
+});
+
 // The premise of the whole feature: the existing ramp takes the player back
 // up out of the start. Driven through the real scoring path, not by writing
 // the store directly, so a change to the ramp's own clamping or dead band
