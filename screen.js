@@ -952,8 +952,12 @@
         } else if (saved === previous.source) {
             // Nothing has re-recorded the difficulty since. Re-floored because
             // the entry holds the number handed out at the time, and Min % can
-            // have been raised since.
-            start = Math.max(settings.minMastery, previous.start);
+            // have been raised since. Auto-adjust can also have been turned off
+            // since — in Settings, or by the originless-drift stand-down — and
+            // that removes the ramp this concession was meant to be climbed
+            // back by, so hand back the remembered value instead, exactly as
+            // the cold start above declines to offset in Standard mode.
+            start = settings.autoAdjust ? Math.max(settings.minMastery, previous.start) : saved;
         } else {
             start = saved; // the ramp (or a manual move) has moved on; the store is the truth
         }

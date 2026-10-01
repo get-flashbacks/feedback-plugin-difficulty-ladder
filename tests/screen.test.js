@@ -2773,7 +2773,27 @@ test('a re-restore inside the warm-up window puts the player back where the star
     assert.equal(mod.readProgress(ctx).currentDifficulty, 80, 'and the re-apply is live-only too');
 });
 
-test('a re-restore repeats the start it already gave, not a fresh price for it', () => {
+// The mirror of the case above: the ramp the start was left for can go away
+// mid-warm-up — the originless-drift stand-down, or the Settings toggle — and a
+// re-restore must not keep replaying a concession nothing left to climb back.
+test('a re-restore after the ramp stands down resumes the remembered difficulty', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2; // ramp step 15
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 80 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.72, 'precondition: the warm-up start was handed out');
+
+    mod.settings.autoAdjust = false;
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.8, 'no ramp in existence, so the peak stands rather than the stranded start');
+    assert.equal(mod.readProgress(ctx).currentDifficulty, 80, 'and still nothing is written');
+});
+
+test('a re-restore after a Standard session takes no new warm-up start', () => {
     const mod = freshPlugin();
     // The player has the song loaded in Standard mode, then switches to Adaptive.
     mod.settings.autoAdjust = false;
