@@ -45,20 +45,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: work/difficulty-ladder/requirements-test.txt
 
-      # Only what routes.py actually reaches at import time: fastapi directly
-      # (which pulls in pydantic, used for the /generate* request models),
-      # and PyYAML via the host's sloppak module. httpx is added only for
-      # fastapi.testclient.TestClient, used by the route-level validation
-      # tests in test_dd_generation.py. Deliberately NOT the host's full
-      # requirements.txt — that pulls 19 packages (Pillow, yt-dlp,
-      # curl_cffi, midiutil) for a suite that needs a handful, and midiutil
-      # in particular fails to build on some interpreters. If this list
-      # rots, the symptom is a clear ModuleNotFoundError naming the missing
-      # package; add it here rather than reaching for the whole host
-      # manifest.
+      # The manifest documents why this deliberately installs only the
+      # suite's direct dependencies instead of the host's full environment.
       - name: Install test dependencies
-        run: python -m pip install pytest fastapi httpx PyYAML
+        run: python -m pip install -r work/difficulty-ladder/requirements-test.txt
 
       - name: Run pytest
         working-directory: work/difficulty-ladder
