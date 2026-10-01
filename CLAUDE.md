@@ -117,7 +117,7 @@ snapshot, this one included.
 ## Testing
 
 ```bash
-node --test                                            # JS: screen.js, settle_points.js (190 tests)
+node --test                                            # JS: screen.js, settle_points.js (203 tests)
 python3 -m pip install -r requirements-test.txt        # Python test environment
 python3 -m pytest tests/test_dd_generation.py -q       # Python generator tests — CI's own invocation
 node tools/settle_points.js                            # auto-adjust settle-point simulation, see README
