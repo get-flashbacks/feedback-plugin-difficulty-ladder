@@ -3043,6 +3043,28 @@
     // player itself is hidden.
     document.addEventListener('v3:profile-rendered', renderProfileBaseline);
 
+    // The reaction to a changed setting is the same on both notification paths:
+    // a foreign tab's `storage` write names one key, this tab's
+    // `difficulty_ladder:settings-changed` carries a patch, and both have already
+    // written the raw values into `settings` by the time we get here. `changed`
+    // is therefore only the set of names to react to, and it is read as own
+    // properties rather than truthiness — a setting switched to `false` or `0` is
+    // a change like any other.
+    function _applySettingsChange(changed) {
+        var has = function (name) { return Object.prototype.hasOwnProperty.call(changed, name); };
+        if (has('autoAdjust') && settings.autoAdjust === true) _resetSplitManualOverrideForContext(_mainPlayerContext);
+        if (has('dropResistance')) {
+            settings.dropResistance = settings.dropResistance === true;
+            _downStreak = 0;
+        }
+        if (has('levelUpOnly')) {
+            settings.levelUpOnly = settings.levelUpOnly === true;
+            _rampDirection = null;
+            _rampProgress = 0;
+        }
+        if (has('minMastery') || has('maxMastery')) _normalizeMasteryBounds();
+    }
+
     // Settings panel writes localStorage directly (see settings.html) and
     // notifies us to re-read rather than us polling localStorage per frame.
     window.addEventListener('storage', function (e) {
@@ -3072,19 +3094,9 @@
             try { settings[short] = JSON.parse(e.newValue); } catch (_) {
                 if (short === 'dropResistance' || short === 'levelUpOnly') settings[short] = false;
             }
-            if (short === 'dropResistance') {
-                settings[short] = settings[short] === true;
-                _downStreak = 0;
-            }
-            if (short === 'levelUpOnly') {
-                settings[short] = settings[short] === true;
-                _rampDirection = null;
-                _rampProgress = 0;
-            }
-            if (short === 'autoAdjust' && settings.autoAdjust === true) {
-                _resetSplitManualOverrideForContext(_mainPlayerContext);
-            }
-            if (short === 'minMastery' || short === 'maxMastery') _normalizeMasteryBounds();
+            var changed = {};
+            changed[short] = true;
+            _applySettingsChange(changed);
             syncControlsUI();
             contributeDiagnostics();
         }
@@ -3093,22 +3105,7 @@
         var patch = ev && ev.detail;
         if (!patch) return;
         Object.assign(settings, patch);
-        if (Object.prototype.hasOwnProperty.call(patch, 'autoAdjust') && settings.autoAdjust === true) {
-            _resetSplitManualOverrideForContext(_mainPlayerContext);
-        }
-        if (Object.prototype.hasOwnProperty.call(patch, 'dropResistance')) {
-            settings.dropResistance = patch.dropResistance === true;
-            _downStreak = 0;
-        }
-        if (Object.prototype.hasOwnProperty.call(patch, 'levelUpOnly')) {
-            settings.levelUpOnly = patch.levelUpOnly === true;
-            _rampDirection = null;
-            _rampProgress = 0;
-        }
-        if (Object.prototype.hasOwnProperty.call(patch, 'minMastery')
-            || Object.prototype.hasOwnProperty.call(patch, 'maxMastery')) {
-            _normalizeMasteryBounds();
-        }
+        _applySettingsChange(patch);
         syncControlsUI();
         contributeDiagnostics();
     });

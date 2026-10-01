@@ -26,6 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and must not derive it from a migrated value.
 
 ### Changed
+- Internal-only: the per-setting reaction to a settings change moves in
+  `screen.js` into one `_applySettingsChange()` helper shared by the
+  cross-tab `storage` listener and the same-tab
+  `difficulty_ladder:settings-changed` listener, which were repeating
+  the same four reactions. Both paths still apply exactly what they
+  applied before; a new setting now has one place to hook, and the
+  `storage` listener no longer grows a branch per setting (adding
+  `levelUpOnly` had pushed it past CodeFactor's complexity threshold).
 - Internal-only: `routes.py` is reorganized into two clearly marked halves —
   a pure chart-scoring core and the pack-I/O/HTTP half — with section
   banners naming each region's concern, the HTTP-only constants

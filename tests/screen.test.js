@@ -2648,6 +2648,23 @@ test('drop resistance requires two consecutive below-threshold signals when enab
     assert.equal(calls[0], 45);
 });
 
+test('a single low phrase steps down as soon as drop resistance is switched off', () => {
+    // The confirming pair is only owed while the setting is on, so switching it
+    // off must not leave the first low phrase below the threshold waiting for a
+    // second one that will never be required.
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    setDropResistance(true);
+    const calls = attachHighwayStub(50);
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(0.0);
+    assert.equal(calls.length, 0, 'one low phrase is not enough while the setting is on');
+
+    setDropResistance(false);
+    mod.commitPhraseResult(0.0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 45);
+});
+
 test('manual mastery change invalidates a resisted drop before the first auto-apply', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
