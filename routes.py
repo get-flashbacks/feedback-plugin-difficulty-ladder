@@ -15,6 +15,30 @@ does not port code from Slopsmith's differently-scoped editor plugin —
 only the general "score groups, bucket into percentile tiers, thin lower
 tiers" approach is reused as a heuristic design, reimplemented here against
 feedBack's actual data.
+
+Module map (this file is two halves, split by the section banner
+"Pack I/O, request models, and HTTP" near the bottom):
+
+  Pure chart-scoring core   scoring constants, arrangement
+                            classification, tempo handling, note grouping,
+                            fret/span/posture/technique/beat/syncopation
+                            scoring, tiering, phrase windowing and level
+                            materialization. Takes plain dicts/lists and
+                            returns plain dicts/lists — no Path, zipfile or
+                            FastAPI in any signature. Enforced by the
+                            `pure-core-has-no-io` CI check.
+  Pack I/O, request models, HTTP
+                            sloppak dir/zip read+write with member-name
+                            containment checks, Pydantic request bodies,
+                            and setup()'s route registration (including the
+                            Chordr cross-plugin capability call).
+
+Seam rule: everything above the banner computes scoring math and is
+I/O-free; everything below it does on-disk work or HTTP and computes no
+scoring math. `pure-core-has-no-io` enforces the mechanically checkable
+half — nothing above the banner reaches down into a symbol defined below
+it, or depends on a module outside {re, bisect, math, dataclasses,
+itertools}.
 """
 
 import bisect
@@ -38,11 +62,21 @@ from dlc_paths import _resolve_dlc_path
 from jsonc import parse_jsonc
 from safepath import safe_join
 
-PLUGIN_ID = "difficulty_ladder"
+
+# ── Pure chart-scoring core (no Path/zipfile/FastAPI) ────────────────────────
+#
+# This region owns all of the plugin's scoring math: constants, arrangement
+# classification, tempo handling, note grouping, fret/span/posture/technique/
+# beat/syncopation scoring, tiering, phrase windowing, and level
+# materialization. Every function here takes plain dicts/lists and returns
+# plain dicts/lists — no Path, zipfile, sloppak, os or FastAPI in any
+# signature. Locked in by the `pure-core-has-no-io` CI check; see the module
+# map in the docstring.
 
 MIN_EVENTS_FOR_GENERATION = 8  # skip near-empty arrangements — nothing to grade
 FRET_JUMP_WINDOW_SECONDS = 1.0  # longer rests give the player time to reposition
-MAX_PROCESSING_SECONDS = 120  # hard cap per /generate-library call to bound CPU/DoS risk
+
+# ── Arrangement classification ────────────────────────────────────────────────
 
 # Same convention core uses for piano-roll mode (CLAUDE.md: "Any arrangement
 # named Keys, Piano, Keyboard, or Synth renders as a piano-roll chart").
@@ -129,6 +163,18 @@ def _is_bass_arrangement(arr_type: str, arr_name: str) -> bool:
     if type_str.strip().lower() == "bass":
         return True
     return "bass" in name_str.lower()
+
+
+def _is_unsupported_skip(reason) -> bool:
+    """True for a skip reason meaning "this generator doesn't support this
+    arrangement's instrument" (issue #66) — drums or an explicit allowlist
+    miss — as opposed to "supported, but nothing to do" (already-has-phrases,
+    not-enough-content) or a structural problem (malformed-arrangement).
+
+    A pure string predicate classifying an arrangement's skip reason, so it
+    belongs up here with _instrument_kind rather than in the I/O half below.
+    """
+    return isinstance(reason, str) and reason.startswith("unsupported-instrument")
 
 
 # ── Tempo-relative constants ─────────────────────────────────────────────────
@@ -2435,6 +2481,8 @@ def _notes_for_level_keys(groups, level, max_level):
     return out_notes, []  # keys never emits chord-shaped entries at reduced tiers
 
 
+# ── Phrase windowing ─────────────────────────────────────────────────────────
+
 # 8 measures ≈ two 4-bar antecedent/consequent phrases, a common phrase length
 # in contemporary popular/rock music — a much closer approximation of a real
 # phrase's grain than a flat 30-second chunk, without fragmenting into
@@ -2615,6 +2663,12 @@ def _collapse_identical_levels(levels_out):
         collapsed.append(lvl)
     return collapsed
 
+
+# ── Public entry point ───────────────────────────────────────────────────────
+#
+# The seam's only public door: everything above is private scoring math, and
+# this is the one function callers outside this file reach for. It still takes
+# and returns plain wire dicts/lists — no I/O happens here or below.
 
 def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[float] | None = None,
                                       is_bass: bool | None = None, staged_chords: bool = False):
@@ -2921,7 +2975,19 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     return phrases_out if phrases_out else None
 
 
-# ── Sloppak read/write (dir or zip form) ─────────────────────────────────────
+# ── Pack I/O, request models, and HTTP ───────────────────────────────────────
+#
+# SEAM. Everything above this banner computes scoring math and is I/O-free;
+# everything below it does on-disk work (sloppak dir/zip read+write) or HTTP
+# and computes no scoring math. `pure-core-has-no-io` enforces the half that
+# can be checked mechanically: nothing above the banner may reach down into
+# a symbol defined below it, or take on any external module outside
+# {re, bisect, math, dataclasses, itertools}. A pure helper that happens to
+# live in this half is not a violation of the sentence — but new ones have no
+# reason to be added here.
+
+PLUGIN_ID = "difficulty_ladder"
+MAX_PROCESSING_SECONDS = 120  # hard cap per /generate-library call to bound CPU/DoS risk
 
 _ZIP_ROOT = Path("/_dd_root").resolve()
 
@@ -3202,14 +3268,6 @@ def _canonical_section_times(pack_path: Path, manifest: dict) -> list[float]:
     return []
 
 
-def _is_unsupported_skip(reason) -> bool:
-    """True for a skip reason meaning "this generator doesn't support this
-    arrangement's instrument" (issue #66) — drums or an explicit allowlist
-    miss — as opposed to "supported, but nothing to do" (already-has-phrases,
-    not-enough-content) or a structural problem (malformed-arrangement)."""
-    return isinstance(reason, str) and reason.startswith("unsupported-instrument")
-
-
 def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
                     staged_chords: bool = False) -> dict:
     """Generate every eligible arrangement in one song.
@@ -3266,6 +3324,8 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
     }
 
 
+# ── Request models ───────────────────────────────────────────────────────────
+
 class GenerateIn(BaseModel):
     """Body for POST .../generate. `force` is strict (only a real JSON
     boolean, never a truthy-string like "false") since `bool("false")`
@@ -3301,6 +3361,12 @@ class GenerateLibraryIn(BaseModel):
     max_processing_seconds: int = Field(default=MAX_PROCESSING_SECONDS, ge=1, le=600)
     staged_chords: StrictBool = False  # #103/B10, opt-in — see GenerateIn
 
+
+# ── Routes + Chordr capability call ──────────────────────────────────────────
+#
+# setup() registers every HTTP route and makes the Chordr cross-plugin
+# capability call; the cross-language instrument classification it depends on
+# lives in screen.js (see the _instrument_kind/_instrumentKind pairing).
 
 def setup(app, context):
     log = context["log"]

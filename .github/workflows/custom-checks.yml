@@ -202,6 +202,262 @@ jobs:
           print("OK: no async handlers doing unwrapped blocking work")
           PY
 
+  pure-core-has-no-io:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The pure scoring core must depend only on pure stdlib helpers
+        run: |
+          python3 - <<'PY'
+          import ast
+          import builtins
+          import os
+          import sys
+
+          plugin_dir = os.environ["PLUGIN_DIR"]
+          PURE_BANNER = "Pure chart-scoring core"
+          SEAM_BANNER = "Pack I/O, request models, and HTTP"
+
+          # The pure core's whole external dependency set is these five stdlib modules.
+          # It is an ALLOWLIST, not a denylist: a name bound to any other module
+          # (sloppak, os, shutil, Path, fastapi, a sibling plugin module added by a
+          # future split, ...) fails the check without anyone having to remember to
+          # extend a list.
+          ALLOWED_ROOTS = {"re", "bisect", "math", "dataclasses", "itertools"}
+
+          # Builtins are exempt, except the ones that ARE capabilities. Without this
+          # subtraction the bare `set(dir(builtins))` would short-circuit open() and
+          # __import__() before the allowlist was ever consulted.
+          CAPABILITY_BUILTINS = {"open", "input", "eval", "exec", "compile",
+                                 "__import__", "breakpoint"}
+
+          SCOPE_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+          def module_files():
+              for fn in sorted(os.listdir(plugin_dir)):
+                  if fn.endswith(".py") and not fn.startswith("test_"):
+                      yield fn
+
+
+          def banner_hits(lines, marker):
+              """Lines that are the region's banner.
+
+              Deliberately strict: a full section banner (`# ── Marker ──`), not any
+              `#` line that merely mentions the marker in prose. A docstring or a
+              "see the Pure chart-scoring core below" note must not be able to move
+              the boundary the gate derives.
+              """
+              return [i for i, line in enumerate(lines, start=1)
+                      if line.startswith("#") and marker in line
+                      and line.lstrip().startswith("# ──")]
+
+
+          def bound_names(nodes):
+              """Names bound by these nodes. Imports are NOT bindings here: an import
+              is a dependency, and dependencies are judged by the allowlist."""
+              out = set()
+              for node in nodes:
+                  for sub in ast.walk(node):
+                      if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                          out.add(sub.name)
+                          args = getattr(sub, "args", None)
+                          if args is not None:
+                              for a in (list(args.args) + list(args.posonlyargs)
+                                        + list(args.kwonlyargs)
+                                        + [args.vararg, args.kwarg]):
+                                  if a is not None:
+                                      out.add(a.arg)
+                      elif isinstance(sub, ast.Lambda):
+                          args = sub.args
+                          for a in (list(args.args) + list(args.kwonlyargs)
+                                    + [args.vararg, args.kwarg]):
+                              if a is not None:
+                                  out.add(a.arg)
+                      elif isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)):
+                          out.add(sub.id)
+                      elif isinstance(sub, (ast.Global, ast.Nonlocal)):
+                          out.update(sub.names)
+                      elif isinstance(sub, ast.ExceptHandler) and sub.name:
+                          out.add(sub.name)
+              return out
+
+
+          def loads_with_scope(nodes):
+              """(node, innermost enclosing scope or None) for the whole region.
+
+              A function/class/lambda IS the scope of its own body, so its children
+              are attributed to it; anything else passes its scope through.
+              """
+              def walk(node, scope):
+                  inner = node if isinstance(node, SCOPE_TYPES) else scope
+                  for sub in ast.iter_child_nodes(node):
+                      yield sub, inner
+                      yield from walk(sub, inner)
+              for node in nodes:
+                  yield node, None
+                  yield from walk(node, None)
+
+
+          def check(path, src, lines):
+              """Returns (region label, failures) for one module, or None if it holds
+              no pure core."""
+              tree = ast.parse(src, filename=path)
+
+              pure_hits = banner_hits(lines, PURE_BANNER)
+              if not pure_hits:
+                  return None  # this module holds no pure core
+              seam_hits = banner_hits(lines, SEAM_BANNER)
+
+              bad = []
+              if len(pure_hits) > 1:
+                  bad.append(f"the '{PURE_BANNER}' banner appears {len(pure_hits)} times "
+                             f"(lines {', '.join(map(str, pure_hits))}) — exactly one is required")
+              if len(seam_hits) > 1:
+                  bad.append(f"the '{SEAM_BANNER}' banner appears {len(seam_hits)} times "
+                             f"(lines {', '.join(map(str, seam_hits))}) — at most one is required")
+
+              start = pure_hits[0]
+              seam = seam_hits[0] if seam_hits else None
+              if seam is not None and seam < start:
+                  bad.append(f"the '{SEAM_BANNER}' banner (line {seam}) precedes the "
+                             f"'{PURE_BANNER}' banner (line {start})")
+              last = (seam - 1) if (seam is not None and seam > start) else len(lines)
+
+              pure_nodes = [n for n in tree.body if start <= n.lineno <= last]
+              if not pure_nodes:
+                  bad.append(f"the pure scoring region (lines {start}-{last}) contains no "
+                             "top-level statements — the check would pass on an empty region")
+              if bad:
+                  return f"lines {start}-{last}", bad
+
+              # Name -> module root, for imports above the banner. Imports INSIDE the
+              # region are dependencies too and are judged by the same allowlist.
+              header_imports = {}
+              for node in tree.body:
+                  if start <= node.lineno <= last:
+                      continue
+                  if isinstance(node, ast.Import):
+                      for a in node.names:
+                          root = a.name.split(".")[0]
+                          header_imports[a.asname or root] = root
+                  elif isinstance(node, ast.ImportFrom):
+                      if node.level == 0 and node.module:
+                          root = node.module.split("".join(["."]))[0]
+                          for a in node.names:
+                              header_imports[a.asname or a.name] = root
+
+              in_region_imports = {}
+              for node in pure_nodes:
+                  for sub in ast.walk(node):
+                      if isinstance(sub, ast.Import):
+                          for a in sub.names:
+                              root = a.name.split(".")[0]
+                              in_region_imports[a.asname or root] = (root, sub.lineno)
+                      elif isinstance(sub, ast.ImportFrom):
+                          if sub.level == 0 and sub.module:
+                              root = sub.module.split(".")[0]
+                              for a in sub.names:
+                                  in_region_imports[a.asname or a.name] = (root, sub.lineno)
+
+              # Names this module binds outside the region, kept per side so a failure
+              # names the half the reader has to open — "below the seam" would send
+              # them to the bottom of a 3,500-line file for a name that lives in the
+              # header (a `try: import subprocess / except ImportError: ...` block).
+              # Reaching either side is a failure; only the diagnostic differs.
+              above = bound_names([n for n in tree.body if n.lineno < start])
+              below = bound_names([n for n in tree.body if n.lineno > last])
+
+              # Bindings are resolved per SCOPE, never unioned across the region: a
+              # parameter named `time` in one pure helper must not whitelist
+              # `time.monotonic()` in another. Module-level bindings in the region are
+              # the exception — they really do shadow for the whole module.
+              scope_bindings = {}
+              module_level = bound_names([n for n in pure_nodes
+                                          if not isinstance(n, SCOPE_TYPES)])
+
+              def shadows(name, scope):
+                  if scope is None:
+                      return name in module_level
+                  key = id(scope)
+                  if key not in scope_bindings:
+                      scope_bindings[key] = bound_names([scope])
+                  return name in scope_bindings[key]
+
+              plain_builtins = set(dir(builtins)) - CAPABILITY_BUILTINS
+              region_bindings = bound_names(pure_nodes)
+
+              for node, scope in loads_with_scope(pure_nodes):
+                  if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
+                      continue
+                  name = node.id
+                  where = f"line {node.lineno}"
+
+                  if name in CAPABILITY_BUILTINS:
+                      bad.append(f"{where}: pure core calls the builtin capability {name}()")
+                      continue
+
+                  # A dependency written inside the region is a violation outright --
+                  # shadowing cannot excuse one.
+                  in_region = in_region_imports.get(name)
+                  if in_region is not None:
+                      root, at = in_region
+                      if root not in ALLOWED_ROOTS:
+                          bad.append(f"{where}: pure core imports {name!r} from module {root!r} "
+                                     f"(imported at line {at}); only {sorted(ALLOWED_ROOTS)} are allowed")
+                      continue
+
+                  root = header_imports.get(name)
+                  if root is not None:
+                      # An import is only shadowed by a binding that actually encloses
+                      # this use, which is the whole point: `def f(time)` in a sibling
+                      # helper must not exempt `time.monotonic()` here.
+                      if root not in ALLOWED_ROOTS and not shadows(name, scope):
+                          bad.append(f"{where}: pure core uses {name!r} (module {root!r} "
+                                     f"is not one of {sorted(ALLOWED_ROOTS)})")
+                      continue
+
+                  if name in plain_builtins or name in region_bindings:
+                      continue
+                  if name in below:
+                      bad.append(f"{where}: pure core uses {name!r}, which is defined below the seam")
+                  elif name in above:
+                      bad.append(f"{where}: pure core uses {name!r}, which is defined above the "
+                                 f"'{PURE_BANNER}' banner")
+                  else:
+                      bad.append(f"{where}: pure core uses {name!r}, which is neither a local name, "
+                                 "an allowed import, nor defined in this module")
+              return f"lines {start}-{last}", bad
+
+
+          checked, failed, saw_pure = [], False, False
+          for fn in module_files():
+              path = os.path.join(plugin_dir, fn)
+              src = open(path, encoding="utf-8").read()
+              result = check(path, src, src.splitlines())
+              if result is None:
+                  continue
+              region, bad = result
+              saw_pure = True
+              checked.append(fn)
+              if bad:
+                  failed = True
+                  for b in sorted(set(bad)):
+                      print(f"::error file={path}::{b}")
+
+          if not saw_pure:
+              print("::warning::no 'Pure chart-scoring core' banner in any plugin module — "
+                    "the pure-scoring check is inert. If the core moved to a sibling "
+                    "module, carry the banner (and the 'Pack I/O, request models, and "
+                    "HTTP' seam marker) with it.")
+              print("OK: nothing to check")
+          elif failed:
+              sys.exit(1)
+          else:
+              where = ", ".join(checked)
+              print(f"OK: pure scoring core in {where} depends only on {sorted(ALLOWED_ROOTS)}")
+          PY
+
   version-bumped-on-change:
     runs-on: ubuntu-latest
     steps:

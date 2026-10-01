@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Internal-only: `routes.py` is reorganized into two clearly marked halves —
+  a pure chart-scoring core and the pack-I/O/HTTP half — with section
+  banners naming each region's concern, the HTTP-only constants
+  (`PLUGIN_ID`, `MAX_PROCESSING_SECONDS`) and the pure skip-reason
+  predicate `_is_unsupported_skip` moved to the halves that own them, and a
+  module map in the docstring (#137). No behavior change: generated ladders
+  are identical, which CI confirms by running the full suite on this change.
+- New `pure-core-has-no-io` CI job (#137). It locates the pure scoring core
+  in whichever plugin module declares the banner, then fails if that region
+  takes on any external module outside {`re`, `bisect`, `math`,
+  `dataclasses`, `itertools`} or uses a symbol defined outside the region. It is
+  an allowlist rather than a denylist, so a new I/O or framework dependency
+  has to be added to the allowlist deliberately rather than slipping through
+  an unmaintained list — whether it is imported at the top of the file or
+  inside the region, and whether or not some other binding in the region
+  happens to share that name (bindings are resolved per scope, so a
+  parameter cannot whitelist a sibling function). Capability builtins
+  (`open`, `eval`, `exec`, `__import__`, …) are rejected too, so the gate
+  also survives names that reach a capability without an import. A banner
+  that appears more than once, or a pure region with no statements, fails
+  the job rather than passing silently. If the pure core is later moved
+  into its own module, the banner moves with it and this job keeps gating
+  it.
+
 ### Fixed
 - Instrument labels stored under the pre-#136 `_instrumentKind()` verdict
   are now cleared instead of persisting forever (#141). That fix is
