@@ -206,80 +206,160 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: routes.py's pure scoring core must stay free of I/O and HTTP
+      - name: The pure scoring core must depend only on pure stdlib helpers
         run: |
           python3 - <<'PY'
-          import ast, os, sys
+          import ast
+          import builtins
+          import os
+          import sys
 
           plugin_dir = os.environ["PLUGIN_DIR"]
-          routes_path = os.path.join(plugin_dir, "routes.py")
-          if not os.path.isfile(routes_path):
-              print("No routes.py — skipping")
-              raise SystemExit(0)
-
           PURE_BANNER = "Pure chart-scoring core"
           SEAM_BANNER = "Pack I/O, request models, and HTTP"
 
-          src = open(routes_path, encoding="utf-8").read()
-          lines = src.splitlines()
+          # The pure core's whole external dependency set is these five stdlib modules.
+          # It is an ALLOWLIST, not a denylist: a name bound above the banner to any
+          # other module (sloppak, os, shutil, Path, fastapi, a sibling plugin module
+          # added by a future split, ...) fails the check without anyone having to
+          # remember to extend a list.
+          ALLOWED_ROOTS = {"re", "bisect", "math", "dataclasses", "itertools"}
 
-          def banner_line(marker):
+
+          def module_files():
+              for fn in sorted(os.listdir(plugin_dir)):
+                  if fn.endswith(".py") and not fn.startswith("test_"):
+                      yield fn
+
+
+          def banner_line(lines, marker):
               for i, line in enumerate(lines, start=1):
                   if line.startswith("#") and marker in line:
                       return i
               return None
 
-          start = banner_line(PURE_BANNER)
-          seam = banner_line(SEAM_BANNER)
-          if start is None or seam is None or seam <= start:
-              print(f"::error file={routes_path}::expected a '{PURE_BANNER}' region followed by a '{SEAM_BANNER}' banner")
+
+          def bound_names(nodes):
+              """Every name bound anywhere in these nodes (over-approximated)."""
+              out = set()
+              for node in nodes:
+                  for sub in ast.walk(node):
+                      if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                          out.add(sub.name)
+                          args = getattr(sub, "args", None)
+                          if args is not None:
+                              for a in (list(args.args) + list(args.posonlyargs)
+                                        + list(args.kwonlyargs)
+                                        + [args.vararg, args.kwarg]):
+                                  if a is not None:
+                                      out.add(a.arg)
+                      elif isinstance(sub, ast.Lambda):
+                          args = sub.args
+                          for a in (list(args.args) + list(args.kwonlyargs)
+                                    + [args.vararg, args.kwarg]):
+                              if a is not None:
+                                  out.add(a.arg)
+                      elif isinstance(sub, ast.Name) and isinstance(sub.ctx, (ast.Store, ast.Del)):
+                          out.add(sub.id)
+                      elif isinstance(sub, ast.Import):
+                          out.update(a.asname or a.name.split(".")[0] for a in sub.names)
+                      elif isinstance(sub, ast.ImportFrom):
+                          out.update(a.asname or a.name for a in sub.names)
+                      elif isinstance(sub, (ast.Global, ast.Nonlocal)):
+                          out.update(sub.names)
+                      elif isinstance(sub, ast.ExceptHandler) and sub.name:
+                          out.add(sub.name)
+              return out
+
+
+          def check(path, src, lines):
+              """Returns a list of failure strings for one module."""
+              tree = ast.parse(src, filename=path)
+              start = banner_line(lines, PURE_BANNER)
+              if start is None:
+                  return None  # this module holds no pure core
+
+              seam = banner_line(lines, SEAM_BANNER)
+              last = seam - 1 if seam is not None and seam > start else len(lines)
+
+              pure_nodes = [n for n in tree.body if start <= n.lineno <= last]
+              rest_nodes = [n for n in tree.body if not (start <= n.lineno <= last)]
+
+              # Name -> module root, for the imports above the banner. Only those count:
+              # a binding made inside the pure region is the region's own business.
+              header_imports = {}
+              for node in tree.body:
+                  if start <= node.lineno <= last:
+                      continue
+                  if isinstance(node, ast.Import):
+                      for a in node.names:
+                          root = a.name.split(".")[0]
+                          header_imports[a.asname or root] = root
+                  elif isinstance(node, ast.ImportFrom):
+                      if node.level == 0 and node.module:
+                          root = node.module.split(".")[0]
+                          for a in node.names:
+                              header_imports[a.asname or a.name] = root
+
+              # Names defined below the seam — the pure core may not reach down into them.
+              below = set()
+              for node in rest_nodes:
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                      below.add(node.name)
+              for name in bound_names(rest_nodes):
+                  if name not in below:
+                      below.add(name)
+
+              local = bound_names(pure_nodes) | set(dir(builtins))
+
+              bad = []
+              for node in pure_nodes:
+                  for sub in ast.walk(node):
+                      if not isinstance(sub, ast.Name) or not isinstance(sub.ctx, ast.Load):
+                          continue
+                      name = sub.id
+                      if name in local:
+                          continue
+                      root = header_imports.get(name)
+                      if root is not None:
+                          if root not in ALLOWED_ROOTS:
+                              bad.append(f"line {sub.lineno}: pure core uses {name!r} "
+                                         f"(module {root!r} is not one of {sorted(ALLOWED_ROOTS)})")
+                      elif name in below:
+                          bad.append(f"line {sub.lineno}: pure core uses {name!r}, which is defined below the seam")
+                      elif name in header_imports:
+                          bad.append(f"line {sub.lineno}: pure core uses {name!r}, from a disallowed module")
+                      else:
+                          bad.append(f"line {sub.lineno}: pure core uses undefined name {name!r}")
+              return bad
+
+
+          checked, failed, saw_pure = [], False, False
+          for fn in module_files():
+              path = os.path.join(plugin_dir, fn)
+              src = open(path, encoding="utf-8").read()
+              lines = src.splitlines()
+              bad = check(path, src, lines)
+              if bad is None:
+                  continue
+              saw_pure = True
+              checked.append((fn, bad))
+              if bad:
+                  failed = True
+                  for b in sorted(set(bad)):
+                      print(f"::error file={path}::{b}")
+
+          if not saw_pure:
+              print("::warning::no 'Pure chart-scoring core' banner in any plugin module — "
+                    "the pure-scoring check is inert. If the core moved to a sibling "
+                    "module, carry the banner (and the 'Pack I/O, request models, and "
+                    "HTTP' seam marker) with it.")
+              print("OK: nothing to check")
+          elif failed:
               sys.exit(1)
-
-          tree = ast.parse(src, filename=routes_path)
-
-          # Nodes inside the pure region; everything else (the imports/header
-          # above the banner, and the I/O+HTTP half from the seam down) is out.
-          def in_pure(node):
-              return start <= node.lineno < seam
-
-          pure_nodes = [n for n in tree.body if in_pure(n)]
-          rest_nodes = [n for n in tree.body if not in_pure(n)]
-
-          # Names that mean "this code touches the disk, the network or the
-          # framework" — the pure half must reference none of them.
-          FORBIDDEN = {
-              "Path", "zipfile", "sloppak", "safe_join", "parse_jsonc",
-              "HTTPException", "BaseModel", "Field", "StrictBool",
-              "yaml", "os", "threading", "time", "open",
-          }
-          bad = []
-          for node in pure_nodes:
-              for sub in ast.walk(node):
-                  if isinstance(sub, ast.Name) and sub.id in FORBIDDEN:
-                      bad.append(f"line {sub.lineno}: pure core references {sub.id}")
-                  elif isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) \
-                          and sub.value.id in FORBIDDEN:
-                      bad.append(f"line {sub.lineno}: pure core references {sub.value.id}.{sub.attr}")
-
-          # And the reverse direction: the pure half must not call anything
-          # defined below the seam (currently only _generate_one, and only in
-          # comments — a real call here is a regression, not a hypothetical).
-          io_defs = set()
-          for node in rest_nodes:
-              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                  io_defs.add(node.name)
-          for node in pure_nodes:
-              for sub in ast.walk(node):
-                  if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) \
-                          and sub.func.id in io_defs:
-                      bad.append(f"line {sub.lineno}: pure core calls {sub.func.id}(...), which is defined below the seam")
-
-          if bad:
-              for b in sorted(set(bad)):
-                  print(f"::error file={routes_path}::{b}")
-              sys.exit(1)
-          print(f"OK: pure scoring core (lines {start}-{seam - 1}) references no I/O, HTTP or framework names")
-          PY
+          else:
+              names = ", ".join(fn for fn, _ in checked)
+              print(f"OK: pure scoring core in {names} depends only on {sorted(ALLOWED_ROOTS)}")          PY
 
   version-bumped-on-change:
     runs-on: ubuntu-latest

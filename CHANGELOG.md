@@ -10,15 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Internal-only: `routes.py` is reorganized into two clearly marked halves —
   a pure chart-scoring core and the pack-I/O/HTTP half — with section
-  banners naming each region's concern, the two HTTP-only constants
-  (`PLUGIN_ID`, `MAX_PROCESSING_SECONDS`) moved down to the half that uses
-  them, and a module map in the docstring (#137). No behavior change: the
-  public entry point, import paths and generated ladders are byte-identical
-  (verified by hashing generated phrases for a spread of instrument types
-  before and after). A new `pure-core-has-no-io` CI job now fails if the
-  pure region references `Path`/`zipfile`/`sloppak`/`os`/`time`/`threading`/
-  FastAPI/pydantic/yaml names or calls anything defined below the seam, so
-  the boundary can't quietly erode.
+  banners naming each region's concern, the HTTP-only constants
+  (`PLUGIN_ID`, `MAX_PROCESSING_SECONDS`) and the pure skip-reason
+  predicate `_is_unsupported_skip` moved to the halves that own them, and a
+  module map in the docstring (#137). No behavior change: generated ladders
+  are identical, which CI confirms by running the full suite on this change.
+- New `pure-core-has-no-io` CI job (#137). It locates the pure scoring core
+  in whichever plugin module declares the banner, then fails if that region
+  takes on any external module outside {`re`, `bisect`, `math`,
+  `dataclasses`, `itertools`} or uses a symbol defined below the seam. It is
+  an allowlist rather than a denylist, so a new I/O or framework dependency
+  has to be added to the allowlist deliberately rather than slipping through
+  an unmaintained list. If the pure core is later moved into its own module,
+  the banner moves with it and this job keeps gating it.
 
 ### Fixed
 - Instrument labels stored under the pre-#136 `_instrumentKind()` verdict

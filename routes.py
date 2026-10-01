@@ -35,7 +35,10 @@ Module map (this file is two halves, split by the section banner
 
 Seam rule: everything above the banner computes scoring math and is
 I/O-free; everything below it does on-disk work or HTTP and computes no
-scoring math.
+scoring math. `pure-core-has-no-io` enforces the mechanically checkable
+half — nothing above the banner reaches down into a symbol defined below
+it, or depends on a module outside {re, bisect, math, dataclasses,
+itertools}.
 """
 
 import bisect
@@ -160,6 +163,18 @@ def _is_bass_arrangement(arr_type: str, arr_name: str) -> bool:
     if type_str.strip().lower() == "bass":
         return True
     return "bass" in name_str.lower()
+
+
+def _is_unsupported_skip(reason) -> bool:
+    """True for a skip reason meaning "this generator doesn't support this
+    arrangement's instrument" (issue #66) — drums or an explicit allowlist
+    miss — as opposed to "supported, but nothing to do" (already-has-phrases,
+    not-enough-content) or a structural problem (malformed-arrangement).
+
+    A pure string predicate classifying an arrangement's skip reason, so it
+    belongs up here with _instrument_kind rather than in the I/O half below.
+    """
+    return isinstance(reason, str) and reason.startswith("unsupported-instrument")
 
 
 # ── Tempo-relative constants ─────────────────────────────────────────────────
@@ -2964,9 +2979,12 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
 #
 # SEAM. Everything above this banner computes scoring math and is I/O-free;
 # everything below it does on-disk work (sloppak dir/zip read+write) or HTTP
-# and computes no scoring math. The boundary is enforced by the
-# `pure-core-has-no-io` CI check, so keep Path/zipfile/os/threading/sloppak/
-# FastAPI/pydantic/yaml references on this side of the line only.
+# and computes no scoring math. `pure-core-has-no-io` enforces the half that
+# can be checked mechanically: nothing above the banner may reach down into
+# a symbol defined below it, or take on any external module outside
+# {re, bisect, math, dataclasses, itertools}. A pure helper that happens to
+# live in this half is not a violation of the sentence — but new ones have no
+# reason to be added here.
 
 PLUGIN_ID = "difficulty_ladder"
 MAX_PROCESSING_SECONDS = 120  # hard cap per /generate-library call to bound CPU/DoS risk
@@ -3248,14 +3266,6 @@ def _canonical_section_times(pack_path: Path, manifest: dict) -> list[float]:
         if times:
             return times
     return []
-
-
-def _is_unsupported_skip(reason) -> bool:
-    """True for a skip reason meaning "this generator doesn't support this
-    arrangement's instrument" (issue #66) — drums or an explicit allowlist
-    miss — as opposed to "supported, but nothing to do" (already-has-phrases,
-    not-enough-content) or a structural problem (malformed-arrangement)."""
-    return isinstance(reason, str) and reason.startswith("unsupported-instrument")
 
 
 def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
