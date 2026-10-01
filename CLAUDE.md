@@ -126,10 +126,11 @@ node tools/settle_points.js                            # auto-adjust settle-poin
 The pytest file bootstraps `sys.path` from a **sibling `feedBack` checkout**
 (`tests/test_dd_generation.py`'s `_PLUGIN_DIR.parent / "feedBack" / "lib"`)
 and imports `pydantic` at module scope — without both, the whole file fails
-at collection, not per-test. Needs `pytest pydantic fastapi httpx PyYAML`
-installed and `feedBack` checked out next to this repo (CI does exactly
-this). If your sandbox lacks the sibling checkout or those deps, a filtered
-subset still exercises the pure-scoring/tier-assignment code without the
+at collection, not per-test. The Python packages are declared in
+`requirements-test.txt`; CI installs that manifest and checks out `feedBack`
+next to this repo. If your sandbox lacks the sibling checkout or those
+dependencies, a filtered subset still exercises the pure-scoring/tier-assignment
+code without the
 FastAPI-route tests:
 `-k "not chord_preview and not generate_library and not generate_route"`
 deselects 27 of 287 (16 chord-preview-route, 9 generate-library-route, 2
