@@ -22,3 +22,10 @@ updates:
     groups:
       version-updates:
         patterns: ["*"]
+
+  # Keep the exact test-environment pins reviewable and current.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
