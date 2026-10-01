@@ -359,7 +359,8 @@ jobs:
               sys.exit(1)
           else:
               names = ", ".join(fn for fn, _ in checked)
-              print(f"OK: pure scoring core in {names} depends only on {sorted(ALLOWED_ROOTS)}")          PY
+              print(f"OK: pure scoring core in {names} depends only on {sorted(ALLOWED_ROOTS)}")
+          PY
 
   version-bumped-on-change:
     runs-on: ubuntu-latest
