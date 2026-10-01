@@ -325,7 +325,6 @@ jobs:
               last = (seam - 1) if (seam is not None and seam > start) else len(lines)
 
               pure_nodes = [n for n in tree.body if start <= n.lineno <= last]
-              rest_nodes = [n for n in tree.body if not (start <= n.lineno <= last)]
               if not pure_nodes:
                   bad.append(f"the pure scoring region (lines {start}-{last}) contains no "
                              "top-level statements — the check would pass on an empty region")
@@ -361,12 +360,13 @@ jobs:
                               for a in sub.names:
                                   in_region_imports[a.asname or a.name] = (root, sub.lineno)
 
-              # Names defined below the seam — the pure core may not reach down into them.
-              below = set()
-              for node in rest_nodes:
-                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                      below.add(node.name)
-              below |= bound_names(rest_nodes)
+              # Names this module binds outside the region, kept per side so a failure
+              # names the half the reader has to open — "below the seam" would send
+              # them to the bottom of a 3,500-line file for a name that lives in the
+              # header (a `try: import subprocess / except ImportError: ...` block).
+              # Reaching either side is a failure; only the diagnostic differs.
+              above = bound_names([n for n in tree.body if n.lineno < start])
+              below = bound_names([n for n in tree.body if n.lineno > last])
 
               # Bindings are resolved per SCOPE, never unioned across the region: a
               # parameter named `time` in one pure helper must not whitelist
@@ -421,6 +421,9 @@ jobs:
                       continue
                   if name in below:
                       bad.append(f"{where}: pure core uses {name!r}, which is defined below the seam")
+                  elif name in above:
+                      bad.append(f"{where}: pure core uses {name!r}, which is defined above the "
+                                 f"'{PURE_BANNER}' banner")
                   else:
                       bad.append(f"{where}: pure core uses {name!r}, which is neither a local name, "
                                  "an allowed import, nor defined in this module")
