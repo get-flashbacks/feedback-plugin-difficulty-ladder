@@ -15,6 +15,16 @@
     var PLUGIN_ID = 'difficulty_ladder';
     var LS_PREFIX = 'difficulty_ladder.';
 
+    // Section payload contracts (issue #156). v2 is what Section Map consumes
+    // today and stays byte-for-byte as it is until that plugin is on v3;
+    // v3 is the render-neutral replacement on its own event name, so a v3-only
+    // consumer can never be handed a v2 payload and an un-upgraded consumer
+    // never sees fields it doesn't know. See INTEGRATION.md -> "sections v3".
+    const SECTIONS_SCHEMA_V2 = 'difficulty_ladder.sections.v2';
+    const SECTIONS_SCHEMA_V3 = 'difficulty_ladder.sections.v3';
+    const SECTIONS_EVENT_V2 = 'difficulty:sections-updated';
+    const SECTIONS_EVENT_V3 = 'difficulty:sections-updated-v3';
+
     // Section Map's released integration probe predates this plugin's rename
     // from dynamic_difficulty.  It subscribes to our public
     // `difficulty:sections-updated` event only after seeing this capability
@@ -24,6 +34,13 @@
     window._ddCapabilities = window._ddCapabilities || {};
     window._ddCapabilities.sectionDifficulty = true;
     window._ddCapabilities.playerContext = 'difficulty_ladder.player_context.v1';
+    // Which section-payload schema this build emits, so a consumer can pick
+    // v3 when present and fall back to v2 otherwise instead of sniffing
+    // payloads. Set here, at this plugin's top-level script execution, which
+    // always precedes section_map's (plugins load alphabetically and
+    // difficulty_ladder < section_map) — see INTEGRATION.md -> "Transition
+    // policy".
+    window._ddCapabilities.sectionsSchema = SECTIONS_SCHEMA_V3;
 
     function lsGet(key, def) {
         let v;
@@ -2155,13 +2172,199 @@
         }
 
         // Emit event for sectionmap and other interested plugins
-        fb.emit('difficulty:sections-updated', {
-            schema: 'difficulty_ladder.sections.v2',
-            player_context: _contextEventPayload(context),
+        var playerContextPayload = _contextEventPayload(context);
+        fb.emit(SECTIONS_EVENT_V2, {
+            schema: SECTIONS_SCHEMA_V2,
+            player_context: playerContextPayload,
             sectionDifficulties: sectionDifficulties,
             mastery: mastery,
             maxDifficulty: maxDiff,
         });
+
+        // The render-neutral v3 payload (issue #156) rides this same call and
+        // the same sections/phrases pass, so it costs one extra payload build
+        // per emit — no extra cadence, no per-note scanning beyond the content
+        // probe above. Its only additional highway reads are getTime() and
+        // getSongInfo(), which the is_current / current_phrase_index and
+        // joinable phrase id fields are for.
+        fb.emit(SECTIONS_EVENT_V3,
+            _sectionsV3Payload(sections, phrases, hw, mastery, playerContextPayload));
+    }
+
+    // ---- difficulty_ladder.sections.v3 (issue #156) ----------------------
+    // The render-neutral twin of the v2 payload above: same aggregation over
+    // the same highway data, but every field states what the data *is* rather
+    // than how a glass should be drawn, so a consumer can render bars, rings,
+    // a heat map or nothing from one payload. See INTEGRATION.md ->
+    // "sections v3" for the full contract; each section and phrase entry
+    // carries:
+    //   id / index      - stable key. A phrase's id is the same string
+    //                     phrase_attempt.v2 records are keyed by, so a consumer
+    //                     can join the two without a translation table.
+    //   start/end_time  - half-open [start_time, end_time), matching
+    //                     drawHud()'s and tickScoring()'s phrase cursor.
+    //                     end_time is null on an open-ended final section.
+    //   current_tier    - the tier this player's mastery currently maps to, or
+    //                     null when mastery isn't reported. Never a fabricated
+    //                     0 for missing data.
+    //   top_tier        - the tier from which the entry plays in full
+    //                     (core's top_difficulty, falling back to max_difficulty).
+    //                     0 means the phrase reports no ladder at all (a
+    //                     single-level or hand-authored phrase), which is the
+    //                     same reading v2 gives it.
+    //   max_tier        - the top of that entry's own tier ladder (max_difficulty).
+    //   is_current      - whether the entry covers the current playback time.
+    //   has_chart_content - whether the span holds playable notes/chords: probed
+    //                     per section, inherited by a single-level phrase from
+    //                     its section (see the note at the assignment).
+    // A section with no overlapping phrase gets no entry at all, same as v2:
+    // absent means "nothing to show", never "tier 0".
+    function _sectionsV3Payload(sections, phrases, hw, mastery, contextPayload) {
+        // Number(null) === 0 and Number('') === 0, so an unreported mastery has
+        // to be recognized as absent before it reaches the tier math — coerced,
+        // it would read as a real "played at the bottom tier" measurement.
+        var m = (mastery == null || mastery === '') ? null : Number(mastery);
+        if (!isFinite(m)) m = null;
+        var reportedTime = typeof hw.getTime === 'function' ? hw.getTime() : null;
+        var playbackTime = (reportedTime == null || reportedTime === '') ? null : Number(reportedTime);
+        if (!isFinite(playbackTime)) playbackTime = null;
+        var songKey = _v3PhraseSongKey(contextPayload, hw);
+        var maxTier = 0;
+        phrases.forEach(function (phrase) {
+            maxTier = Math.max(maxTier, _v3TierRange(phrase).max_tier);
+        });
+
+        // Its own pass over the phrases rather than a side effect of building
+        // the section entries: a phrase can be current while overlapping no
+        // section it would be reported under.
+        var currentPhraseIndex = null;
+        if (playbackTime !== null) {
+            for (var ci = 0; ci < phrases.length; ci++) {
+                if (playbackTime >= phrases[ci].start_time && playbackTime < phrases[ci].end_time) {
+                    currentPhraseIndex = ci;
+                    break;
+                }
+            }
+        }
+
+        var entries = [];
+        for (var si = 0; si < sections.length; si++) {
+            var startTime = sections[si].time;
+            // The last section has no successor to bound it; Infinity is the
+            // host's own convention here (v2 passes it the same way) but a
+            // payload cannot carry it, so it is emitted as null.
+            var endTime = si < sections.length - 1 ? sections[si + 1].time : null;
+            var endBoundary = endTime == null ? Infinity : endTime;
+
+            var overlapping = [];
+            var sectionMaxTier = 0;
+            var topTierSum = 0;
+            for (var pi = 0; pi < phrases.length; pi++) {
+                var phrase = phrases[pi];
+                if (!(phrase.end_time > startTime && phrase.start_time < endBoundary)) continue;
+                var tiers = _v3TierRange(phrase);
+                overlapping.push({ index: pi, phrase: phrase, tiers: tiers });
+                sectionMaxTier = Math.max(sectionMaxTier, tiers.max_tier);
+                topTierSum += tiers.top_tier;
+            }
+            if (overlapping.length === 0) continue;
+
+            // Same aggregation rule as v2 (hardest overlapping phrase by
+            // top_tier, mean of the section's top_tiers), restated as tiers.
+            var topTier = Math.max.apply(Math, overlapping.map(function (item) { return item.tiers.top_tier; }));
+            var hardest = overlapping.reduce(function (best, item) {
+                return item.tiers.top_tier > best.tiers.top_tier ? item : best;
+            });
+            // top_tier === 0 means every overlapping phrase is single-level,
+            // which is two different things: a section of easy phrases that is
+            // played in full at every slider position, and a silent section.
+            // The full chart's own notes tell them apart — the same
+            // distinction v2 draws as 100% vs 0% fill (Sourcery, PR #79),
+            // expressed as data instead of as a percentage.
+            var hasChartContent = topTier > 0 || _chartHasContentIn(hw, startTime, endBoundary);
+
+            var phraseEntries = overlapping.map(function (item) {
+                var isCurrent = playbackTime !== null
+                    && playbackTime >= item.phrase.start_time && playbackTime < item.phrase.end_time;
+                return {
+                    id: _phraseIdOf(songKey, item.index, item.phrase) || 'phrase:' + item.index,
+                    index: item.index,
+                    start_time: item.phrase.start_time,
+                    end_time: item.phrase.end_time,
+                    is_current: isCurrent,
+                    current_tier: m === null ? null
+                        : _v3CurrentTier(m, item.tiers.max_tier, item.tiers.top_tier),
+                    top_tier: item.tiers.top_tier,
+                    max_tier: item.tiers.max_tier,
+                    // A phrase with a ladder is taken to have content; a
+                    // single-level one inherits its section's verdict. Probing
+                    // every phrase's own span would make this emit O(phrases x
+                    // notes) for no extra fact a renderer needs.
+                    has_chart_content: item.tiers.top_tier > 0 || hasChartContent,
+                };
+            });
+
+            entries.push({
+                id: 'section:' + si,
+                index: si,
+                start_time: startTime,
+                end_time: endTime,
+                is_current: playbackTime !== null && playbackTime >= startTime && playbackTime < endBoundary,
+                current_tier: m === null ? null
+                    : _v3CurrentTier(m, hardest.tiers.max_tier, topTier),
+                top_tier: topTier,
+                max_tier: sectionMaxTier,
+                avg_top_tier: topTierSum / overlapping.length,
+                has_chart_content: hasChartContent,
+                phrases: phraseEntries,
+            });
+        }
+
+        return {
+            schema: SECTIONS_SCHEMA_V3,
+            player_context: contextPayload,
+            mastery: m,
+            max_tier: maxTier,
+            current_phrase_index: currentPhraseIndex,
+            sections: entries,
+        };
+    }
+
+    // An entry's own ladder: max_tier is the top of its tier scale, top_tier
+    // the tier from which it is played in full. top_tier is clamped to max_tier
+    // so a malformed pair can't report "full detail" above the ladder's top.
+    function _v3TierRange(phrase) {
+        var maxTier = Number(phrase && phrase.max_difficulty);
+        if (!isFinite(maxTier) || maxTier < 0) maxTier = 0;
+        return { max_tier: maxTier, top_tier: Math.min(_phraseTopDifficulty(phrase), maxTier) };
+    }
+
+    // The song/arrangement key a v3 phrase entry is identified by. It is
+    // deliberately the one recordPhraseAttempt() builds from the player
+    // context (`song_id::arrangement_id`) rather than songKeyOf(highway
+    // song info), because those are the ids phrase_attempt.v2 records are
+    // stored under and a consumer can only join the two if they agree. Without
+    // a context (a legacy main-player emission) the highway's own song info is
+    // the next best thing; songKeyOf({}) is the truthy '::' rather than null,
+    // so an empty song info is rejected here too and the entry falls back to
+    // its index.
+    function _v3PhraseSongKey(contextPayload, hw) {
+        if (contextPayload && contextPayload.song_id) {
+            return contextPayload.song_id + '::' + (contextPayload.arrangement_id || '');
+        }
+        var songKey = songKeyOf(typeof hw.getSongInfo === 'function' ? hw.getSongInfo() : null);
+        return songKey === '::' ? null : songKey;
+    }
+
+    // The tier a mastery value currently maps to, from the same discrete
+    // ladder every other consumer here uses (_tierFillFrac), clamped to
+    // `playedFullFrom`: above that tier the entry is already played in full,
+    // so a larger number would only invite a renderer to draw detail that
+    // cannot be added.
+    function _v3CurrentTier(mastery, ladderTier, playedFullFrom) {
+        var tier = _tierFillFrac(mastery, ladderTier, playedFullFrom).idxLevel;
+        if (!isFinite(tier)) return null;
+        return Math.max(0, Math.min(playedFullFrom, tier));
     }
 
     // Coalesces rapid-fire calculateAndEmitSectionDifficulties() calls (e.g.
@@ -3335,6 +3538,7 @@
             loadPhraseAttemptStore, loadPhraseAttempts, savePhraseAttempts,
             recordPhraseAttempt, _phraseIdOf,
             _presentedDifficultyLevel, _tierFillFrac, _phraseTopDifficulty, _chartHasContentIn,
+            _sectionsV3Payload, _v3TierRange, _v3CurrentTier, _v3PhraseSongKey,
             calculateAndEmitSectionDifficulties,
             commitPhraseResult, resetPerSongState,
             updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,

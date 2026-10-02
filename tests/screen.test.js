@@ -203,12 +203,11 @@ test('calculateAndEmitSectionDifficulties sizes and fills sections by the tier e
         ],
         mastery: 0.3,
     });
-    let emitted = null;
-    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
+    const emits = collectOneEmit();
 
     mod.calculateAndEmitSectionDifficulties();
 
-    const [verse, solo] = [emitted.detail.sectionDifficulties[0], emitted.detail.sectionDifficulties[1]];
+    const [verse, solo] = [emits.v2().detail.sectionDifficulties[0], emits.v2().detail.sectionDifficulties[1]];
     assert.equal(verse.maxDifficulty, 1);
     assert.equal(verse.fillPercentage, 100, 'the easy verse is already played in full at tier 1');
     assert.equal(verse.glassSize, 'medium');
@@ -217,14 +216,53 @@ test('calculateAndEmitSectionDifficulties sizes and fills sections by the tier e
     assert.equal(solo.glassSize, 'large');
 });
 
-function stubHighwayForSectionDifficulty({ sections, phrases, mastery, notes, chords }) {
+function stubHighwayForSectionDifficulty({ sections, phrases, mastery, notes, chords, time, songInfo }) {
     return {
         getSections: () => sections,
         getPhrases: () => phrases,
         getMastery: () => mastery,
         getNotes: () => notes || [],
         getChords: () => chords || [],
+        getTime: () => (time === undefined ? 0 : time),
+        getSongInfo: () => songInfo || null,
     };
+}
+
+// The section emit publishes two events (v2 for the released Section Map
+// integration, v3 for render-neutral consumers -- issue #156), so tests that
+// assert one contract pick their event out of the recorded stream by name
+// rather than reading whichever one landed last.
+function collectEmits() {
+    const events = [];
+    global.window.feedBack = { emit: (name, detail) => events.push({ name, detail }) };
+    return events;
+}
+
+function lastEvent(events, name) {
+    for (let i = events.length - 1; i >= 0; i--) {
+        if (events[i].name === name) return events[i];
+    }
+    return null;
+}
+
+function collectOneEmit() {
+    const events = collectEmits();
+    return {
+        events,
+        v2: () => lastEvent(events, 'difficulty:sections-updated'),
+        v3: () => lastEvent(events, 'difficulty:sections-updated-v3'),
+    };
+}
+
+// Every field name anywhere in a payload, so a contract test can assert a
+// banned key is absent at any depth rather than only where it was looked for.
+function collectFieldNames(value, found = new Set()) {
+    if (Array.isArray(value)) {
+        value.forEach(item => collectFieldNames(item, found));
+    } else if (value && typeof value === 'object') {
+        Object.keys(value).forEach((key) => { found.add(key); collectFieldNames(value[key], found); });
+    }
+    return found;
 }
 
 test('a section of single-level phrases is full when it has notes and empty when it has none', () => {
@@ -243,12 +281,11 @@ test('a section of single-level phrases is full when it has notes and empty when
         chords: [{ t: 4, notes: [{ s: 0, f: 3 }] }],
         mastery: 0.1,
     });
-    let emitted = null;
-    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
+    const emits = collectOneEmit();
 
     mod.calculateAndEmitSectionDifficulties();
 
-    const sections = emitted.detail.sectionDifficulties;
+    const sections = emits.v2().detail.sectionDifficulties;
     assert.equal(sections[0].fillPercentage, 100, 'easy verse with notes is played in full');
     assert.equal(sections[1].fillPercentage, 0, 'a silent break is not shown as mastered');
     assert.equal(sections[2].fillPercentage, 0, 'the solo is at its bottom tier at 10%');
@@ -278,13 +315,12 @@ test('calculateAndEmitSectionDifficulties fills each section using the same disc
         ],
         mastery: 0.6,
     });
-    let emitted = null;
-    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
+    const emits = collectOneEmit();
 
     mod.calculateAndEmitSectionDifficulties();
 
-    assert.equal(emitted.name, 'difficulty:sections-updated');
-    const verse = emitted.detail.sectionDifficulties[0];
+    assert.equal(emits.v2().name, 'difficulty:sections-updated');
+    const verse = emits.v2().detail.sectionDifficulties[0];
     const expected = mod._tierFillFrac(0.6, 2);
     assert.equal(verse.maxDifficulty, 2);
     assert.equal(verse.fillPercentage, expected.fillFrac * 100);
@@ -308,14 +344,373 @@ test('calculateAndEmitSectionDifficulties reports 0% for a section whose only ph
         ],
         mastery: 0.6,
     });
-    let emitted = null;
-    global.window.feedBack = { emit: (name, detail) => { emitted = { name, detail }; } };
+    const emits = collectOneEmit();
 
     mod.calculateAndEmitSectionDifficulties();
 
-    const intro = emitted.detail.sectionDifficulties[0];
+    const intro = emits.v2().detail.sectionDifficulties[0];
     assert.equal(intro.maxDifficulty, 0);
     assert.equal(intro.fillPercentage, 0);
+});
+
+// ── difficulty_ladder.sections.v3 — the render-neutral payload (#156) ──────
+//
+// The v2 payload above answers "how full is this glass, and how big"; these
+// tests pin the v3 contract that replaces it: tiers, spans and "is this the
+// current one", with no presentation field anywhere in it.
+
+test('the v3 payload reports tiers, spans and currency instead of glass presentation', () => {
+    const mod = freshPlugin();
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Solo' }],
+        phrases: [
+            { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 },
+            { start_time: 10, end_time: 20, max_difficulty: 3, top_difficulty: 3 },
+        ],
+        mastery: 0.3,
+        time: 12,
+    });
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    const payload = emits.v3().detail;
+    assert.equal(payload.schema, 'difficulty_ladder.sections.v3');
+    assert.equal(payload.mastery, 0.3);
+    assert.equal(payload.max_tier, 3, 'the song-wide top of the tier ladder');
+    assert.equal(payload.current_phrase_index, 1, 'playback at 12s sits in the second phrase');
+
+    const [verse, solo] = payload.sections;
+    assert.deepEqual(
+        Object.keys(verse).sort(),
+        ['avg_top_tier', 'current_tier', 'end_time', 'has_chart_content', 'id', 'index',
+            'is_current', 'max_tier', 'phrases', 'start_time', 'top_tier'].sort(),
+    );
+    assert.equal(verse.id, 'section:0');
+    assert.equal(verse.index, 0);
+    assert.deepEqual([verse.start_time, verse.end_time], [0, 10]);
+    assert.equal(verse.is_current, false);
+    assert.equal(verse.top_tier, 1, 'the easy verse is played in full from tier 1');
+    assert.equal(verse.max_tier, 3, 'but its ladder still runs to the song-wide tier 3');
+    assert.equal(verse.avg_top_tier, 1);
+    assert.equal(verse.current_tier, 1, 'mastery 0.3 is tier 1, which is this verse at full detail');
+
+    assert.equal(solo.is_current, true);
+    assert.equal(solo.top_tier, 3);
+    assert.equal(solo.current_tier, 1, 'the solo is still on tier 1 of 3');
+    assert.equal(solo.end_time, null, 'the final section runs to the end of the song');
+
+    const [versePhrase, soloPhrase] = [verse.phrases[0], solo.phrases[0]];
+    assert.deepEqual(
+        Object.keys(versePhrase).sort(),
+        ['current_tier', 'end_time', 'has_chart_content', 'id', 'index', 'is_current',
+            'max_tier', 'start_time', 'top_tier'].sort(),
+    );
+    assert.equal(versePhrase.index, 0);
+    assert.deepEqual([versePhrase.start_time, versePhrase.end_time], [0, 10]);
+    assert.equal(versePhrase.top_tier, 1);
+    assert.equal(versePhrase.is_current, false);
+    assert.equal(soloPhrase.is_current, true);
+});
+
+test('the v3 payload carries no presentation field at any depth', () => {
+    const mod = freshPlugin();
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Solo' }],
+        phrases: [
+            { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 },
+            { start_time: 10, end_time: 20, max_difficulty: 3, top_difficulty: 3 },
+        ],
+        mastery: 0.3,
+        notes: [{ t: 1 }],
+    });
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    const fields = collectFieldNames(emits.v3().detail);
+    for (const presentation of ['fillPercentage', 'glassSize']) {
+        assert.equal(fields.has(presentation), false, `${presentation} must stay out of the v3 payload`);
+    }
+});
+
+test('a v3 phrase entry carries the same id the phrase-attempt record is stored under', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ song_id: 'song.feedpak', arrangement_id: 'lead' });
+    // The highway's own song info disagrees with the context on purpose
+    // (numeric arrangement_index vs the context's arrangement_id), which is
+    // the shape a real split panel has: the join only holds if v3 keys a
+    // phrase from the context, the way recordPhraseAttempt() does.
+    const phrases = [{ start_time: 0, end_time: 10, max_difficulty: 3 }];
+    const highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases,
+        mastery: 0.5,
+        songInfo: { filename: 'song.feedpak', arrangement_index: 1 },
+    });
+    const state = mod.newSplitScoreState(ctx);
+    state.curPhraseIdx = 0;
+    state.phraseTotal = 1;
+    state.phraseHits = 1;
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties(ctx, highway);
+    mod.recordPhraseAttempt(1, ctx, state, highway);
+
+    const attempts = mod.loadPhraseAttempts(ctx);
+    assert.equal(attempts.length, 1);
+    assert.equal(emits.v3().detail.sections[0].phrases[0].id, attempts[0].phrase_id);
+});
+
+test('a v3 phrase entry falls back to its index when no song identity is available', () => {
+    const mod = freshPlugin();
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3 }],
+        mastery: 0.5,
+    });
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    assert.equal(emits.v3().detail.sections[0].phrases[0].id, 'phrase:0');
+});
+
+test('a v3 phrase entry falls back to its index on an empty song info, not to a "::" key', () => {
+    const mod = freshPlugin();
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3 }],
+        mastery: 0.5,
+        songInfo: {},
+    });
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    assert.equal(emits.v3().detail.sections[0].phrases[0].id, 'phrase:0');
+});
+
+test('v3 omits a section with no overlapping phrase instead of reporting a zero tier', () => {
+    const mod = freshPlugin();
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Intro' }, { time: 10, name: 'Break' }, { time: 20, name: 'Solo' }],
+        phrases: [{ start_time: 20, end_time: 30, max_difficulty: 3 }],
+        mastery: 0.6,
+    });
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    const { sections } = emits.v3().detail;
+    assert.equal(sections.length, 1, 'an absent entry means "nothing to show", never "tier 0"');
+    assert.equal(sections[0].index, 2);
+    assert.equal(sections[0].id, 'section:2');
+    assert.equal(sections[0].start_time, 20);
+});
+
+test('v3 separates a silent section from an easy one that is played in full', () => {
+    const mod = freshPlugin();
+    // The #79 distinction (easy phrases = full, no notes = not full) as data:
+    // both single-level sections report top_tier 0, and only has_chart_content
+    // tells them apart.
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Break' }, { time: 20, name: 'Solo' }],
+        phrases: [
+            { start_time: 0, end_time: 10, max_difficulty: 0 },
+            { start_time: 10, end_time: 20, max_difficulty: 0 },
+            { start_time: 20, end_time: 30, max_difficulty: 3 },
+        ],
+        notes: [{ t: 1 }],
+        mastery: 0.1,
+    });
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    const [verse, brk, solo] = emits.v3().detail.sections;
+    assert.deepEqual(
+        [verse.has_chart_content, brk.has_chart_content, solo.has_chart_content],
+        [true, false, true],
+    );
+    assert.deepEqual([verse.top_tier, brk.top_tier, solo.top_tier], [0, 0, 3]);
+    assert.deepEqual([verse.current_tier, brk.current_tier], [0, 0]);
+    assert.equal(verse.phrases[0].has_chart_content, true);
+    assert.equal(brk.phrases[0].has_chart_content, false);
+});
+
+test('v3 reports current_tier as null when the host reports no usable mastery', () => {
+    const mod = freshPlugin();
+    // null and '' both coerce to 0 through Number(), which would read as a
+    // real "played at the bottom tier" measurement rather than as unknown.
+    for (const unusable of [NaN, null, undefined, '']) {
+        global.window.highway = stubHighwayForSectionDifficulty({
+            sections: [{ time: 0, name: 'Verse' }],
+            phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3 }],
+            mastery: unusable,
+        });
+        const emits = collectOneEmit();
+
+        mod.calculateAndEmitSectionDifficulties();
+
+        const payload = emits.v3().detail;
+        assert.equal(payload.mastery, null, `${String(unusable)} must read as unknown`);
+        assert.equal(payload.sections[0].current_tier, null, 'unknown is not tier 0');
+        assert.equal(payload.sections[0].top_tier, 3, 'the ladder itself is still reported');
+        assert.equal(payload.sections[0].phrases[0].current_tier, null);
+    }
+});
+
+test('v3 marks nothing current when the host reports no playback time', () => {
+    const mod = freshPlugin();
+    // null and '' both coerce to 0 through Number(), which would land on
+    // section 0 every time rather than admitting the time is unknown.
+    for (const unusable of [null, NaN, '']) {
+        global.window.highway = stubHighwayForSectionDifficulty({
+            sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Solo' }],
+            phrases: [{ start_time: 0, end_time: 20, max_difficulty: 3 }],
+            mastery: 0.5,
+            time: unusable,
+        });
+        const emits = collectOneEmit();
+
+        mod.calculateAndEmitSectionDifficulties();
+
+        const payload = emits.v3().detail;
+        assert.deepEqual(payload.sections.map(s => s.is_current), [false, false],
+            `${String(unusable)} must not land on section 0`);
+        assert.equal(payload.sections[0].phrases[0].is_current, false);
+        assert.equal(payload.current_phrase_index, null);
+    }
+
+    // An older highway with no time getter at all degrades the same way.
+    const silentHighway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3 }],
+        mastery: 0.5,
+    });
+    delete silentHighway.getTime;
+    const emits = collectOneEmit();
+    global.window.highway = silentHighway;
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    assert.equal(emits.v3().detail.sections[0].is_current, false);
+    assert.equal(emits.v3().detail.current_phrase_index, null);
+});
+
+test('v3 reports the phrase covering playback even when no section covers it', () => {
+    const mod = freshPlugin();
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases: [
+            { start_time: 0, end_time: 10, max_difficulty: 3 },
+            { start_time: 10, end_time: 20, max_difficulty: 3 },
+        ],
+        mastery: 0.5,
+        time: 12,
+    });
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    assert.equal(emits.v3().detail.current_phrase_index, 1,
+        'the cursor is over a phrase that overlaps no reported section');
+});
+
+test('_v3TierRange clamps the full-detail tier to the ladder top and tolerates junk', () => {
+    const mod = freshPlugin();
+    assert.deepEqual(mod._v3TierRange({ max_difficulty: 3, top_difficulty: 1 }), { max_tier: 3, top_tier: 1 });
+    assert.deepEqual(mod._v3TierRange({ max_difficulty: 3 }), { max_tier: 3, top_tier: 3 });
+    assert.deepEqual(mod._v3TierRange({ max_difficulty: 3, top_difficulty: 9 }), { max_tier: 3, top_tier: 3 });
+    assert.deepEqual(mod._v3TierRange({ max_difficulty: 'x', top_difficulty: 2 }), { max_tier: 0, top_tier: 0 });
+    assert.deepEqual(mod._v3TierRange(undefined), { max_tier: 0, top_tier: 0 });
+});
+
+test('_v3CurrentTier never reports more detail than the entry plays in', () => {
+    const mod = freshPlugin();
+    // Tier 4 of a 5-tier ladder, then clamped: the phrase is already played in
+    // full from tier 1, so there is no tier 4 to show.
+    assert.equal(mod._v3CurrentTier(0.9, 4, 1), 1);
+    assert.equal(mod._v3CurrentTier(0.5, 4, 4), 2);
+    assert.equal(mod._v3CurrentTier(0, 4, 4), 0);
+    assert.equal(mod._v3CurrentTier(-1, 4, 4), 0, 'mastery below range clamps to the bottom tier');
+    assert.equal(mod._v3CurrentTier(2, 4, 4), 4, 'mastery above range clamps to the top tier');
+});
+
+test('the v2 event still emits byte-for-byte what Section Map consumes today', () => {
+    const mod = freshPlugin();
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Solo' }],
+        phrases: [
+            { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 },
+            { start_time: 10, end_time: 20, max_difficulty: 3, top_difficulty: 3 },
+        ],
+        mastery: 0.3,
+    });
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    // Locked shape, not just "it still fires": v2 stays the released contract
+    // for as long as an un-upgraded Section Map can be installed beside us.
+    assert.deepEqual(emits.v2().detail, {
+        schema: 'difficulty_ladder.sections.v2',
+        player_context: null,
+        sectionDifficulties: {
+            0: { fillPercentage: 100, glassSize: 'medium', avgDifficulty: 1, maxDifficulty: 1 },
+            1: { fillPercentage: (1 / 3) * 100, glassSize: 'large', avgDifficulty: 3, maxDifficulty: 3 },
+        },
+        mastery: 0.3,
+        maxDifficulty: 3,
+    });
+});
+
+test('the section emit publishes v2 and v3 on separate events in one call', () => {
+    const mod = freshPlugin();
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3 }],
+        mastery: 0.5,
+    });
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    assert.deepEqual(emits.events.map(e => e.name),
+        ['difficulty:sections-updated', 'difficulty:sections-updated-v3'],
+        'a v2-only subscriber must never be handed a v3 payload, or the reverse');
+    assert.equal(global.window._ddCapabilities.sectionsSchema, 'difficulty_ladder.sections.v3',
+        'consumers feature-detect the installed schema instead of sniffing payloads');
+});
+
+test('each split panel receives its own v3 payload, scoped to its own player context', () => {
+    const mod = freshPlugin();
+    const emits = collectOneEmit();
+    const paneA = playerContext({ session_id: 'split-42', player_id: 'player-1' });
+    const paneB = playerContext({ session_id: 'split-42', player_id: 'player-2' });
+    const highwayA = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases: [{ start_time: 0, end_time: 10, max_difficulty: 2, top_difficulty: 2 }],
+        mastery: 0.3,
+    });
+    const highwayB = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases: [{ start_time: 0, end_time: 10, max_difficulty: 4, top_difficulty: 4 }],
+        mastery: 0.8,
+    });
+
+    mod.calculateAndEmitSectionDifficulties(paneA, highwayA);
+    mod.calculateAndEmitSectionDifficulties(paneB, highwayB);
+
+    const payloads = emits.events
+        .filter(e => e.name === 'difficulty:sections-updated-v3')
+        .map(e => e.detail);
+    assert.equal(payloads.length, 2);
+    assert.deepEqual(payloads.map(p => p.player_context.player_id), ['player-1', 'player-2']);
+    assert.deepEqual(payloads.map(p => p.sections[0].max_tier), [2, 4],
+        'each pane reports its own highway\'s ladder, not the other panel\'s');
+    assert.deepEqual(payloads.map(p => p.sections[0].current_tier), [0, 4]);
 });
 
 test('phrase attempt log helpers ignore malformed storage and retain an array shape', () => {
@@ -511,8 +906,7 @@ test('a non-true capability result falls back to the context-owned highway', () 
 test('section difficulty events retain the player context for pane-local rendering', () => {
     const mod = freshPlugin();
     const ctx = playerContext({ session_id: 'split-42', player_id: 'player-3' });
-    const emitted = [];
-    global.window.feedBack = { emit: (name, detail) => emitted.push({ name, detail }) };
+    const emits = collectOneEmit();
     const highway = stubHighwayForSectionDifficulty({
         sections: [{ time: 0, name: 'Verse' }],
         phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3 }],
@@ -521,8 +915,8 @@ test('section difficulty events retain the player context for pane-local renderi
 
     mod.calculateAndEmitSectionDifficulties(ctx, highway);
 
-    assert.equal(emitted[0].name, 'difficulty:sections-updated');
-    assert.deepEqual(emitted[0].detail.player_context, mod._contextEventPayload(ctx));
+    assert.deepEqual(emits.v2().detail.player_context, mod._contextEventPayload(ctx));
+    assert.deepEqual(emits.v3().detail.player_context, mod._contextEventPayload(ctx));
 });
 
 test('split phrase finalization records the completed phrase under its own player context', () => {

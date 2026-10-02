@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A render-neutral section payload, `difficulty_ladder.sections.v3` (#156, first
+  tier-rail sub-issue of #131). The existing `difficulty:sections-updated` event
+  states `fillPercentage` and `glassSize`, i.e. presentation decisions made in
+  the producer on Section Map's behalf, so any second consumer inherited the
+  glass metaphor. v3 reports the facts behind them instead, per section and per
+  overlapping phrase: a stable id and index, the half-open time range,
+  `current_tier` (the tier this pane's mastery maps to, from the same discrete
+  ladder `drawHud()` uses, clamped to the tier the entry plays in full from),
+  `top_tier`, `max_tier`, `avg_top_tier` for sections, `is_current`, and
+  `has_chart_content` — plus the phrase entries themselves, keyed by the same
+  stable id `phrase_attempt.v2` records use. No presentation field appears
+  anywhere in it; a renderer picks its own shape, or none. Missing data stays
+  missing: a section with no overlapping phrase produces no entry rather than a
+  zero tier, and `current_tier` is `null` (not `0`) when the host reports no
+  usable mastery. Each payload is built per player context, so Split Screen
+  panes stay isolated as before. Emitted from the same
+  `calculateAndEmitSectionDifficulties()` call and the same ~150 ms throttle as
+  v2, adding no reads beyond the current time and song identity the new
+  `is_current` / `current_phrase_index` / joinable id fields are for. Both
+  events are emitted: v2
+  is frozen byte-for-byte for the released Section Map integration, v3 sits on
+  its own event name so a subscriber is never handed the other version's
+  payload, and `window._ddCapabilities.sectionsSchema` advertises which
+  contract the installed build speaks — set at this plugin's top-level script
+  execution, which (plugins load alphabetically,
+  `difficulty_ladder` < `section_map`) always precedes Section Map's
+  availability check. v2 removal follows the v3 consumer landing in Section Map.
+  Contract, field table and transition policy documented in `INTEGRATION.md`.
 - A session's first start on a song now begins slightly below the difficulty
   the player last settled on, and lets the existing ramp walk the gap back
   (#112, roadmap C4). Resuming straight at a remembered peak makes the
