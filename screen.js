@@ -2227,114 +2227,144 @@
     // A section with no overlapping phrase gets no entry at all, same as v2:
     // absent means "nothing to show", never "tier 0".
     function _sectionsV3Payload(sections, phrases, hw, mastery, contextPayload) {
-        // Number(null) === 0 and Number('') === 0, so an unreported mastery has
-        // to be recognized as absent before it reaches the tier math — coerced,
-        // it would read as a real "played at the bottom tier" measurement.
-        var m = (mastery == null || mastery === '') ? null : Number(mastery);
-        if (!isFinite(m)) m = null;
-        var reportedTime = typeof hw.getTime === 'function' ? hw.getTime() : null;
-        var playbackTime = (reportedTime == null || reportedTime === '') ? null : Number(reportedTime);
-        if (!isFinite(playbackTime)) playbackTime = null;
-        var songKey = _v3PhraseSongKey(contextPayload, hw);
-        var maxTier = 0;
-        phrases.forEach(function (phrase) {
-            maxTier = Math.max(maxTier, _v3TierRange(phrase).max_tier);
-        });
+        // Everything the entries below read from the host, read once per emit.
+        // mastery and time are null when the host doesn't report them, which is
+        // why they are coerced here rather than at each use.
+        var state = {
+            hw: hw,
+            mastery: _v3NumberOrNull(mastery),
+            time: _v3NumberOrNull(typeof hw.getTime === 'function' ? hw.getTime() : null),
+            songKey: _v3PhraseSongKey(contextPayload, hw),
+        };
+        return {
+            schema: SECTIONS_SCHEMA_V3,
+            player_context: contextPayload,
+            mastery: state.mastery,
+            max_tier: phrases.reduce(function (top, phrase) {
+                return Math.max(top, _v3TierRange(phrase).max_tier);
+            }, 0),
+            current_phrase_index: _v3CurrentPhraseIndex(phrases, state.time),
+            sections: _v3SectionEntries(sections, phrases, state),
+        };
+    }
 
-        // Its own pass over the phrases rather than a side effect of building
-        // the section entries: a phrase can be current while overlapping no
-        // section it would be reported under.
-        var currentPhraseIndex = null;
-        if (playbackTime !== null) {
-            for (var ci = 0; ci < phrases.length; ci++) {
-                if (playbackTime >= phrases[ci].start_time && playbackTime < phrases[ci].end_time) {
-                    currentPhraseIndex = ci;
-                    break;
-                }
-            }
-        }
-
+    // One entry per section that overlaps a phrase, in order.
+    function _v3SectionEntries(sections, phrases, state) {
         var entries = [];
         for (var si = 0; si < sections.length; si++) {
-            var startTime = sections[si].time;
             // The last section has no successor to bound it; Infinity is the
             // host's own convention here (v2 passes it the same way) but a
             // payload cannot carry it, so it is emitted as null.
             var endTime = si < sections.length - 1 ? sections[si + 1].time : null;
-            var endBoundary = endTime == null ? Infinity : endTime;
-
-            var overlapping = [];
-            var sectionMaxTier = 0;
-            var topTierSum = 0;
-            for (var pi = 0; pi < phrases.length; pi++) {
-                var phrase = phrases[pi];
-                if (!(phrase.end_time > startTime && phrase.start_time < endBoundary)) continue;
-                var tiers = _v3TierRange(phrase);
-                overlapping.push({ index: pi, phrase: phrase, tiers: tiers });
-                sectionMaxTier = Math.max(sectionMaxTier, tiers.max_tier);
-                topTierSum += tiers.top_tier;
-            }
-            if (overlapping.length === 0) continue;
-
-            // Same aggregation rule as v2 (hardest overlapping phrase by
-            // top_tier, mean of the section's top_tiers), restated as tiers.
-            var topTier = Math.max.apply(Math, overlapping.map(function (item) { return item.tiers.top_tier; }));
-            var hardest = overlapping.reduce(function (best, item) {
-                return item.tiers.top_tier > best.tiers.top_tier ? item : best;
-            });
-            // top_tier === 0 means every overlapping phrase is single-level,
-            // which is two different things: a section of easy phrases that is
-            // played in full at every slider position, and a silent section.
-            // The full chart's own notes tell them apart — the same
-            // distinction v2 draws as 100% vs 0% fill (Sourcery, PR #79),
-            // expressed as data instead of as a percentage.
-            var hasChartContent = topTier > 0 || _chartHasContentIn(hw, startTime, endBoundary);
-
-            var phraseEntries = overlapping.map(function (item) {
-                var isCurrent = playbackTime !== null
-                    && playbackTime >= item.phrase.start_time && playbackTime < item.phrase.end_time;
-                return {
-                    id: _phraseIdOf(songKey, item.index, item.phrase) || 'phrase:' + item.index,
-                    index: item.index,
-                    start_time: item.phrase.start_time,
-                    end_time: item.phrase.end_time,
-                    is_current: isCurrent,
-                    current_tier: m === null ? null
-                        : _v3CurrentTier(m, item.tiers.max_tier, item.tiers.top_tier),
-                    top_tier: item.tiers.top_tier,
-                    max_tier: item.tiers.max_tier,
-                    // A phrase with a ladder is taken to have content; a
-                    // single-level one inherits its section's verdict. Probing
-                    // every phrase's own span would make this emit O(phrases x
-                    // notes) for no extra fact a renderer needs.
-                    has_chart_content: item.tiers.top_tier > 0 || hasChartContent,
-                };
-            });
-
-            entries.push({
-                id: 'section:' + si,
-                index: si,
-                start_time: startTime,
-                end_time: endTime,
-                is_current: playbackTime !== null && playbackTime >= startTime && playbackTime < endBoundary,
-                current_tier: m === null ? null
-                    : _v3CurrentTier(m, hardest.tiers.max_tier, topTier),
-                top_tier: topTier,
-                max_tier: sectionMaxTier,
-                avg_top_tier: topTierSum / overlapping.length,
-                has_chart_content: hasChartContent,
-                phrases: phraseEntries,
-            });
+            var entry = _v3SectionEntry(si, sections[si].time, endTime, phrases, state);
+            if (entry) entries.push(entry);
         }
+        return entries;
+    }
+
+    // One section's entry, or null when no phrase overlaps it (the omission
+    // rule stated above). Same aggregation rule as v2 — hardest overlapping
+    // phrase by top_tier, mean of the section's top_tiers — restated as tiers.
+    function _v3SectionEntry(index, startTime, endTime, phrases, state) {
+        var endBoundary = endTime == null ? Infinity : endTime;
+        var overlapping = _v3Overlapping(phrases, startTime, endBoundary);
+        if (overlapping.entries.length === 0) return null;
+
+        var hardest = overlapping.hardest;
+        var topTier = hardest.tiers.top_tier;
+        // top_tier === 0 means every overlapping phrase is single-level,
+        // which is two different things: a section of easy phrases that is
+        // played in full at every slider position, and a silent section.
+        // The full chart's own notes tell them apart — the same
+        // distinction v2 draws as 100% vs 0% fill (Sourcery, PR #79),
+        // expressed as data instead of as a percentage.
+        var hasChartContent = topTier > 0 || _chartHasContentIn(state.hw, startTime, endBoundary);
 
         return {
-            schema: SECTIONS_SCHEMA_V3,
-            player_context: contextPayload,
-            mastery: m,
-            max_tier: maxTier,
-            current_phrase_index: currentPhraseIndex,
-            sections: entries,
+            id: 'section:' + index,
+            index: index,
+            start_time: startTime,
+            end_time: endTime,
+            is_current: _v3Covers(state.time, startTime, endBoundary),
+            current_tier: state.mastery === null ? null
+                : _v3CurrentTier(state.mastery, hardest.tiers.max_tier, topTier),
+            top_tier: topTier,
+            max_tier: overlapping.max_tier,
+            avg_top_tier: overlapping.top_tier_sum / overlapping.entries.length,
+            has_chart_content: hasChartContent,
+            phrases: overlapping.entries.map(function (item) {
+                return _v3PhraseEntry(item, state, hasChartContent);
+            }),
         };
+    }
+
+    // The phrases overlapping one section's [startTime, endBoundary) span, each
+    // with its own tier range, plus the three aggregates its entry reports: the
+    // hardest of them (the first reaching the top top_tier, as v2's rule reads),
+    // the top of their ladders, and the sum their mean is taken from.
+    function _v3Overlapping(phrases, startTime, endBoundary) {
+        var entries = [];
+        var hardest = null;
+        var maxTier = 0;
+        var topTierSum = 0;
+        for (var pi = 0; pi < phrases.length; pi++) {
+            var phrase = phrases[pi];
+            if (!(phrase.end_time > startTime && phrase.start_time < endBoundary)) continue;
+            var tiers = _v3TierRange(phrase);
+            var entry = { index: pi, phrase: phrase, tiers: tiers };
+            entries.push(entry);
+            maxTier = Math.max(maxTier, tiers.max_tier);
+            topTierSum += tiers.top_tier;
+            if (hardest === null || tiers.top_tier > hardest.tiers.top_tier) hardest = entry;
+        }
+        return { entries: entries, hardest: hardest, max_tier: maxTier, top_tier_sum: topTierSum };
+    }
+
+    function _v3PhraseEntry(item, state, hasChartContent) {
+        return {
+            id: _phraseIdOf(state.songKey, item.index, item.phrase) || 'phrase:' + item.index,
+            index: item.index,
+            start_time: item.phrase.start_time,
+            end_time: item.phrase.end_time,
+            is_current: _v3Covers(state.time, item.phrase.start_time, item.phrase.end_time),
+            current_tier: state.mastery === null ? null
+                : _v3CurrentTier(state.mastery, item.tiers.max_tier, item.tiers.top_tier),
+            top_tier: item.tiers.top_tier,
+            max_tier: item.tiers.max_tier,
+            // A phrase with a ladder is taken to have content; a
+            // single-level one inherits its section's verdict. Probing
+            // every phrase's own span would make this emit O(phrases x
+            // notes) for no extra fact a renderer needs.
+            has_chart_content: item.tiers.top_tier > 0 || hasChartContent,
+        };
+    }
+
+    // Its own pass over the phrases rather than a side effect of building the
+    // section entries: a phrase can be current while overlapping no section it
+    // would be reported under.
+    function _v3CurrentPhraseIndex(phrases, playbackTime) {
+        if (playbackTime === null) return null;
+        for (var i = 0; i < phrases.length; i++) {
+            if (_v3Covers(playbackTime, phrases[i].start_time, phrases[i].end_time)) return i;
+        }
+        return null;
+    }
+
+    // Whether the playback cursor sits in the half-open [start, end) span. A
+    // null time is inside no span, so an unreported time marks nothing current
+    // instead of landing on the first entry.
+    function _v3Covers(playbackTime, start, end) {
+        return playbackTime !== null && playbackTime >= start && playbackTime < end;
+    }
+
+    // null, '' and anything non-numeric all mean "not reported". Recognized
+    // before the value reaches the tier math: Number(null) === 0 and
+    // Number('') === 0, so a coerced one would read as a real "played at the
+    // bottom tier" measurement.
+    function _v3NumberOrNull(value) {
+        if (value == null || value === '') return null;
+        var n = Number(value);
+        return isFinite(n) ? n : null;
     }
 
     // An entry's own ladder: max_tier is the top of its tier scale, top_tier
