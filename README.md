@@ -289,6 +289,27 @@ the case that's now rejected explicitly instead of guessed at.
   still working through no longer carries one song's difficulty into the
   other. Captures both manual slider moves and this plugin's own
   auto-adjustments, for songs with phrase-level difficulty data only.
+- **Warm-up start (Adaptive only).** The first time you resume a song in a
+  session, the song starts slightly *below* its remembered difficulty —
+  half of one auto-adjust ramp step, i.e. at most one full step and
+  normally less: 5% at Sensitivity 1, 8% at 2, 10% at 3 (see **Sensitivity**
+  in the settings table for what a "step" is). Your first sections of a
+  session tend to dip below the level you settled on, and starting at the
+  peak makes early misses likely enough to provoke a step-down you didn't
+  need. The ramp climbs back once your rolling accuracy clears its
+  up-adjustment threshold — a session that settles mid-band plays out at
+  the slightly lower start, which is the intent — and **WARMUP_PHRASES**
+  still keeps the ramp quiet until it has real evidence (the two compose —
+  neither replaces the other). It applies once per remembered difficulty (a
+  song/arrangement/instrument/role/skill combination) per session: a
+  re-restore of the record already in play puts you back exactly where the
+  start left you, while a *different* song mid-session gets its own warm-up
+  start. Never in **Standard** mode (nothing would climb back, so it would
+  just strand you below your own value), and never below your **Min %**
+  floor — if the song's remembered value already sits at or under it, there is
+  no room to give and it starts as it is. The remembered value itself is
+  untouched: the start is a live-only value, and the ramp's first
+  adjustment — or you moving the slider — is what re-records it.
 
 The legacy single-player storage is migrated conservatively into the
 `difficulty_ladder.progress.v2` and `difficulty_ladder.phraseAttempts.v2`
@@ -305,6 +326,10 @@ claim marker prevents another player sharing that profile from reading it.
   sections, or down after a rough one. With the *Level up only* setting on,
   the downward nudge never happens — step-ups, warm-up counting, bounds, and
   the manual-override stand-down below are all unchanged.
+- Won't act on a song's very first section at all, and starts a song's first
+  session slightly below its remembered difficulty (see **Per-song difficulty
+  memory** above) — so a rusty first section is neither acted on nor
+  provoked.
 - Records monotonic best mastery at phrase finalization as the live difficulty
   percentage multiplied by the phrase hit rate. This never changes the separate
   current-difficulty target.
@@ -408,7 +433,7 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 | Resist isolated difficulty drops | Require two consecutive below-threshold sections before a downward adjustment; upward adjustments remain immediate. Off by default. Inert while *Level up only* is on. |
 | Level up only (#111) | Opt-in comfort switch: auto-adjust raises difficulty as usual but never lowers it, at any accuracy. The manual slider still works, and moving it still stands auto-adjust down entirely — both directions — exactly as without this setting. Off by default, and deliberately presented as a comfort option rather than a learning aid (a 2022 meta-analysis, McKay et al., found the self-controlled-practice benefit close to zero after bias correction). |
 | Glass-filling section HUD | Show/hide the in-player glass row. |
-| Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. |
+| Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. A step is 10 / 15 / 20 percentage points; the per-song warm-up start is a fraction of one (see above). |
 | Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
 | Difficulty drop speed (1×-2×) | Multiplies only the downward auto-adjust target so difficulty can ease off faster than it climbs. The default 1× preserves symmetric behavior. Inert while *Level up only* is on. |
 | Min / Max % | Hard bounds auto-adjust will never cross. |
