@@ -108,7 +108,7 @@ function emaSeq(ratios, alpha) {
 // ---------------------------------------------------------------------------
 
 function makeEnv() {
-    return { t: 0, wall: 0, mastery: 0.5, verdicts: new Map(), polls: 0 };
+    return { t: 0, wall: 0, mastery: 0.5, verdicts: new Map(), polls: 0, pollTimes: [] };
 }
 
 function makeHighway(chart, env, onSetMastery) {
@@ -121,7 +121,7 @@ function makeHighway(chart, env, onSetMastery) {
         getMastery: () => env.mastery,
         setMastery: (fraction) => { env.mastery = fraction; if (onSetMastery) onSetMastery(fraction); },
         getNoteStateProvider: () => (note, time) => {
-            env.polls++;
+            env.polls++; env.pollTimes.push(env.t);
             return env.verdicts.get(key(time, note.s, note.f)) || null;
         },
     };
@@ -188,6 +188,7 @@ function splitDriver(chart, env, opts = {}) {
         observe() { return { commits: commits.map((c) => ({ ...c })), masteryWrites: [...masteryWrites] }; },
         autoAdjustEnabled: () => mod.settings.autoAdjust,
         polls: () => env.polls,
+        pollTimes: () => env.pollTimes,
         dispose: restoreClock,
     };
 }
@@ -253,6 +254,7 @@ function mainDriver(chart, env, opts = {}) {
         autoAdjustEnabled: () => (diag.length ? diag[diag.length - 1].auto_adjust_enabled : null),
         diagCountSinceLoad: () => diag.length - startCount,
         polls: () => env.polls,
+        pollTimes: () => env.pollTimes,
         dispose() {},
     };
 }
@@ -444,13 +446,13 @@ test('pending judgments are re-polled at most once per 0.1s of playback, identic
     const both = runBoth(chart, play(0.6, 3.0, 0.05), { verdicts });
     assert.equal(both.main.polls(), both.split.polls());
     // The note is enqueued at t=1.1 (cutoff t-0.6 reaches 0.5) and is then polled
-    // once playback has advanced 0.1s past the previous poll. 0.05s frames over
-    // 1.1..3.0 allow at most one poll per two frames (~19), and float error in
-    // `t + 0.1` can stretch a gap to three frames (0.15s, ~13). Asserting the
-    // band, not the exact count, keeps this about the cadence rather than about
-    // how the runtime rounds; polling every frame (38) or not at all both fall outside.
-    const polls = both.split.polls();
-    assert.ok(polls >= 12 && polls <= 20, `expected a ~0.1s poll cadence, got ${polls} polls`);
+    // once playback has advanced 0.1s past the previous poll. With 0.05s frames,
+    // float error in `t + 0.1` decides whether a poll lands on the next frame or
+    // the one after, so the total count is incidental; the SET of gaps between
+    // polls is not: exactly 0.1s or 0.15s, never every frame and never wider.
+    const times = both.split.pollTimes();
+    const gaps = new Set(times.slice(1).map((t, i) => r3(t - times[i])));
+    assert.deepEqual([...gaps].sort((a, b) => a - b), [0.1, 0.15]);
 });
 
 test('_isForwardScoringDiscontinuity: the exact threshold (jump must exceed wall advance by MORE than 1s)', () => {
@@ -649,7 +651,7 @@ test('DIFFERENCE (manual override scope): drift disables auto-adjust GLOBALLY on
     // Split: only this panel's controller stands down; the global setting stays on.
     assert.equal(both.split.state.manualOverride, true);
     assert.equal(both.split.autoAdjustEnabled(), true);
-    // Neither controller acts after the drift.
-    const writesAtDrift = both.main.masteryWrites.length;
-    assert.equal(both.split.masteryWrites.length, writesAtDrift);
+    // Both seams ramp identically before the drift (three writes), and neither
+    // writes again afterwards: the exact sequence rules out any post-drift step.
+    assert.deepEqual([both.main.masteryWrites, both.split.masteryWrites], [[55, 60, 65], [55, 60, 65]]);
 });
