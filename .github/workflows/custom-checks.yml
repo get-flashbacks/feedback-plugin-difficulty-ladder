@@ -14,25 +14,40 @@ env:
   PLUGIN_DIR: "."
 
 jobs:
+  # The job key stays `no-print-in-routes` so the required-check name does not
+  # change; it now covers every runtime .py file in the plugin, not only
+  # routes.py, so a sibling module (e.g. a future scoring.py split) cannot
+  # escape it. Excluded on purpose: tests/ and test/ (fixtures may print),
+  # tools/ (CLI scripts print to stdout by design) and .git/.
   no-print-in-routes:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: No print()/traceback.print_exc() in routes.py
+      - name: No print()/traceback.print_exc() in any runtime .py file
         run: |
           set -eu
-          FILE="$PLUGIN_DIR/routes.py"
-          if [ ! -f "$FILE" ]; then
-            echo "No routes.py — skipping"
+          status=0
+          count=0
+          while IFS= read -r -d '' file; do
+            count=$((count + 1))
+            hits=$(grep -nE '(^|[^A-Za-z0-9_])(print|traceback\.print_exc)[[:space:]]*\(' "$file" || true)
+            if [ -n "$hits" ]; then
+              echo "$file:"
+              echo "$hits"
+              echo "::error file=$file::print()/traceback.print_exc() found — use context['log'] instead"
+              status=1
+            fi
+          done < <(find "$PLUGIN_DIR" -type f -name '*.py' \
+            -not -path '*/.git/*' -not -path '*/tests/*' -not -path '*/test/*' -not -path '*/tools/*' \
+            -print0 | sort -z)
+          if [ "$count" -eq 0 ]; then
+            echo "No runtime .py files — skipping"
             exit 0
           fi
-          hits=$(grep -nE '(^|[^A-Za-z0-9_])(print|traceback\.print_exc)[[:space:]]*\(' "$FILE" || true)
-          if [ -n "$hits" ]; then
-            echo "$hits"
-            echo "::error file=$FILE::print()/traceback.print_exc() found — use context['log'] instead"
+          if [ "$status" -ne 0 ]; then
             exit 1
           fi
-          echo "OK: no print()/traceback.print_exc() in routes.py"
+          echo "OK: no print()/traceback.print_exc() in $count runtime .py file(s)"
 
   safe-server-files:
     runs-on: ubuntu-latest
