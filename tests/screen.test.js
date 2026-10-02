@@ -534,7 +534,13 @@ test('v3 separates a silent section from an easy one that is played in full', ()
         [true, false, true],
     );
     assert.deepEqual([verse.top_tier, brk.top_tier, solo.top_tier], [0, 0, 3]);
-    assert.deepEqual([verse.current_tier, brk.current_tier], [0, 0]);
+    // Neither reports a tier to draw: _tierFillFrac's zero-ladder convention
+    // hands back index 0, which on these two entries would be indistinguishable
+    // from "mastery measured at the bottom tier".
+    assert.deepEqual([verse.current_tier, brk.current_tier], [null, null]);
+    assert.deepEqual(
+        [verse.phrases[0].current_tier, brk.phrases[0].current_tier], [null, null]);
+    assert.equal(solo.current_tier, 0, 'the solo does have a ladder, so tier 0 is a real reading');
     assert.equal(verse.phrases[0].has_chart_content, true);
     assert.equal(brk.phrases[0].has_chart_content, false);
 });
@@ -559,6 +565,29 @@ test('v3 reports current_tier as null when the host reports no usable mastery', 
         assert.equal(payload.sections[0].top_tier, 3, 'the ladder itself is still reported');
         assert.equal(payload.sections[0].phrases[0].current_tier, null);
     }
+});
+
+test('v3 reports an unreported mastery as null where v2 still emits its 0.5 fallback', () => {
+    const mod = freshPlugin();
+    // A highway with sections and phrases but no getMastery at all: v2's 0.5
+    // stand-in is frozen and stays, but a real mastery in the v3 payload would
+    // put a non-null current_tier on the wire for a measurement nobody took.
+    const highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3 }],
+    });
+    delete highway.getMastery;
+    global.window.highway = highway;
+    const emits = collectOneEmit();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    assert.equal(emits.v2().detail.mastery, 0.5, "v2's fallback is unchanged");
+    const payload = emits.v3().detail;
+    assert.equal(payload.mastery, null);
+    assert.equal(payload.sections[0].current_tier, null);
+    assert.equal(payload.sections[0].phrases[0].current_tier, null);
+    assert.equal(payload.sections[0].top_tier, 3, 'the ladder is still reported without a tier on it');
 });
 
 test('v3 marks nothing current when the host reports no playback time', () => {
@@ -636,6 +665,16 @@ test('_v3CurrentTier never reports more detail than the entry plays in', () => {
     assert.equal(mod._v3CurrentTier(0, 4, 4), 0);
     assert.equal(mod._v3CurrentTier(-1, 4, 4), 0, 'mastery below range clamps to the bottom tier');
     assert.equal(mod._v3CurrentTier(2, 4, 4), 4, 'mastery above range clamps to the top tier');
+});
+
+test('_v3CurrentTier reports no tier at all for an entry that has no ladder', () => {
+    const mod = freshPlugin();
+    // _tierFillFrac's zero-ladder convention is index 0 ("no glass to fill"),
+    // which on a 0/0 entry would be indistinguishable from mastery measured at
+    // the bottom tier — the reading top_tier/max_tier = 0 explicitly denies.
+    assert.equal(mod._v3CurrentTier(0.5, 0, 0), null);
+    assert.equal(mod._v3CurrentTier(0.9, 3, 0), null, 'a top_tier of 0 reports no ladder either');
+    assert.equal(mod._v3CurrentTier(0.5, 0, 3), null);
 });
 
 test('the v2 event still emits byte-for-byte what Section Map consumes today', () => {

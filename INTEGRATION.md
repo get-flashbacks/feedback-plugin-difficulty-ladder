@@ -216,7 +216,7 @@ Top level:
 |---|---|
 | `schema` | Always `difficulty_ladder.sections.v3`. |
 | `player_context` | The full `player_context.v1` object for the pane this payload describes, or `null` for a legacy main-player emission while the Host is still resolving identity — identical to v2, per [`PLAYER_CONTEXT.md`](PLAYER_CONTEXT.md). |
-| `mastery` | The pane's current mastery as a 0..1 number, or `null` when the highway reports nothing usable. |
+| `mastery` | The pane's current mastery as a 0..1 number, or `null` when the highway reports nothing usable. This is what the host actually reported: a highway with no `getMastery` at all yields `null` here, where v2 still emits its long-standing `0.5` stand-in, so the two payloads legitimately disagree on that one case. |
 | `max_tier` | Song-wide top of the tier ladder (`max_difficulty` over all phrases). 0 when no phrase has a ladder. Note this is the *ladder* top, not the same number as v2's `maxDifficulty`, which is a `top_difficulty` maximum kept for glass sizing. |
 | `current_phrase_index` | Index into `highway.getPhrases()` of the phrase covering playback right now, else `null`. |
 | `sections` | One entry per section that has at least one overlapping phrase, in `highway.getSections()` order. |
@@ -229,7 +229,7 @@ Each section entry, and each entry in its `phrases` array:
 | `index` | ✓ | ✓ | Position in `getSections()` / `getPhrases()` respectively. |
 | `start_time` / `end_time` | ✓ | ✓ | Half-open `[start_time, end_time)`, matching `drawHud()`'s and `tickScoring()`'s phrase cursor. `end_time` is `null` on a final, open-ended section (`Infinity` cannot be carried in a payload). |
 | `is_current` | ✓ | ✓ | Whether this entry covers the current playback time. All `false` when the highway reports no time — an unreported time is not read as "at the start of the song". |
-| `current_tier` | ✓ | ✓ | The tier this pane's mastery currently maps to, from the same discrete ladder every other consumer here uses (`_tierFillFrac`), clamped to `top_tier` — above that tier the entry is already played in full, so there is no larger tier to report. `null` when `mastery` is `null`. |
+| `current_tier` | ✓ | ✓ | The tier this pane's mastery currently maps to, from the same discrete ladder every other consumer here uses (`_tierFillFrac`), clamped to `top_tier` — above that tier the entry is already played in full, so there is no larger tier to report. `null` when `mastery` is `null`, and whenever the entry itself reports no ladder (`top_tier` or `max_tier` of `0`) — there is no tier for a measurement to land on. |
 | `top_tier` | ✓ | ✓ | The tier from which this entry plays in full (`top_difficulty`, falling back to `max_difficulty` on an older core), clamped to `max_tier`. `0` means this entry reports *no ladder at all* (a single-level or hand-authored phrase), not "measured at the bottom tier" — the same reading v2 gives it, and the reason a 0/0 entry carries `current_tier: null` rather than a divided-by-zero result. |
 | `max_tier` | ✓ | ✓ | The top of this entry's own tier ladder (`max_difficulty`). For a section: the largest `max_difficulty` among its overlapping phrases. `0` with `top_tier: 0` means "no ladder reported". |
 | `avg_top_tier` | ✓ | — | Mean of the section's overlapping phrases' `top_tier`. This is v2's `avgDifficulty` only for a well-formed ladder: for a single-level section v2 averages its `max_difficulty` instead (its own fallback), so the two agree whenever the phrases report a ladder and can differ by one on a `top_tier: 0` section. |

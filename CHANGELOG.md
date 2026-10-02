@@ -22,13 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   anywhere in it; a renderer picks its own shape, or none. Missing data stays
   missing: a section with no overlapping phrase produces no entry rather than a
   zero tier, and `current_tier` is `null` (not `0`) when the host reports no
-  usable mastery. Each payload is built per player context, so Split Screen
-  panes stay isolated as before. Emitted from the same
+  usable mastery or the entry reports no tier ladder at all — a `0` there would
+  be indistinguishable from "measured at the bottom tier", which is exactly what
+  `top_tier: 0` denies. Each payload is built per player context, so Split
+  Screen panes stay isolated as before. Emitted from the same
   `calculateAndEmitSectionDifficulties()` call and the same ~150 ms throttle as
   v2, adding no reads beyond the current time and song identity the new
   `is_current` / `current_phrase_index` / joinable id fields are for. Both
   events are emitted: v2
-  is frozen byte-for-byte for the released Section Map integration, v3 sits on
+  is frozen byte-for-byte for the released Section Map integration — its
+  `0.5` stand-in on a highway that reports no mastery included, where v3
+  reports `null` — and v3 sits on
   its own event name so a subscriber is never handed the other version's
   payload, and `window._ddCapabilities.sectionsSchema` advertises which
   contract the installed build speaks — set at this plugin's top-level script

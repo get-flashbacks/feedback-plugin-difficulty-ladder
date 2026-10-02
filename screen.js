@@ -2099,7 +2099,13 @@
 
         var sections = hw.getSections();
         var phrases = hw.getPhrases();
-        var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : 0.5;
+        var reportsMastery = typeof hw.getMastery === 'function';
+        // 0.5 is v2's long-standing stand-in for a highway that reports no
+        // mastery at all; it is kept for v2 alone below so that frozen payload
+        // is unchanged. v3 gets what the host actually said (null), or the
+        // fallback would read as a real measurement — the same verdict
+        // _presentedDifficultyLevel() reaches for the HUD.
+        var mastery = reportsMastery ? hw.getMastery() : 0.5;
 
         if (!sections || sections.length === 0 || !phrases || phrases.length === 0) return;
 
@@ -2188,7 +2194,8 @@
         // getSongInfo(), which the is_current / current_phrase_index and
         // joinable phrase id fields are for.
         fb.emit(SECTIONS_EVENT_V3,
-            _sectionsV3Payload(sections, phrases, hw, mastery, playerContextPayload));
+            _sectionsV3Payload(sections, phrases, hw,
+                reportsMastery ? mastery : null, playerContextPayload));
     }
 
     // ---- difficulty_ladder.sections.v3 (issue #156) ----------------------
@@ -2361,7 +2368,15 @@
     // `playedFullFrom`: above that tier the entry is already played in full,
     // so a larger number would only invite a renderer to draw detail that
     // cannot be added.
+    //
+    // A zero tier on either axis is the "no ladder reported" reading top_tier
+    // and max_tier carry, not a measurement at the bottom one, and
+    // _tierFillFrac's zero-ladder convention answers index 0 — which would
+    // fabricate the bottom tier for exactly the entries (silent, single-level
+    // or hand-authored) that report no ladder. null says "no tier to draw".
     function _v3CurrentTier(mastery, ladderTier, playedFullFrom) {
+        if (!isFinite(ladderTier) || ladderTier <= 0) return null;
+        if (!isFinite(playedFullFrom) || playedFullFrom <= 0) return null;
         var tier = _tierFillFrac(mastery, ladderTier, playedFullFrom).idxLevel;
         if (!isFinite(tier)) return null;
         return Math.max(0, Math.min(playedFullFrom, tier));
