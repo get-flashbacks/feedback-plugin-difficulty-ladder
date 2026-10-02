@@ -64,21 +64,143 @@
     const PHRASE_ATTEMPTS_SCHEMA = 'difficulty_ladder.phrase_attempts.v2';
     const PLAYER_CONTEXT_SCHEMA = 'difficulty_ladder.player_context.v1';
     const MAX_PHRASE_ATTEMPTS = 5000;
+    const PERSISTENCE_FLUSH_MS = 150;
     const _sessionId = window.crypto?.randomUUID?.() || `session-${Date.now()}`;
-    // The two legacy caches remain available to the compatibility/test
-    // helpers below. New runtime writes go only through progress.v2 and are
-    // rejected until an explicit profile identity is ready.
-    let _songMasteryMapCache = null;
-    let _progressStoreCache = null;
-    let _progressDirty = false;
-    let _progressFlushTimer = null;
-    let _phraseAttemptStoreCache = null;
-    let _phraseAttemptsDirty = false;
-    let _phraseAttemptsFlushTimer = null;
 
     function _plainObject(value) {
         return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
     }
+
+    // ---- Debounced localStorage store (issue #138) -----------------------
+    // Every persistence store in this file — progress.v2, phraseAttempts.v2,
+    // and the legacy read-only songMastery map — is this same shape: parse
+    // and cache on first read, mutate the cached object in place, coalesce
+    // writes behind a 150ms timer so no gameplay-event handler ever calls
+    // localStorage synchronously (CLAUDE.md), and drop the cache when a
+    // foreign `storage` write lands. They used to be three hand-written
+    // copies of the same load/save/flush/schedule/invalidate quintet, each
+    // with its own independently-shaped module-level cache/dirty/timer
+    // triple; this factory is the single implementation.
+    //
+    // config:
+    //   key       — full localStorage key
+    //   empty()   — factory for a fresh store when nothing valid is on disk
+    //   accept(v) — is a parsed payload usable as-is? (schema/version gate)
+    //   ensure(v) — optional repair pass on a freshly-loaded store
+    //   validate(v) — optional gate on save(), for callers that can hand back
+    //               a value they don't own
+    function makePersistenceStore(config) {
+        let cache = null;
+        let dirty = false;
+        let timer = null;
+
+        function load() {
+            if (cache) return cache;
+            var parsed;
+            try { parsed = JSON.parse(localStorage.getItem(config.key) || 'null'); } catch (_) { parsed = null; }
+            cache = (config.accept || _plainObject)(parsed) ? parsed : config.empty();
+            if (config.ensure) config.ensure(cache);
+            return cache;
+        }
+
+        // Synchronous write of the current cache. Used directly only on
+        // cold paths (one-time legacy migration, immediate-save helpers);
+        // returns false and leaves the store dirty so the next scheduled or
+        // lifecycle flush retries it.
+        function write() {
+            if (!cache) return false;
+            try {
+                localStorage.setItem(config.key, JSON.stringify(cache));
+                dirty = false;
+                return true;
+            } catch (_) { return false; }
+        }
+
+        function flush() {
+            if (timer) { clearTimeout(timer); timer = null; }
+            if (!cache || !dirty) return;
+            write();
+        }
+
+        function schedule() {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(flush, PERSISTENCE_FLUSH_MS);
+        }
+
+        // Hand a whole new value to the store and arm the debounce.
+        function save(value) {
+            if (config.validate && !config.validate(value)) return false;
+            cache = value;
+            dirty = true;
+            schedule();
+            return true;
+        }
+
+        // Take ownership of a value and persist it in the same call — for
+        // callers that can prove they aren't on the per-frame gameplay path.
+        function saveNow(value) {
+            if (config.validate && !config.validate(value)) return false;
+            cache = value;
+            dirty = true;
+            return write();
+        }
+
+        // Callers that mutate the cached store in place (rather than handing
+        // back a whole value) mark it dirty here.
+        function markDirty() {
+            dirty = true;
+            schedule();
+        }
+
+        // A foreign tab wrote this key. Our own pending (debounced) mutation
+        // lives only in the cache, so discarding it here would silently drop
+        // it — flush it first, then drop the cache so the next read parses
+        // the merged-by-last-write-wins reality. A store whose writes are
+        // never debounced (saveNow only) passes false: there is nothing
+        // pending to lose, and a retry here would only replay a write that
+        // already failed over the foreign tab's value.
+        function invalidate(flushPending) {
+            if (dirty && flushPending !== false) flush();
+            cache = null;
+            dirty = false;
+        }
+
+        return { load, save, saveNow, write, flush, markDirty, invalidate };
+    }
+
+    // The legacy songMastery map remains available to the compatibility/test
+    // helpers below. New runtime writes go only through progress.v2 and are
+    // rejected until an explicit profile identity is ready.
+    const _songMasteryStore = makePersistenceStore({
+        key: SONG_MASTERY_LS_KEY,
+        // typeof [] === 'object' too — an array here would make
+        // map[_songKey] = pct set a non-index property that
+        // JSON.stringify silently drops from array output, so per-song
+        // mastery would never actually persist. _plainObject rejects arrays.
+        accept: _plainObject,
+        empty: function () { return {}; },
+    });
+
+    const _progressStore = makePersistenceStore({
+        key: PROGRESS_LS_KEY,
+        accept: function (value) {
+            return _plainObject(value) && value.schema === PROGRESS_SCHEMA && _plainObject(value.profiles);
+        },
+        empty: function () { return { schema: PROGRESS_SCHEMA, version: 2, profiles: {}, migrations: {} }; },
+        ensure: function (store) { if (!_plainObject(store.migrations)) store.migrations = {}; },
+        validate: function (store) {
+            return _plainObject(store) && store.schema === PROGRESS_SCHEMA && _plainObject(store.profiles);
+        },
+    });
+
+    const _phraseAttemptStore = makePersistenceStore({
+        key: PHRASE_ATTEMPTS_V2_LS_KEY,
+        accept: function (value) {
+            return _plainObject(value) && value.schema === PHRASE_ATTEMPTS_SCHEMA && _plainObject(value.profiles);
+        },
+        empty: function () { return { schema: PHRASE_ATTEMPTS_SCHEMA, version: 2, profiles: {}, migrations: {} }; },
+        ensure: function (store) { if (!_plainObject(store.migrations)) store.migrations = {}; },
+    });
 
     function _id(value, fallback) {
         if (value == null || String(value).trim() === '') return fallback || null;
@@ -205,52 +327,15 @@
         return player;
     }
 
-    function _emptyProgressStore() {
-        return { schema: PROGRESS_SCHEMA, version: 2, profiles: {}, migrations: {} };
-    }
-
-    function loadProgressStore() {
-        if (_progressStoreCache) return _progressStoreCache;
-        var parsed;
-        try { parsed = JSON.parse(localStorage.getItem(PROGRESS_LS_KEY) || 'null'); } catch (_) { parsed = null; }
-        if (!_plainObject(parsed) || parsed.schema !== PROGRESS_SCHEMA || !_plainObject(parsed.profiles)) {
-            parsed = _emptyProgressStore();
-        }
-        if (!_plainObject(parsed.migrations)) parsed.migrations = {};
-        _progressStoreCache = parsed;
-        return parsed;
-    }
-
-    function flushProgressStore() {
-        if (_progressFlushTimer) {
-            clearTimeout(_progressFlushTimer);
-            _progressFlushTimer = null;
-        }
-        if (!_progressStoreCache || !_progressDirty) return;
-        try {
-            localStorage.setItem(PROGRESS_LS_KEY, JSON.stringify(_progressStoreCache));
-            _progressDirty = false;
-        } catch (_) { /* retry on the next scheduled/visibility flush */ }
-    }
-
-    function scheduleProgressFlush() {
-        if (_progressFlushTimer) clearTimeout(_progressFlushTimer);
-        _progressFlushTimer = setTimeout(flushProgressStore, 150);
-    }
+    function loadProgressStore() { return _progressStore.load(); }
+    function flushProgressStore() { _progressStore.flush(); }
 
     // Called from writeProgress(), which itself runs from the scoring/rAF
     // path on every phrase result (currentDifficulty and bestMastery
     // updates alike) — a synchronous localStorage.setItem here would block
-    // the gameplay loop. Keep the in-memory cache authoritative immediately
-    // and coalesce the actual write behind the same debounce/flush
-    // lifecycle already used for phrase attempts.
-    function saveProgressStore(store) {
-        if (!_plainObject(store) || store.schema !== PROGRESS_SCHEMA || !_plainObject(store.profiles)) return false;
-        _progressStoreCache = store;
-        _progressDirty = true;
-        scheduleProgressFlush();
-        return true;
-    }
+    // the gameplay loop. The store keeps the in-memory cache authoritative
+    // immediately and coalesces the actual write behind the shared debounce.
+    function saveProgressStore(store) { return _progressStore.save(store); }
 
     function _progressSkillNode(store, context, create) {
         var ctx = normalizePlayerContext(context);
@@ -367,25 +452,11 @@
     }
     /* eslint-enable security/detect-object-injection */
 
-    function loadSongMasteryMap() {
-        let parsed;
-        if (_songMasteryMapCache) return _songMasteryMapCache;
-        try {
-            parsed = JSON.parse(localStorage.getItem(SONG_MASTERY_LS_KEY) || '{}');
-            // typeof [] === 'object' too — an array here would make
-            // map[_songKey] = pct set a non-index property that
-            // JSON.stringify silently drops from array output, so per-song
-            // mastery would never actually persist. Reject arrays explicitly.
-            _songMasteryMapCache = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
-        } catch (_) {
-            _songMasteryMapCache = {};
-        }
-        return _songMasteryMapCache;
-    }
-    function saveSongMasteryMap(map) {
-        _songMasteryMapCache = map;
-        try { localStorage.setItem(SONG_MASTERY_LS_KEY, JSON.stringify(map)); } catch (_) { /* noop */ }
-    }
+    function loadSongMasteryMap() { return _songMasteryStore.load(); }
+    // Legacy map: runtime reads are non-hot (song load, library badge), so
+    // its save persists immediately rather than through the debounce every
+    // other store shares.
+    function saveSongMasteryMap(map) { return _songMasteryStore.saveNow(map); }
     function _masteryPct(record) {
         let value;
         value = record && typeof record === 'object' ? record.mastery : record;
@@ -1534,21 +1605,7 @@
         return result();
     }
 
-    function _emptyPhraseAttemptStore() {
-        return { schema: PHRASE_ATTEMPTS_SCHEMA, version: 2, profiles: {}, migrations: {} };
-    }
-
-    function loadPhraseAttemptStore() {
-        if (_phraseAttemptStoreCache) return _phraseAttemptStoreCache;
-        var parsed;
-        try { parsed = JSON.parse(localStorage.getItem(PHRASE_ATTEMPTS_V2_LS_KEY) || 'null'); } catch (_) { parsed = null; }
-        if (!_plainObject(parsed) || parsed.schema !== PHRASE_ATTEMPTS_SCHEMA || !_plainObject(parsed.profiles)) {
-            parsed = _emptyPhraseAttemptStore();
-        }
-        if (!_plainObject(parsed.migrations)) parsed.migrations = {};
-        _phraseAttemptStoreCache = parsed;
-        return parsed;
-    }
+    function loadPhraseAttemptStore() { return _phraseAttemptStore.load(); }
 
     function _defaultPersistenceContext() {
         if (_mainPlayerContext) return _mainPlayerContext;
@@ -1655,26 +1712,10 @@
         var node = _phraseAttemptNode(store, context, true);
         if (!node) return false; // profile API exists but identity is not ready
         node.attempts = Array.isArray(attempts) ? attempts.slice(-MAX_PHRASE_ATTEMPTS) : [];
-        _phraseAttemptsDirty = false;
-        try { localStorage.setItem(PHRASE_ATTEMPTS_V2_LS_KEY, JSON.stringify(store)); return true; } catch (_) { return false; }
+        return _phraseAttemptStore.write();
     }
 
-    function flushPhraseAttempts() {
-        if (_phraseAttemptsFlushTimer) {
-            clearTimeout(_phraseAttemptsFlushTimer);
-            _phraseAttemptsFlushTimer = null;
-        }
-        if (!_phraseAttemptStoreCache || !_phraseAttemptsDirty) return;
-        try {
-            localStorage.setItem(PHRASE_ATTEMPTS_V2_LS_KEY, JSON.stringify(_phraseAttemptStoreCache));
-            _phraseAttemptsDirty = false;
-        } catch (_) { /* retry on the next scheduled/visibility flush */ }
-    }
-
-    function schedulePhraseAttemptsFlush() {
-        if (_phraseAttemptsFlushTimer) clearTimeout(_phraseAttemptsFlushTimer);
-        _phraseAttemptsFlushTimer = setTimeout(flushPhraseAttempts, 150);
-    }
+    function flushPhraseAttempts() { _phraseAttemptStore.flush(); }
 
     function recordPhraseAttempt(ratio, explicitContext, scoreState, explicitHighway) {
         var context = normalizePlayerContext(explicitContext || _mainPlayerContext);
@@ -1722,8 +1763,7 @@
             timestamp: new Date().toISOString(),
         });
         attemptNode.attempts = attempts.slice(-MAX_PHRASE_ATTEMPTS);
-        _phraseAttemptsDirty = true;
-        schedulePhraseAttemptsFlush();
+        _phraseAttemptStore.markDirty();
         return true;
     }
 
@@ -1833,7 +1873,7 @@
                 source_retained: true,
                 completed_at: new Date().toISOString(),
             };
-            _phraseAttemptsDirty = true;
+            _phraseAttemptStore.markDirty();
             flushPhraseAttempts();
         }
         return true;
@@ -3205,26 +3245,13 @@
     // notifies us to re-read rather than us polling localStorage per frame.
     window.addEventListener('storage', function (e) {
         if (!e.key || e.key.indexOf(LS_PREFIX) !== 0) return;
-        if (e.key === PROGRESS_LS_KEY) {
-            // Same race as the phrase-attempts key below: don't discard our
-            // own pending (debounced) progress write when a foreign tab's
-            // write shows up first.
-            if (_progressDirty) flushProgressStore();
-            _progressStoreCache = null;
-            _progressDirty = false;
-        }
-        if (e.key === PHRASE_ATTEMPTS_V2_LS_KEY) {
-            // A foreign tab just wrote this key. If we have our own pending
-            // (debounced) mutation sitting only in _phraseAttemptStoreCache,
-            // discarding the cache here would silently drop it — nothing else
-            // holds a reference to those unflushed attempts. Flush our own
-            // pending write first so it isn't lost, then drop the cache so the
-            // next read picks up the merged-by-last-write-wins reality.
-            if (_phraseAttemptsDirty) flushPhraseAttempts();
-            _phraseAttemptStoreCache = null;
-            _phraseAttemptsDirty = false;
-        }
-        if (e.key === SONG_MASTERY_LS_KEY) _songMasteryMapCache = null;
+        // A foreign tab just wrote one of our keys. Same race for both
+        // debounced v2 stores: don't discard our own pending write, and drop
+        // the cache so the next read picks up the merged-by-last-write-wins
+        // reality.
+        if (e.key === PROGRESS_LS_KEY) _progressStore.invalidate();
+        if (e.key === PHRASE_ATTEMPTS_V2_LS_KEY) _phraseAttemptStore.invalidate();
+        if (e.key === SONG_MASTERY_LS_KEY) _songMasteryStore.invalidate(false);
         var short = e.key.slice(LS_PREFIX.length);
         if (Object.prototype.hasOwnProperty.call(settings, short)) {
             try { settings[short] = JSON.parse(e.newValue); } catch (_) {

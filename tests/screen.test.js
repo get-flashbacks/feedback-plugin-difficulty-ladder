@@ -1024,6 +1024,88 @@ test('malformed v2 and legacy stores fail closed to valid empty shapes', () => {
     assert.deepEqual(mod.loadPhraseAttempts(ctx), []);
 });
 
+// Issue #138: all three persistence stores now come from one factory, so the
+// cross-tab `storage` handling they share is worth pinning once rather than
+// per store — it used to be three hand-written copies of the same three
+// lines, none of them covered.
+test('a foreign-tab storage event drops each store cache so the next read re-parses', () => {
+    const keys = {
+        progress: 'difficulty_ladder.progress.v2',
+        phrase: 'difficulty_ladder.phraseAttempts.v2',
+        mastery: 'difficulty_ladder.songMastery',
+    };
+    const writes = [];
+    const mod = freshPlugin({ onSet: (key, value) => writes.push([key, value]) });
+    const ctx = playerContext();
+
+    mod.writeProgress(ctx, { currentDifficulty: 55 });
+    mod.savePhraseAttempts([{ phrase_id: 'mine' }], ctx);
+    mod.saveSongMasteryMap({ 'song.feedpak::lead': 55 });
+    mod.flushProgressStore();
+
+    // A foreign tab overwrites all three keys, then tells us about it the way
+    // the browser would.
+    const foreign = {
+        [keys.progress]: JSON.stringify({ schema: 'difficulty_ladder.progress.v2', version: 2, profiles: {} }),
+        [keys.phrase]: JSON.stringify({ schema: 'difficulty_ladder.phrase_attempts.v2', version: 2, profiles: {} }),
+        [keys.mastery]: JSON.stringify({ 'song.feedpak::lead': 12 }),
+    };
+    for (const [key, value] of Object.entries(foreign)) global.localStorage.setItem(key, value);
+    writes.length = 0;
+    for (const key of Object.values(keys)) {
+        global.window.dispatchEvent({ type: 'storage', key, newValue: foreign[key] });
+    }
+
+    assert.equal(writes.length, 0, 'clean caches have nothing pending to flush');
+    assert.deepEqual(mod.loadProgressStore().profiles, {}, 'the progress cache was re-read');
+    assert.deepEqual(mod.loadPhraseAttemptStore().profiles, {}, 'the phrase-attempt cache was re-read');
+    assert.deepEqual(mod.loadSongMasteryMap(), { 'song.feedpak::lead': 12 }, 'the legacy map was re-read');
+});
+
+test('a foreign-tab storage event flushes a pending debounced write instead of dropping it', () => {
+    const writes = [];
+    const mod = freshPlugin({ onSet: (key, value) => writes.push([key, value]) });
+    const ctx = playerContext();
+    const key = 'difficulty_ladder.progress.v2';
+
+    // writeProgress marks the store dirty and arms the 150ms debounce; nothing
+    // has reached localStorage yet.
+    mod.writeProgress(ctx, { currentDifficulty: 71 });
+    assert.equal(global.localStorage.getItem(key), null, 'precondition: the write is still debounced');
+
+    // A foreign tab writes this key first. Our pending mutation lives only in
+    // the cache, so it has to be persisted before the cache is discarded.
+    writes.length = 0;
+    global.window.dispatchEvent({ type: 'storage', key, newValue: null });
+
+    assert.deepEqual(writes.map(([writeKey]) => writeKey), [key], 'exactly one recovery write');
+    assert.equal(JSON.parse(writes[0][1]).profiles[mod._nodeKey('hash-1')] !== undefined, true,
+        'the pending record is in the flushed payload, not lost');
+});
+
+test('a foreign-tab storage event never replays a failed write over the legacy map', () => {
+    const mod = freshPlugin();
+    const key = 'difficulty_ladder.songMastery';
+    const realSetItem = global.localStorage.setItem;
+    global.localStorage.setItem = () => { throw new Error('quota exceeded'); };
+    try {
+        // The legacy map persists immediately, so this is a synchronous write
+        // that failed rather than a pending debounced mutation.
+        assert.equal(mod.saveSongMasteryMap({ 'song.feedpak::lead': 44 }), false);
+    } finally {
+        global.localStorage.setItem = realSetItem;
+    }
+
+    let writes = 0;
+    global.localStorage.setItem = () => { writes += 1; };
+    try {
+        global.window.dispatchEvent({ type: 'storage', key, newValue: null });
+    } finally {
+        global.localStorage.setItem = realSetItem;
+    }
+    assert.equal(writes, 0, 'invalidate() drops the cache without retrying a write that already failed');
+});
+
 test('pending profile readiness gates all v2 writes until identity resolves', async () => {
     const writes = [];
     let resolveProfile;
