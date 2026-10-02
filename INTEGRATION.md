@@ -22,7 +22,9 @@
 `calculateAndEmitSectionDifficulties()`, throttled at approximately 150 ms via
 `scheduleSectionDifficultiesEmit()` — a trailing-edge throttle, not a debounce:
 it fires periodically during a continuous change rather than only once at the
-end; see `screen.js`), and
+end. The throttle is also *event-driven*, not time-driven: it coalesces those
+state changes into at-most-one emit per 150 ms, it is not a heartbeat, and
+playback progress never schedules an emit of its own; see `screen.js`), and
 `section_map`'s current `screen.js` (`_smUpdateDifficultyFills` /
 `_smGetSectionDifficulty`) does nothing but render whatever
 `fillPercentage` / `glassSize` that event's payload carries per section. It
@@ -128,7 +130,7 @@ from the same call (see "Transition policy" below).
 |---|---|
 | Event | `difficulty:sections-updated-v3` |
 | Schema | `difficulty_ladder.sections.v3` |
-| Emitted by | `calculateAndEmitSectionDifficulties()`, on the same ~150 ms throttle as v2 |
+| Emitted by | `calculateAndEmitSectionDifficulties()`, on the same ~150 ms event-driven throttle as v2 (see "Freshness" below) |
 | Capability | `window._ddCapabilities.sectionsSchema === 'difficulty_ladder.sections.v3'` |
 
 ```json
@@ -218,7 +220,7 @@ Top level:
 | `player_context` | The full `player_context.v1` object for the pane this payload describes, or `null` for a legacy main-player emission while the Host is still resolving identity — identical to v2, per [`PLAYER_CONTEXT.md`](PLAYER_CONTEXT.md). |
 | `mastery` | The pane's current mastery as a 0..1 number, or `null` when the highway reports nothing usable. This is what the host actually reported: a highway with no `getMastery` at all yields `null` here, where v2 still emits its long-standing `0.5` stand-in, so the two payloads legitimately disagree on that one case. |
 | `max_tier` | Song-wide top of the tier ladder (`max_difficulty` over all phrases). 0 when no phrase has a ladder. Note this is the *ladder* top, not the same number as v2's `maxDifficulty`, which is a `top_difficulty` maximum kept for glass sizing. |
-| `current_phrase_index` | Index into `highway.getPhrases()` of the phrase covering playback right now, else `null`. |
+| `current_phrase_index` | Index into `highway.getPhrases()` of the phrase covering playback right now, else `null`. As of the *last emit*, not live — see "Freshness" below. |
 | `sections` | One entry per section that has at least one overlapping phrase, in `highway.getSections()` order. |
 
 Each section entry, and each entry in its `phrases` array:
@@ -228,7 +230,7 @@ Each section entry, and each entry in its `phrases` array:
 | `id` | ✓ | ✓ | `section:<index>` for a section; for a phrase, the same `_phraseIdOf` string (`song::arrangement::index::start::end`) that `difficulty_ladder.phrase_attempt.v2` records are keyed by, so a consumer can join the two without a translation table. The `song::arrangement` prefix comes from the event's own `player_context`, not from the highway's song info — the two can disagree (a pane's `arrangement_id` vs the highway's `arrangement_index`) and only the context is what the attempt records were written with. Falls back to `phrase:<index>` when no song identity is available at all (no context and no usable song info). |
 | `index` | ✓ | ✓ | Position in `getSections()` / `getPhrases()` respectively. |
 | `start_time` / `end_time` | ✓ | ✓ | Half-open `[start_time, end_time)`, matching `drawHud()`'s and `tickScoring()`'s phrase cursor. `end_time` is `null` on a final, open-ended section (`Infinity` cannot be carried in a payload). |
-| `is_current` | ✓ | ✓ | Whether this entry covers the current playback time. All `false` when the highway reports no time — an unreported time is not read as "at the start of the song". |
+| `is_current` | ✓ | ✓ | Whether this entry covers the current playback time. All `false` when the highway reports no time — an unreported time is not read as "at the start of the song". A snapshot as of the last emit, so it goes stale between emits; see "Freshness" below. |
 | `current_tier` | ✓ | ✓ | The tier this pane's mastery currently maps to, from the same discrete ladder every other consumer here uses (`_tierFillFrac`), clamped to `top_tier` — above that tier the entry is already played in full, so there is no larger tier to report. `null` when `mastery` is `null`, and whenever the entry itself reports no ladder (`top_tier` or `max_tier` of `0`) — there is no tier for a measurement to land on. |
 | `top_tier` | ✓ | ✓ | The tier from which this entry plays in full (`top_difficulty`, falling back to `max_difficulty` on an older core), clamped to `max_tier`. `0` means this entry reports *no ladder at all* (a single-level or hand-authored phrase), not "measured at the bottom tier" — the same reading v2 gives it, and the reason a 0/0 entry carries `current_tier: null` rather than a divided-by-zero result. |
 | `max_tier` | ✓ | ✓ | The top of this entry's own tier ladder (`max_difficulty`). For a section: the largest `max_difficulty` among its overlapping phrases. `0` with `top_tier: 0` means "no ladder reported". |
@@ -265,6 +267,40 @@ its new fields are *for* — the current time (for `is_current` /
 both plain getters on a value v2 already holds. There is no per-note or
 per-phrase scanning beyond the content probe v2 already does, so v3 costs one
 extra payload build per (throttled) emit.
+
+### Freshness: `is_current` is an emit-time snapshot
+
+`is_current` and `current_phrase_index` describe the playback position **as of
+the last emit**, and emits are driven by state changes, not by the clock. The
+triggers are a mastery apply (every pixel of a slider drag, coalesced by the
+~150 ms throttle), a difficulty apply, a player-context identity change, and one
+emit per song navigation; `calculateAndEmitSectionDifficulties()` is never
+scheduled by playback progress. So between emits those two fields keep whatever
+the last triggering event saw — and on a song where the player touches nothing,
+that is the whole song. Everything else in the payload is re-derived Host state
+(`mastery`, the tier ranges, the content probe) and gets no staler than the
+state itself; `start_time` / `end_time` are exact at any moment.
+
+A renderer that follows the playhead should therefore read
+`highway.getTime()` itself — per frame, or on its own interval — and test it
+against those spans, which is what `section_map` already does for its minimap
+layout:
+
+```js
+const now = highway.getTime(); // null when the host reports no time
+const current = now == null ? [] // nothing to derive from; fall back to is_current
+  : sections.filter((s) => now >= s.start_time && now < (s.end_time ?? Infinity));
+```
+
+Treat `is_current` as the value to paint before the first such read, and as the
+answer for the whole payload when the host reports no time at all (where every
+`is_current` is `false` and `current_phrase_index` is `null`, so "derive it
+yourself" has nothing to derive from).
+
+v2 never carried a playback time, so nothing a v2 consumer already relies on
+changes shape; this is a note for v3 renderers, and the reason the fields stay
+in the contract instead of being derived away — a payload that only arrives when
+something changed is still the cheapest place to publish where playback was.
 
 ### Transition policy
 
@@ -317,13 +353,17 @@ should be read as a promise that v2 is permanent.
   check. This ordering is load-bearing but undocumented in either repo
   before this pass — noted here and in `section_map`'s `CLAUDE.md`.
 - **Stale events:** both section events are throttled but can still fire
-  repeatedly over a song (mastery changes, phrase generation, song load).
-  `section_map`
+  repeatedly over a song (mastery changes, phrase generation, song load), and
+  that throttle is event-driven rather than time-driven — playback progress
+  never schedules an emit. `section_map`
   applies whatever the *latest* event says, in place (`_smUpdateDifficultyFills`),
   without diffing against a previous value — a strictly-newer event always
   wins, so there's no meaningful "staleness" to detect (no timestamp/ordering
   guarantee is needed when the payload is just re-derived Host state, not an
-  independent fact that can go out of sync with it).
+  independent fact that can go out of sync with it). The one exception is v3's
+  `is_current` / `current_phrase_index`, which describe the playback position
+  as of the last emit rather than re-deriving it at read time — see "Freshness"
+  above.
 
 ---
 

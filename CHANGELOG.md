@@ -28,7 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Screen panes stay isolated as before. Emitted from the same
   `calculateAndEmitSectionDifficulties()` call and the same ~150 ms throttle as
   v2, adding no reads beyond the current time and song identity the new
-  `is_current` / `current_phrase_index` / joinable id fields are for. Both
+  `is_current` / `current_phrase_index` / joinable id fields are for. That
+  throttle is event-driven, not time-driven, so `is_current` and
+  `current_phrase_index` are snapshots of the playback position as of the last
+  emit (playback progress never schedules one) and go stale between emits;
+  `start_time` / `end_time` stay exact, so `INTEGRATION.md` states that a
+  renderer following the playhead should read `highway.getTime()` itself. Both
   events are emitted: v2
   is frozen byte-for-byte for the released Section Map integration — its
   `0.5` stand-in on a highway that reports no mastery included, where v3

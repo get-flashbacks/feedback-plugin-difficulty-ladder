@@ -2220,7 +2220,12 @@
     //                     single-level or hand-authored phrase), which is the
     //                     same reading v2 gives it.
     //   max_tier        - the top of that entry's own tier ladder (max_difficulty).
-    //   is_current      - whether the entry covers the current playback time.
+    //   is_current      - whether the entry covers the playback time as of this
+    //                     emit. Emits are event-driven, so this is a snapshot
+    //                     that goes stale until the next mastery or difficulty
+    //                     event; a renderer following the playhead reads
+    //                     highway.getTime() itself against start_time/end_time
+    //                     (INTEGRATION.md -> "Freshness").
     //   has_chart_content - whether the span holds playable notes/chords: probed
     //                     per section, inherited by a single-level phrase from
     //                     its section (see the note at the assignment).
