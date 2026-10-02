@@ -65,6 +65,11 @@
     const PLAYER_CONTEXT_SCHEMA = 'difficulty_ladder.player_context.v1';
     const MAX_PHRASE_ATTEMPTS = 5000;
     const PERSISTENCE_FLUSH_MS = 150;
+    // A debounced write that fails (quota, storage unavailable) retries on its
+    // own at PERSISTENCE_FLUSH_MS * 2^n (300, 600, 1200 ms), then gives up until
+    // the next save()/markDirty() or lifecycle flush. Bounded so a quota that
+    // stays full costs a handful of attempts, not a retry loop.
+    const PERSISTENCE_RETRY_MAX = 3;
     const _sessionId = window.crypto?.randomUUID?.() || `session-${Date.now()}`;
 
     function _plainObject(value) {
@@ -93,6 +98,7 @@
         let cache = null;
         let dirty = false;
         let timer = null;
+        let retries = 0;   // consecutive failed debounced writes since the last save/success
 
         function load() {
             if (cache) return cache;
@@ -112,6 +118,7 @@
             try {
                 localStorage.setItem(config.key, JSON.stringify(cache));
                 dirty = false;
+                retries = 0;
                 return true;
             } catch (_) { return false; }
         }
@@ -125,9 +132,22 @@
             return write();
         }
 
+        // Debounce timer body: flush, and if the write failed retry with a
+        // doubling delay up to PERSISTENCE_RETRY_MAX times. Only this timer
+        // path retries — an explicit flush() (lifecycle) never re-arms itself.
+        function tick() {
+            timer = null;
+            if (flush() === false && retries < PERSISTENCE_RETRY_MAX) {
+                retries += 1;
+                timer = setTimeout(tick, PERSISTENCE_FLUSH_MS * Math.pow(2, retries));
+            }
+        }
+
+        // Fresh data restarts the retry budget.
         function schedule() {
+            retries = 0;
             if (timer) clearTimeout(timer);
-            timer = setTimeout(flush, PERSISTENCE_FLUSH_MS);
+            timer = setTimeout(tick, PERSISTENCE_FLUSH_MS);
         }
 
         // Hand a whole new value to the store and arm the debounce.

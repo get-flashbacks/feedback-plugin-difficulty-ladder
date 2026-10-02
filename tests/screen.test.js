@@ -1141,6 +1141,117 @@ test('a failed foreign-tab recovery write is retried by the debounce without any
     );
 });
 
+// Deterministic stand-in for setTimeout/clearTimeout: records each armed delay
+// and runs callbacks only when the test says so.
+function stubTimers() {
+    const real = { setTimeout: global.setTimeout, clearTimeout: global.clearTimeout };
+    const pending = new Map();
+    const delays = [];
+    let nextId = 0;
+    global.setTimeout = (fn, ms) => { nextId += 1; pending.set(nextId, fn); delays.push(ms); return nextId; };
+    global.clearTimeout = (id) => { pending.delete(id); };
+    return {
+        pending,
+        delays,
+        runNext() {
+            const [id, fn] = pending.entries().next().value;
+            pending.delete(id);
+            fn();
+        },
+        restore() { global.setTimeout = real.setTimeout; global.clearTimeout = real.clearTimeout; },
+    };
+}
+
+test('a failing debounced write retries with doubling delays, then stops', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const key = 'difficulty_ladder.progress.v2';
+    const realSetItem = global.localStorage.setItem;
+    const timers = stubTimers();
+    let attempts = 0;
+    try {
+        global.localStorage.setItem = () => { attempts += 1; throw new Error('quota exceeded'); };
+        mod.writeProgress(ctx, { currentDifficulty: 71 });
+        // initial debounce + 3 bounded retries, each failing. Capped at 10 runs
+        // so an unbounded retry fails the assertions below instead of hanging.
+        for (let i = 0; i < 10 && timers.pending.size; i++) timers.runNext();
+        assert.deepEqual(timers.delays, [150, 300, 600, 1200], 'debounce, then doubling backoff');
+        assert.equal(attempts, 4, 'one initial attempt plus three retries, then it gives up');
+        assert.equal(timers.pending.size, 0, 'no timer left armed: no retry loop');
+
+        // Fresh data restarts the budget: a full debounce + 3 retries again.
+        mod.writeProgress(ctx, { currentDifficulty: 72 });
+        for (let i = 0; i < 10 && timers.pending.size; i++) timers.runNext();
+        assert.deepEqual(timers.delays.slice(4), [150, 300, 600, 1200], 'new data gets a fresh retry budget');
+        assert.equal(attempts, 8);
+    } finally {
+        timers.restore();
+        global.localStorage.setItem = realSetItem;
+    }
+    // Gave up, but the record is still held and a lifecycle flush lands it.
+    assert.equal(global.localStorage.getItem(key), null);
+    mod.flushProgressStore();
+    assert.notEqual(global.localStorage.getItem(key), null, 'a lifecycle flush still persists it');
+});
+
+test('an explicit flush never re-arms a retry, even when it fails mid-chain', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const key = 'difficulty_ladder.progress.v2';
+    const realSetItem = global.localStorage.setItem;
+    const timers = stubTimers();
+    let attempts = 0;
+    try {
+        global.localStorage.setItem = () => { attempts += 1; throw new Error('quota exceeded'); };
+        mod.writeProgress(ctx, { currentDifficulty: 71 });
+        timers.runNext();                          // debounce fires, fails, arms the 300 ms retry
+        assert.deepEqual(timers.delays, [150, 300]);
+        assert.equal(timers.pending.size, 1, 'precondition: a retry is armed');
+
+        mod.flushProgressStore();                  // lifecycle flush lands mid-chain and also fails
+        assert.equal(attempts, 2, 'the explicit flush attempted a write');
+        assert.equal(timers.pending.size, 0, 'it cancels the armed retry and does not re-arm');
+        assert.deepEqual(timers.delays, [150, 300], 'no new timer was armed by the explicit flush');
+    } finally {
+        timers.restore();
+        global.localStorage.setItem = realSetItem;
+    }
+    // The record is still held, so a later flush lands it.
+    assert.equal(global.localStorage.getItem(key), null);
+    mod.flushProgressStore();
+    assert.notEqual(global.localStorage.getItem(key), null);
+});
+
+test('a debounced write that fails once is retried and lands; new data restarts the budget', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const key = 'difficulty_ladder.progress.v2';
+    const realSetItem = global.localStorage.setItem;
+    const timers = stubTimers();
+    let failNext = true;
+    try {
+        global.localStorage.setItem = (k, v) => {
+            if (failNext) { failNext = false; throw new Error('transient'); }
+            realSetItem.call(global.localStorage, k, v);
+        };
+        mod.writeProgress(ctx, { currentDifficulty: 71 });
+        timers.runNext();                       // fails
+        assert.equal(global.localStorage.getItem(key), null);
+        assert.equal(timers.pending.size, 1, 'a retry is armed');
+        timers.runNext();                       // retry succeeds
+        assert.notEqual(global.localStorage.getItem(key), null, 'the retry landed the record');
+        assert.equal(timers.pending.size, 0, 'nothing further is scheduled after success');
+        assert.deepEqual(timers.delays, [150, 300]);
+
+        // New data after a success gets a fresh 150 ms debounce, not a backed-off one.
+        mod.writeProgress(ctx, { currentDifficulty: 72 });
+        assert.equal(timers.delays[timers.delays.length - 1], 150);
+    } finally {
+        timers.restore();
+        global.localStorage.setItem = realSetItem;
+    }
+});
+
 test('a foreign-tab storage event never replays a failed write over the legacy map', () => {
     const mod = freshPlugin();
     const key = 'difficulty_ladder.songMastery';
