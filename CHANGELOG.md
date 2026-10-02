@@ -55,6 +55,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and must not derive it from a migrated value.
 
 ### Changed
+- Internal-only: the three hand-written localStorage persistence stores in
+  `screen.js` — `progress.v2`, `phraseAttempts.v2`, and the legacy read-only
+  `songMastery` map — collapse into one `makePersistenceStore(config)`
+  factory (#138). Each was its own independently-shaped copy of the same
+  load/save/flush/schedule/invalidate quintet with its own module-level
+  cache/dirty/timer triple; they now share one implementation parameterized
+  by key, empty shape, and schema gate. The per-store entry points
+  (`loadProgressStore`, `saveProgressStore`, `flushProgressStore`,
+  `loadSongMasteryMap`, `saveSongMasteryMap`, `loadPhraseAttemptStore`,
+  `savePhraseAttempts`, `flushPhraseAttempts`) keep their names, signatures,
+  and timing, so this is invisible at runtime: the 150ms write debounce, the
+  schema rejection of malformed on-disk payloads, the legacy map's immediate
+  (never-debounced) save, and the cross-tab `storage` race — flush our own
+  pending write before dropping the cache — are all unchanged. Cross-tab
+  behavior for all three stores is now covered by tests, which the three
+  separate copies were not. Two review findings are folded in: a cross-tab
+  `storage` event whose own recovery write fails now keeps the dirty cache
+  and retries on the next lifecycle flush instead of dropping the record
+  (the old code dropped it too), and `saveSongMasteryMap()` still returns
+  nothing rather than inheriting the store's boolean.
 - Internal-only: the per-setting reaction to a settings change moves in
   `screen.js` into one `_applySettingsChange()` helper shared by the
   cross-tab `storage` listener and the same-tab
