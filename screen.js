@@ -116,6 +116,9 @@
             } catch (_) { return false; }
         }
 
+        // Returns whether the store is persisted: true when the write landed
+        // OR when there was nothing pending to write, false only when a write
+        // was attempted and failed (invalidate() keys off that).
         function flush() {
             if (timer) { clearTimeout(timer); timer = null; }
             if (!cache || !dirty) return true;

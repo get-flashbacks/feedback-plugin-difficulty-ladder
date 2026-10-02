@@ -1095,8 +1095,12 @@ test('a foreign-tab storage event keeps a pending record whose recovery write fa
     // record outright — nothing else holds a reference to it.
     const realSetItem = global.localStorage.setItem;
     global.localStorage.setItem = () => { throw new Error('quota exceeded'); };
-    global.window.dispatchEvent({ type: 'storage', key, newValue: null });
-    global.localStorage.setItem = realSetItem;
+    try {
+        global.window.dispatchEvent({ type: 'storage', key, newValue: null });
+    } finally {
+        // global.localStorage is shared suite-wide: never leak the failing stub.
+        global.localStorage.setItem = realSetItem;
+    }
 
     // The next lifecycle flush retries it, and the record is still there.
     assert.equal(mod.readProgress(ctx).currentDifficulty, 71, 'the pending record survived');
