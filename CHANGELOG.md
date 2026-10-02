@@ -108,6 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Fixed
+- A cross-tab `storage` event whose recovery write fails now re-arms the
+  persistence debounce, so the kept record is retried even in an idle tab
+  instead of waiting for a later write or lifecycle flush (follow-up to #149).
 - Instrument labels stored under the pre-#136 `_instrumentKind()` verdict
   are now cleared instead of persisting forever (#141). That fix is
   prevent-only: a record already written as `fretted`/`keys` for an
