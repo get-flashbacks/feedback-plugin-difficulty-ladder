@@ -439,12 +439,14 @@ test('pending judgments are re-polled at most once per 0.1s of playback, identic
     const verdicts = { [key(0.5, 1, 1)]: 'active' };
     const both = runBoth(chart, play(0.6, 3.0, 0.05), { verdicts });
     assert.equal(both.main.polls(), both.split.polls());
-    // The note is enqueued at t=1.1 (cutoff t-0.6 reaches 0.5), then polled
-    // whenever playback has reached the previous poll time + 0.1. With 0.05s
-    // frames, float error in `t + 0.1` makes some polls land on the next-but-one
-    // frame (every 0.1s or 0.15s), which is why this is 16 and not 20. It is
-    // pinned exactly: far fewer than the 38 frames played after the enqueue.
-    assert.equal(both.split.polls(), 16);
+    // The note is enqueued at t=1.1 (cutoff t-0.6 reaches 0.5) and is then polled
+    // once playback has advanced 0.1s past the previous poll. 0.05s frames over
+    // 1.1..3.0 allow at most one poll per two frames (~19), and float error in
+    // `t + 0.1` can stretch a gap to three frames (0.15s, ~13). Asserting the
+    // band, not the exact count, keeps this about the cadence rather than about
+    // how the runtime rounds; polling every frame (38) or not at all both fall outside.
+    const polls = both.split.polls();
+    assert.ok(polls >= 12 && polls <= 20, `expected a ~0.1s poll cadence, got ${polls} polls`);
 });
 
 test('_isForwardScoringDiscontinuity: the exact threshold (jump must exceed wall advance by MORE than 1s)', () => {
