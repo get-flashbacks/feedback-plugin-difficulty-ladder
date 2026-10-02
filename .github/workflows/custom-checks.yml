@@ -37,7 +37,7 @@ jobs:
               echo "::error file=$file::print()/traceback.print_exc() found — use context['log'] instead"
               status=1
             fi
-          done < <(find "$PLUGIN_DIR" -type f -name '*.py' \
+          done < <(find "$PLUGIN_DIR" \( -type f -o -type l \) -name '*.py' \
             -not -path '*/.git/*' -not -path '*/tests/*' -not -path '*/test/*' -not -path '*/tools/*' \
             -print0 | sort -z)
           if [ "$count" -eq 0 ]; then
