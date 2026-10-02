@@ -1113,6 +1113,34 @@ test('a foreign-tab storage event keeps a pending record whose recovery write fa
     );
 });
 
+test('a failed foreign-tab recovery write is retried by the debounce without any further write', async () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const key = 'difficulty_ladder.progress.v2';
+
+    mod.writeProgress(ctx, { currentDifficulty: 71 });
+
+    // Recovery write fails (quota). flush() has already disarmed the timer, so
+    // without a re-arm an idle tab would never retry.
+    const realSetItem = global.localStorage.setItem;
+    global.localStorage.setItem = () => { throw new Error('quota exceeded'); };
+    try {
+        global.window.dispatchEvent({ type: 'storage', key, newValue: null });
+    } finally {
+        global.localStorage.setItem = realSetItem;
+    }
+    assert.equal(global.localStorage.getItem(key), null, 'precondition: nothing reached disk yet');
+
+    // No further writeProgress / flush call: only the re-armed debounce can land it.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    const persisted = JSON.parse(global.localStorage.getItem(key));
+    assert.equal(
+        persisted.profiles[mod._nodeKey('hash-1')].players[mod._nodeKey('player-1')] !== undefined,
+        true,
+        'the debounce retried the failed recovery write on its own'
+    );
+});
+
 test('a foreign-tab storage event never replays a failed write over the legacy map', () => {
     const mod = freshPlugin();
     const key = 'difficulty_ladder.songMastery';
