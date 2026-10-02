@@ -87,6 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and must not derive it from a migrated value.
 
 ### Changed
+- Internal-only: the `difficulty_ladder.sections.v3` payload builder in
+  `screen.js` splits into per-concept helpers — `_v3SectionEntries`,
+  `_v3SectionEntry`, `_v3Overlapping`, `_v3PhraseEntry`,
+  `_v3CurrentPhraseIndex`, `_v3Covers` and `_v3NumberOrNull` — with the host
+  readings (`mastery`, playback time, song key) hoisted into one `state` object
+  read once per emit. No payload changes: both events emit byte-for-byte what
+  they emitted before. The seam moved because one 110-line body doing six jobs
+  scored as a complex method, which CodeFactor reports as a new finding and
+  every future edit here would re-trip.
 - Internal-only: the three hand-written localStorage persistence stores in
   `screen.js` — `progress.v2`, `phraseAttempts.v2`, and the legacy read-only
   `songMastery` map — collapse into one `makePersistenceStore(config)`
