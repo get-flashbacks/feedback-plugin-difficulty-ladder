@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A render-neutral section payload, `difficulty_ladder.sections.v3` (#156, first
+  tier-rail sub-issue of #131). The existing `difficulty:sections-updated` event
+  states `fillPercentage` and `glassSize`, i.e. presentation decisions made in
+  the producer on Section Map's behalf, so any second consumer inherited the
+  glass metaphor. v3 reports the facts behind them instead, per section and per
+  overlapping phrase: a stable id and index, the half-open time range,
+  `current_tier` (the tier this pane's mastery maps to, from the same discrete
+  ladder `drawHud()` uses, clamped to the tier the entry plays in full from),
+  `top_tier`, `max_tier`, `avg_top_tier` for sections, `is_current`, and
+  `has_chart_content` — plus the phrase entries themselves, keyed by the same
+  stable id `phrase_attempt.v2` records use. No presentation field appears
+  anywhere in it; a renderer picks its own shape, or none. Missing data stays
+  missing: a section with no overlapping phrase produces no entry rather than a
+  zero tier, and `current_tier` is `null` (not `0`) when the host reports no
+  usable mastery or the entry reports no tier ladder at all — a `0` there would
+  be indistinguishable from "measured at the bottom tier", which is exactly what
+  `top_tier: 0` denies. Each payload is built per player context, so Split
+  Screen panes stay isolated as before. Emitted from the same
+  `calculateAndEmitSectionDifficulties()` call and the same ~150 ms throttle as
+  v2, adding no reads beyond the current time and song identity the new
+  `is_current` / `current_phrase_index` / joinable id fields are for. That
+  throttle is event-driven, not time-driven, so `is_current` and
+  `current_phrase_index` are snapshots of the playback position as of the last
+  emit (playback progress never schedules one) and go stale between emits;
+  `start_time` / `end_time` stay exact, so `INTEGRATION.md` states that a
+  renderer following the playhead should read `highway.getTime()` itself. Both
+  events are emitted: v2
+  is frozen byte-for-byte for the released Section Map integration — its
+  `0.5` stand-in on a highway that reports no mastery included, where v3
+  reports `null` — and v3 sits on
+  its own event name so a subscriber is never handed the other version's
+  payload, and `window._ddCapabilities.sectionsSchema` advertises which
+  contract the installed build speaks — set at this plugin's top-level script
+  execution, which (plugins load alphabetically,
+  `difficulty_ladder` < `section_map`) always precedes Section Map's
+  availability check. v2 removal follows the v3 consumer landing in Section Map.
+  Contract, field table and transition policy documented in `INTEGRATION.md`.
 - A session's first start on a song now begins slightly below the difficulty
   the player last settled on, and lets the existing ramp walk the gap back
   (#112, roadmap C4). Resuming straight at a remembered peak makes the
@@ -55,6 +92,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and must not derive it from a migrated value.
 
 ### Changed
+- Internal-only: the `difficulty_ladder.sections.v3` payload builder in
+  `screen.js` splits into per-concept helpers — `_v3SectionEntries`,
+  `_v3SectionEntry`, `_v3Overlapping`, `_v3PhraseEntry`,
+  `_v3CurrentPhraseIndex`, `_v3Covers` and `_v3NumberOrNull` — with the host
+  readings (`mastery`, playback time, song key) hoisted into one `state` object
+  read once per emit. No payload changes: both events emit byte-for-byte what
+  they emitted before. The seam moved because one 110-line body doing six jobs
+  scored as a complex method, which CodeFactor reports as a new finding and
+  every future edit here would re-trip.
 - Internal-only: the three hand-written localStorage persistence stores in
   `screen.js` — `progress.v2`, `phraseAttempts.v2`, and the legacy read-only
   `songMastery` map — collapse into one `makePersistenceStore(config)`
