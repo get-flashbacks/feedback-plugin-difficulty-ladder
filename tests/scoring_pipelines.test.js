@@ -150,6 +150,8 @@ function installClock(env) {
     };
 }
 
+// Same bootstrap as freshPlugin() in tests/screen.test.js, minus its listener
+// registry; keep the two in step if the Node test hook's requirements change.
 function loadNodeInstance(stored = {}) {
     const store = new Map(Object.entries(stored));
     global.window = { addEventListener() {}, dispatchEvent() {} };
@@ -382,14 +384,16 @@ test('delayed verdicts: results still active at the boundary are discarded, and 
     };
     const verdicts = {
         [key(0.5, 1, 1)]: 'hit', [key(1.0, 2, 2)]: 'active', [key(1.5, 3, 3)]: 'miss', [key(1.8, 4, 4)]: 'active',
-        [key(2.5, 1, 9)]: 'hit',
+        // P1's own note is a miss, so a verdict leaking out of P0 changes the
+        // ratio committed at t=4 instead of being absorbed by it.
+        [key(2.5, 1, 9)]: 'miss',
     };
     // The 1.0 and 1.8 notes stay 'active' through the boundary, then turn into
     // hits at t=2.3 — after the phrase already committed.
     const frames = [...play(0, 2.2), { t: 2.3, wall: 2.3, set: { [key(1.0, 2, 2)]: 'hit', [key(1.8, 4, 4)]: 'hit' } }, ...play(2.4, 4.1)];
     // P0 = 1 hit of 2 resolved (0.5); the two unresolved are dropped, not
-    // carried into P1. P1 = 1 hit of 1.
-    const ema = emaSeq([0.5, 1], ALPHA).map(r3);
+    // carried into P1. P1 = 0 of 1.
+    const ema = emaSeq([0.5, 0], ALPHA).map(r3);
     assertParity(runBoth(chart, frames, { verdicts }), [{ t: 2, ema: ema[0] }, { t: 4, ema: ema[1] }]);
 });
 
@@ -590,6 +594,13 @@ test('split isolation: a rewind or seek on one panel does not disturb another pa
 // ---------------------------------------------------------------------------
 // KNOWN DIFFERENCES between the pipelines (pinned, not endorsed)
 // ---------------------------------------------------------------------------
+// Pinned below: the auto-adjust write channel and the manual-override scope.
+// Found by reading the code and NOT pinned by a test (for Stage 4-2 to decide):
+//   - only the main pipeline calls updateMasteryStreak() on commit
+//     (commitPhraseResult); commitSplitPhraseResult has no equivalent.
+//   - split records a phrase attempt only when the panel has a player context
+//     (`if (state.context) recordPhraseAttempt(...)`), so an untagged panel
+//     logs none; main always records one.
 
 // Six 2-second phrases with one note each, so a perfect run commits six times.
 function chartPerfect() {
@@ -611,7 +622,9 @@ test('DIFFERENCE (channel): auto-adjust applies the same ramp steps, but main wr
     const split = both.split.observe();
     // The ramp itself (which percentages, in which order) is identical...
     assert.deepEqual(main.masteryWrites, split.masteryWrites);
-    assert.ok(main.masteryWrites.length >= 3, 'warm-up passed, the slider ramped up');
+    // Pinned exactly (percent): 50 + one ramp step per write, five writes over
+    // the six perfect commits once warm-up has passed.
+    assert.deepEqual(main.masteryWrites, [55, 60, 65, 70, 75]);
     const mod = loadNodeInstance();
     const step = mod.rampStep(mod.thresholds(), 0, 'up');
     assert.equal(main.masteryWrites[0], 50 + step);
