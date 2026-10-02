@@ -108,6 +108,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it.
 
 ### Fixed
+- A cross-tab `storage` event whose recovery write fails now re-arms the
+  persistence debounce, so the kept record is retried even in an idle tab
+  instead of waiting for a later write or lifecycle flush (follow-up to #149).
 - A debounced persistence write that fails (storage quota, storage
   unavailable) now retries on its own — up to three times at 300/600/1200 ms —
   instead of waiting for the next write or a lifecycle flush. Bounded, so a

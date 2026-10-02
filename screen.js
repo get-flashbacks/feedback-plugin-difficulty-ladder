@@ -184,13 +184,17 @@
         // already failed over the foreign tab's value.
         //
         // If that recovery write itself fails, the cache is kept and stays
-        // dirty rather than dropped: the mutation has no other holder, and a
-        // later lifecycle flush (song change, screen hidden) retries it. The
-        // cost is that this tab's record wins over the foreign one in the
+        // dirty rather than dropped: the mutation has no other holder. flush()
+        // disarmed the debounce before writing, so re-arm it here — otherwise
+        // an idle tab (no further writes, no song change) would hold the record
+        // in memory indefinitely. schedule() fires flush() once and does not
+        // loop, so a quota that stays full costs one more failed attempt, and a
+        // later lifecycle flush (song change, screen hidden) still retries it.
+        // The cost is that this tab's record wins over the foreign one in the
         // meantime, which is the same last-write-wins outcome the pre-refactor
         // flush-then-clear code reached whenever its write succeeded.
         function invalidate(flushPending) {
-            if (dirty && flushPending !== false && flush() === false) return;
+            if (dirty && flushPending !== false && flush() === false) { schedule(); return; }
             cache = null;
             dirty = false;
         }
