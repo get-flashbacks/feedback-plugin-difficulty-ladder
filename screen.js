@@ -118,8 +118,8 @@
 
         function flush() {
             if (timer) { clearTimeout(timer); timer = null; }
-            if (!cache || !dirty) return;
-            write();
+            if (!cache || !dirty) return true;
+            return write();
         }
 
         function schedule() {
@@ -159,8 +159,15 @@
         // never debounced (saveNow only) passes false: there is nothing
         // pending to lose, and a retry here would only replay a write that
         // already failed over the foreign tab's value.
+        //
+        // If that recovery write itself fails, the cache is kept and stays
+        // dirty rather than dropped: the mutation has no other holder, and a
+        // later lifecycle flush (song change, screen hidden) retries it. The
+        // cost is that this tab's record wins over the foreign one in the
+        // meantime, which is the same last-write-wins outcome the pre-refactor
+        // flush-then-clear code reached whenever its write succeeded.
         function invalidate(flushPending) {
-            if (dirty && flushPending !== false) flush();
+            if (dirty && flushPending !== false && flush() === false) return;
             cache = null;
             dirty = false;
         }
@@ -455,8 +462,10 @@
     function loadSongMasteryMap() { return _songMasteryStore.load(); }
     // Legacy map: runtime reads are non-hot (song load, library badge), so
     // its save persists immediately rather than through the debounce every
-    // other store shares.
-    function saveSongMasteryMap(map) { return _songMasteryStore.saveNow(map); }
+    // other store shares. Deliberately returns nothing, as it always has —
+    // no caller can act on the outcome, and the store's boolean would read as
+    // a new contract.
+    function saveSongMasteryMap(map) { _songMasteryStore.saveNow(map); }
     function _masteryPct(record) {
         let value;
         value = record && typeof record === 'object' ? record.mastery : record;

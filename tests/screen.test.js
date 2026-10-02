@@ -1083,18 +1083,48 @@ test('a foreign-tab storage event flushes a pending debounced write instead of d
         'the pending record is in the flushed payload, not lost');
 });
 
+test('a foreign-tab storage event keeps a pending record whose recovery write failed', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const key = 'difficulty_ladder.progress.v2';
+
+    mod.writeProgress(ctx, { currentDifficulty: 71 }); // dirty, still only in the cache
+
+    // The foreign tab's write arrives, and our own recovery write fails with
+    // it (quota exhausted, say). Dropping the cache here would lose the
+    // record outright — nothing else holds a reference to it.
+    const realSetItem = global.localStorage.setItem;
+    global.localStorage.setItem = () => { throw new Error('quota exceeded'); };
+    global.window.dispatchEvent({ type: 'storage', key, newValue: null });
+    global.localStorage.setItem = realSetItem;
+
+    // The next lifecycle flush retries it, and the record is still there.
+    assert.equal(mod.readProgress(ctx).currentDifficulty, 71, 'the pending record survived');
+    mod.flushProgressStore();
+    const persisted = JSON.parse(global.localStorage.getItem(key));
+    assert.equal(
+        persisted.profiles[mod._nodeKey('hash-1')].players[mod._nodeKey('player-1')] !== undefined,
+        true,
+        'and it reaches disk on the retry'
+    );
+});
+
 test('a foreign-tab storage event never replays a failed write over the legacy map', () => {
     const mod = freshPlugin();
     const key = 'difficulty_ladder.songMastery';
     const realSetItem = global.localStorage.setItem;
-    global.localStorage.setItem = () => { throw new Error('quota exceeded'); };
+    let writeAttempts = 0;
+    global.localStorage.setItem = () => { writeAttempts += 1; throw new Error('quota exceeded'); };
     try {
         // The legacy map persists immediately, so this is a synchronous write
         // that failed rather than a pending debounced mutation.
-        assert.equal(mod.saveSongMasteryMap({ 'song.feedpak::lead': 44 }), false);
+        assert.equal(mod.saveSongMasteryMap({ 'song.feedpak::lead': 44 }), undefined,
+            'saveSongMasteryMap returns nothing, as it always has');
     } finally {
         global.localStorage.setItem = realSetItem;
     }
+    assert.equal(writeAttempts, 1, 'precondition: the immediate write was attempted and failed');
+    assert.equal(global.localStorage.getItem(key), null);
 
     let writes = 0;
     global.localStorage.setItem = () => { writes += 1; };

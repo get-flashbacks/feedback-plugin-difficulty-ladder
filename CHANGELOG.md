@@ -70,7 +70,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (never-debounced) save, and the cross-tab `storage` race — flush our own
   pending write before dropping the cache — are all unchanged. Cross-tab
   behavior for all three stores is now covered by tests, which the three
-  separate copies were not.
+  separate copies were not. Two review findings are folded in: a cross-tab
+  `storage` event whose own recovery write fails now keeps the dirty cache
+  and retries on the next lifecycle flush instead of dropping the record
+  (the old code dropped it too), and `saveSongMasteryMap()` still returns
+  nothing rather than inheriting the store's boolean.
 - Internal-only: the per-setting reaction to a settings change moves in
   `screen.js` into one `_applySettingsChange()` helper shared by the
   cross-tab `storage` listener and the same-tab
