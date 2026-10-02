@@ -1194,6 +1194,34 @@ test('a failing debounced write retries with doubling delays, then stops', () =>
     assert.notEqual(global.localStorage.getItem(key), null, 'a lifecycle flush still persists it');
 });
 
+test('an explicit flush never re-arms a retry, even when it fails mid-chain', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const key = 'difficulty_ladder.progress.v2';
+    const realSetItem = global.localStorage.setItem;
+    const timers = stubTimers();
+    let attempts = 0;
+    try {
+        global.localStorage.setItem = () => { attempts += 1; throw new Error('quota exceeded'); };
+        mod.writeProgress(ctx, { currentDifficulty: 71 });
+        timers.runNext();                          // debounce fires, fails, arms the 300 ms retry
+        assert.deepEqual(timers.delays, [150, 300]);
+        assert.equal(timers.pending.size, 1, 'precondition: a retry is armed');
+
+        mod.flushProgressStore();                  // lifecycle flush lands mid-chain and also fails
+        assert.equal(attempts, 2, 'the explicit flush attempted a write');
+        assert.equal(timers.pending.size, 0, 'it cancels the armed retry and does not re-arm');
+        assert.deepEqual(timers.delays, [150, 300], 'no new timer was armed by the explicit flush');
+    } finally {
+        timers.restore();
+        global.localStorage.setItem = realSetItem;
+    }
+    // The record is still held, so a later flush lands it.
+    assert.equal(global.localStorage.getItem(key), null);
+    mod.flushProgressStore();
+    assert.notEqual(global.localStorage.getItem(key), null);
+});
+
 test('a debounced write that fails once is retried and lands; new data restarts the budget', () => {
     const mod = freshPlugin();
     const ctx = playerContext();

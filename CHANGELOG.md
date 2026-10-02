@@ -113,9 +113,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of waiting for a later write or lifecycle flush (follow-up to #149).
 - A debounced persistence write that fails (storage quota, storage
   unavailable) now retries on its own — up to three times at 300/600/1200 ms —
-  instead of waiting for the next write or a lifecycle flush. Bounded, so a
-  quota that stays full costs a few attempts, not a retry loop; fresh data
-  restarts the retry budget (follow-up to #149).
+  until the next flush, instead of waiting for the next write. An explicit
+  flush (song change, screen hidden) cancels a pending retry and does not
+  re-arm it by design. Bounded, so a quota that stays full costs a few
+  attempts, not a retry loop; fresh data restarts the retry budget
+  (follow-up to #149).
 - Instrument labels stored under the pre-#136 `_instrumentKind()` verdict
   are now cleared instead of persisting forever (#141). That fix is
   prevent-only: a record already written as `fretted`/`keys` for an
