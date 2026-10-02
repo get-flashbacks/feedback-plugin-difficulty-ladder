@@ -55,6 +55,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and must not derive it from a migrated value.
 
 ### Changed
+- Internal-only (CI): the `no-print-in-routes` check in
+  `.github/workflows/custom-checks.yml` now scans every top-level `.py` file in
+  the plugin directory instead of `routes.py` alone (#153). A sibling module
+  added by the upcoming `routes.py` split would be loaded through
+  `context['load_sibling']` and is equally runtime code, so a `print()` in it
+  is exactly as wrong as one in `routes.py` — but the old grep would not have
+  seen it. Explicitly excluded, and stated in the check's own comments:
+  `tests/` and `tools/` (not plugin runtime code, and out of scope because the
+  scan is non-recursive) and `test_*.py` at the plugin-dir root (matching the
+  `sibling-imports-use-load-sibling` check's convention). A no-op widening
+  today — `routes.py` is still the only runtime `.py` — and it fails on a
+  `print()` in any sibling module, pinned by a temporary throwaway module.
+  The job id is unchanged on purpose: a GitHub required-check name is the job
+  id, so renaming it would orphan any branch-protection entry pointing at it;
+  only the step's display name and the job's comment moved.
 - Internal-only: the three hand-written localStorage persistence stores in
   `screen.js` — `progress.v2`, `phraseAttempts.v2`, and the legacy read-only
   `songMastery` map — collapse into one `makePersistenceStore(config)`

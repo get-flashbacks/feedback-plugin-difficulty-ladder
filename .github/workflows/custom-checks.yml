@@ -14,25 +14,53 @@ env:
   PLUGIN_DIR: "."
 
 jobs:
+  # Job id is deliberately still `no-print-in-routes` (and unchanged from when it
+  # only looked at routes.py): a GitHub required-check name is the job id, so
+  # renaming it would orphan any branch-protection entry pointing at it. The
+  # scope is what moved, not the name — see #153.
   no-print-in-routes:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: No print()/traceback.print_exc() in routes.py
+      - name: No print()/traceback.print_exc() in any plugin .py file
         run: |
           set -eu
-          FILE="$PLUGIN_DIR/routes.py"
-          if [ ! -f "$FILE" ]; then
-            echo "No routes.py — skipping"
+          # Every top-level .py file in the plugin dir, not just routes.py: a
+          # sibling module (e.g. a scoring.py added by the #146 split) is loaded
+          # through context['load_sibling'] and is equally runtime code, so a
+          # print() there is exactly as wrong as one here (#153). Non-recursive
+          # on purpose — the only runtime .py files are the plugin-dir
+          # siblings. Excluded, explicitly:
+          #   tests/  — not shipped, not runtime
+          #   tools/  — dev scripts, not loaded by the plugin host
+          #   test_*.py at the plugin-dir root — same, by naming convention
+          #     (matches the sibling-imports-use-load-sibling check)
+          shopt -s nullglob
+          files=()
+          for f in "$PLUGIN_DIR"/*.py; do
+            case "$(basename "$f")" in
+              test_*.py) continue ;;
+            esac
+            [ -f "$f" ] || continue
+            files+=("$f")
+          done
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No plugin .py files — skipping"
             exit 0
           fi
-          hits=$(grep -nE '(^|[^A-Za-z0-9_])(print|traceback\.print_exc)[[:space:]]*\(' "$FILE" || true)
-          if [ -n "$hits" ]; then
-            echo "$hits"
-            echo "::error file=$FILE::print()/traceback.print_exc() found — use context['log'] instead"
+          failed=0
+          for f in "${files[@]}"; do
+            hits=$(grep -nE '(^|[^A-Za-z0-9_])(print|traceback\.print_exc)[[:space:]]*\(' "$f" || true)
+            if [ -n "$hits" ]; then
+              echo "$hits"
+              echo "::error file=$f::print()/traceback.print_exc() found — use context['log'] instead"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
             exit 1
           fi
-          echo "OK: no print()/traceback.print_exc() in routes.py"
+          echo "OK: no print()/traceback.print_exc() in ${#files[@]} plugin .py file(s): ${files[*]##*/}"
 
   safe-server-files:
     runs-on: ubuntu-latest
