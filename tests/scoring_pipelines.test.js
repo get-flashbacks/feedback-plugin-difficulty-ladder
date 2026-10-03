@@ -34,10 +34,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
 
-const SCREEN_JS = path.join(__dirname, '..', 'screen.js');
+// Fixed, repo-relative path to the plugin under test; nothing here is user input.
+const SCREEN_JS = require.resolve('../screen.js');
+// eslint-disable-next-line security/detect-non-literal-fs-filename -- SCREEN_JS is the constant above, never user input
 const SCREEN_SRC = fs.readFileSync(SCREEN_JS, 'utf8');
 
 // ---------------------------------------------------------------------------
@@ -160,8 +161,8 @@ function loadNodeInstance(stored = {}) {
         getItem: (k) => (store.has(k) ? store.get(k) : null),
         setItem: (k, v) => { store.set(k, String(v)); },
     };
-    delete require.cache[require.resolve(SCREEN_JS)];
-    return require(SCREEN_JS);
+    delete require.cache[SCREEN_JS];
+    return require('../screen.js');
 }
 
 function splitDriver(chart, env, opts = {}) {
