@@ -2405,8 +2405,12 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
         retention_score = cost - _KEYS_BEAT_VALUE_COEF * value
         if gi in turning_points:
             retention_score -= _KEYS_MELODY_TURNING_BONUS
-        if g.get("melody"):
-            retention_score -= _KEYS_MELODY_LINE_BONUS
+        if g.get("melody") and retention_score > 0.0:
+            # Capped at half of what is left so a cheap, slow melody note
+            # (cost ~0.05) keeps a distinct score instead of clamping to 0.0
+            # alongside every other one; r - min(b, r/2) is strictly
+            # increasing in r, so ordering among melody groups is preserved.
+            retention_score -= min(_KEYS_MELODY_LINE_BONUS, retention_score / 2.0)
         g["cost"] = cost
         g["value"] = value
         g["retention_score"] = max(0.0, min(1.0, retention_score))

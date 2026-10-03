@@ -4396,3 +4396,16 @@ def test_fretted_turning_points_still_count_a_note_sharing_an_onset_with_a_chord
     ]
     turning = routes._melody_turning_points(groups, (0,) * 6, 6, tempo)
     assert 1 in turning  # nosec B101 - pytest assertion
+
+
+def test_keys_melody_bonus_keeps_cheap_melody_notes_distinguishable():
+    # Slow, sustained melody notes have a very low cost; the melody discount
+    # must not drive them all to the 0.0 clamp, where they would tie.
+    notes = [_midi_note(i * 2.0, 72 + (i % 5) * 2, 3.0) for i in range(12)]
+    notes += [_midi_note(i * 2.0, 48, 3.0) for i in range(12)]
+    beats = [{"time": round(i * 0.5, 3), "measure": i // 4 if i % 4 == 0 else -1} for i in range(60)]
+    tempo = routes._TempoParams.from_beats([b["time"] for b in beats], beats)
+    groups = routes._group_notes_keys(notes, [])
+    routes._score_groups_keys(groups, [b["time"] for b in beats], tempo=tempo)
+    melody = [g["retention_score"] for g in groups if g["melody"]]
+    assert melody and all(score > 0.0 for score in melody)  # nosec B101 - pytest assertion

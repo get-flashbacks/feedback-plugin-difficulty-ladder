@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   voice earns a retention bonus, so tier 0 always includes the tune. Turning-point detection skips split
   onsets (so the other hand isn't compared at the same instant), the melody
   register is read off the skyline, and the phrase-boundary bonus covers every
-  group at the boundary onset.
+  group at the boundary onset (keys only). The melody discount is capped at
+  half of the remaining score so cheap, slow melodies don't all clamp to 0.0.
 
 ### Added
 - A render-neutral section payload, `difficulty_ladder.sections.v3` (#156, first
