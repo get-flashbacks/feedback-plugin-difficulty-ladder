@@ -38,8 +38,15 @@ const vm = require('node:vm');
 
 // Fixed, repo-relative path to the plugin under test; nothing here is user input.
 const SCREEN_JS = require.resolve('../screen.js');
-// eslint-disable-next-line security/detect-non-literal-fs-filename -- SCREEN_JS is the constant above, never user input
-const SCREEN_SRC = fs.readFileSync(SCREEN_JS, 'utf8');
+// The vm harness needs the plugin's source text. The read uses a literal path
+// (relative to the repo root, where `node --test` is run per CLAUDE.md) rather
+// than a computed one, so no path is built at runtime.
+let SCREEN_SRC;
+try {
+    SCREEN_SRC = fs.readFileSync('screen.js', 'utf8');
+} catch (err) {
+    throw new Error('scoring_pipelines.test.js must be run from the repo root: ' + err.message);
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
