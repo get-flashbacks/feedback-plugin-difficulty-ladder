@@ -4379,3 +4379,20 @@ def test_keys_turning_points_ignore_cross_hand_neighbours_at_one_onset():
     split_idx = {i for i, g in enumerate(groups) if onset_sizes[g["time"]] > 1}
     turning = routes._melody_turning_points_keys(groups, tempo)
     assert not (turning & split_idx)  # nosec B101 - pytest assertion
+
+
+def test_fretted_turning_points_still_count_a_note_sharing_an_onset_with_a_chord():
+    # The same-onset exclusion is keys-only: on the fretted path a lead note
+    # sounding with a chord block is still compared against its true melodic
+    # neighbours and can be a turning point.
+    def g(t, notes):
+        return {"type": "note" if len(notes) == 1 else "chord", "notes": notes, "time": t}
+    tempo = routes._TempoParams()
+    groups = [
+        g(0.0, [{"t": 0.0, "s": 2, "f": 3}]),
+        g(0.2, [{"t": 0.2, "s": 2, "f": 9}]),
+        g(0.2, [{"t": 0.2, "s": 1, "f": 3}, {"t": 0.2, "s": 0, "f": 3}]),
+        g(0.4, [{"t": 0.4, "s": 2, "f": 4}]),
+    ]
+    turning = routes._melody_turning_points(groups, (0,) * 6, 6, tempo)
+    assert 1 in turning  # nosec B101 - pytest assertion
