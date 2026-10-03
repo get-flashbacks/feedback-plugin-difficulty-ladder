@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   register is read off the skyline, and the phrase-boundary bonus covers every
   group at the boundary onset (keys only). The melody discount is capped at
   half of the remaining score so cheap, slow melodies don't all clamp to 0.0.
+  A melody voicing is costed as its top note (what the bottom tier plays), so a
+  chordal right hand no longer pushes the melody out of tier 0; density and
+  speed read distinct onsets, so the two hand-parts of one onset don't inflate
+  density or zero the first part's speed; and only groups created by a hand
+  split are excluded from turning points.
 
 ### Added
 - A render-neutral section payload, `difficulty_ladder.sections.v3` (#156, first

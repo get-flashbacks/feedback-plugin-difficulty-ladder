@@ -2298,7 +2298,10 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
                 # Only the upper part of a two-hand onset can be the melody;
                 # an unsplit onset is judged against the register below.
                 "melody": len(parts) > 1 and pi == len(parts) - 1,
-                "_split": len(parts) > 1,
+                # Provenance: this group is one hand's half of a split onset.
+                # An authored chord and a separate single note that merely
+                # share a timestamp are NOT split groups.
+                "hand_split": len(parts) > 1,
             })
 
     # An unsplit onset is melody only if it sits in the upper register of the
@@ -2314,9 +2317,8 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
     tops = sorted(skyline.values())
     median_top = tops[len(tops) // 2] if tops else 0
     for g in groups:
-        if g["notes"] and not g["_split"]:
+        if g["notes"] and not g["hand_split"]:
             g["melody"] = max(_note_midi_keys(n) for n in g["notes"]) >= median_top
-        del g["_split"]
 
     groups.sort(key=lambda g: g["time"])
     return groups
@@ -2330,17 +2332,15 @@ def _melody_turning_points_keys(groups, tempo):
     identical: a strict local high/low among single-note groups, gated by
     the same `tempo.fret_jump_window_seconds` "not one continuous passage"
     neighbor-gap bound."""
-    # A single-note group that shares its onset with another group is one half
-    # of a two-hand onset (see _group_notes_keys); its neighbour at dt == 0 is
-    # the other hand, so comparing them says nothing about melodic shape.
-    # Leaving those onsets out matches the pre-split behaviour, where such an
-    # onset was one multi-note group and never a candidate.
-    onset_counts = {}
-    for g in groups:
-        onset_counts[g["time"]] = onset_counts.get(g["time"], 0) + 1
+    # A group created by a hand split is one half of a two-hand onset; its
+    # neighbour at dt == 0 is the other hand, so comparing them says nothing
+    # about melodic shape. Excluding only split-created groups (not every
+    # group that happens to share a timestamp) matches the pre-split
+    # behaviour, where such an onset was one multi-note group and never a
+    # candidate, while an authored single note over an authored chord still is.
     singles = [
         i for i, g in enumerate(groups)
-        if len(g["notes"]) == 1 and onset_counts[g["time"]] == 1
+        if len(g["notes"]) == 1 and not g.get("hand_split")
     ]
     pitches = {i: _note_midi_keys(groups[i]["notes"][0]) for i in singles}
     times = {i: float(groups[i]["time"]) for i in singles}
@@ -2360,6 +2360,8 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
     tempo = tempo or _TempoParams()
     total = len(groups)
     times_sorted = [float(g["time"]) for g in groups]
+    onset_times = sorted(set(times_sorted))
+    onset_index = {t: i for i, t in enumerate(onset_times)}
     # #103/B8: apply B2 (graded beat strength, via _beat_value) and B5
     # (melody-turning-point retention) to the keys path -- previously only
     # the fretted path (_score_groups) had either term, so a keys chart's
@@ -2373,20 +2375,34 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
             g["retention_score"] = 0.0
             continue
         midis = [_note_midi_keys(n) for n in ns]
+        if g.get("melody") and len(midis) > 1:
+            # The bottom tier plays a melody voicing as its outer voices, so
+            # what decides where the group first appears is the cost of the
+            # tune itself, not of the full right-hand chord. Scoring the whole
+            # voicing let a 3-note right hand (poly + span) outrank the
+            # left-hand filler by far more than the melody bonus, and tier 0
+            # then held no melody at all.
+            midis = [max(midis)]
 
-        poly = min(1.0, (len(ns) - 1) / 4.0)  # 1 note=0, 5+ at once=1
+        poly = min(1.0, (len(midis) - 1) / 4.0)  # 1 note=0, 5+ at once=1
         span = (max(midis) - min(midis)) if len(midis) > 1 else 0
         span_score = min(1.0, span / 12.0)  # an octave reach = 1.0
 
         # Distinct onsets in a tempo-relative time window, not each nearby
         # group's own note count -- same reasoning as the fretted path's
         # _sequential_density (#71): a wide block chord shouldn't inflate
-        # density on its own, since polyphony is already `poly` above.
-        density = _sequential_density(times_sorted, gi, tempo)
+        # density on its own, since polyphony is already `poly` above. The
+        # two hand-parts of a split onset are ONE onset, so density is read
+        # off the distinct onset times.
+        oi = onset_index[times_sorted[gi]]
+        density = _sequential_density(onset_times, oi, tempo)
 
+        # Speed is the interval to the NEXT DISTINCT onset, so it doesn't
+        # depend on the order the hand-parts of a split onset were emitted in
+        # (the first would otherwise see dt == 0 and score zero speed).
         speed = 0.0
-        if gi + 1 < total:
-            dt = float(groups[gi + 1]["time"]) - float(g["time"])
+        if oi + 1 < len(onset_times):
+            dt = onset_times[oi + 1] - float(g["time"])
             if dt > 0:
                 speed = min(1.0, max(0.0, (0.25 - dt) / 0.25))
 
