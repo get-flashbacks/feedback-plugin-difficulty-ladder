@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Keys/piano ladders no longer drop the tune at the bottom tier. A left-hand
+  note and a right-hand note sounding together were fused into one "chord"
+  cluster that scored as hard, so the lowest tiers kept cheap left-hand filler
+  and omitted the melody entirely. A cluster spanning both hands (internal gap
+  of a minor 7th or wider) now splits into one group per hand, and the melody (top)
+  voice earns a retention bonus, so tier 0 always includes the tune. Turning-point detection skips split
+  onsets (so the other hand isn't compared at the same instant), the melody
+  register is read off the skyline, and the phrase-boundary bonus covers every
+  group at the boundary onset (keys only). The melody discount is capped at
+  half of the remaining score so cheap, slow melodies don't all clamp to 0.0.
+  A melody voicing is costed as its top note (what the bottom tier plays), so a
+  chordal right hand no longer pushes the melody out of tier 0; density and
+  speed read distinct onsets, so the two hand-parts of one onset don't inflate
+  density or zero the first part's speed; and only groups created by a hand
+  split are excluded from turning points.
+
 ### Added
 - A render-neutral section payload, `difficulty_ladder.sections.v3` (#156, first
   tier-rail sub-issue of #131). The existing `difficulty:sections-updated` event

@@ -2232,17 +2232,47 @@ _KEYS_BEAT_VALUE_COEF = 0.025
 _KEYS_MELODY_TURNING_BONUS = 0.025
 
 
+# A single hand spans roughly an octave (a 9th at a stretch). An interval this
+# wide INSIDE one simultaneous onset can't be one hand's chord voicing -- it is
+# a left-hand bass/accompaniment note sounding with a right-hand melody/chord.
+_KEYS_HAND_SPLIT_SEMITONES = 10
+# Retention discount for the melody (skyline) voice, in the same units as
+# _KEYS_BEAT_VALUE_COEF: sized to beat the cost spread between an equally
+# placed accompaniment filler and a melody note, so the bottom tier carries the
+# tune rather than whichever notes happen to be mechanically cheapest.
+_KEYS_MELODY_LINE_BONUS = 0.08
+
+
+def _split_keys_hands(ns):
+    """Split one simultaneous onset into (lower, upper) hand parts, or
+    (ns, []) when it reads as a single hand. Splits at the widest internal
+    interval when that interval is too wide for one hand to cover."""
+    if len(ns) < 2:
+        return list(ns), []
+    ranked = sorted(ns, key=_note_midi_keys)
+    gaps = [
+        (_note_midi_keys(ranked[i + 1]) - _note_midi_keys(ranked[i]), i)
+        for i in range(len(ranked) - 1)
+    ]
+    gap, at = max(gaps)
+    if gap < _KEYS_HAND_SPLIT_SEMITONES:
+        return ranked, []
+    return ranked[: at + 1], ranked[at + 1:]
+
+
 def _group_notes_keys(notes, chords, *, onset_window_ms=30):
     """Group keys notes into atomic units. No fretboard, so grouping is
     purely temporal: explicit chords stay chords, remaining notes sharing an
-    onset (within `onset_window_ms`) become a block-chord cluster."""
-    groups = []
+    onset (within `onset_window_ms`) become a block-chord cluster.
+
+    A cluster spanning both hands (bass + melody sounding together) is split
+    into one group per hand -- scoring it as a single huge chord made the
+    accompaniment's cheap filler outrank the tune at the bottom tier. The
+    topmost group of each onset is flagged `melody` (skyline) when it sits in
+    the arrangement's upper register; see `_score_groups_keys`."""
+    raw = []
     for ch in chords:
-        groups.append({
-            "type": "chord", "notes": list(ch.get("notes", []) or []), "chord": ch,
-            "time": float(ch.get("t", 0)), "cost": 0.0, "value": 0.0,
-            "retention_score": 0.0, "level": 0,
-        })
+        raw.append((float(ch.get("t", 0)), list(ch.get("notes", []) or []), ch))
 
     note_list = sorted((dict(n) for n in notes), key=lambda n: float(n.get("t", 0)))
     total = len(note_list)
@@ -2254,13 +2284,41 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
         while j < total and (float(note_list[j].get("t", 0)) - base_t) * 1000 <= onset_window_ms:
             cluster.append(note_list[j])
             j += 1
-        groups.append({
-            "type": "chord" if len(cluster) > 1 else "note",
-            "notes": cluster, "chord": None,
-            "time": base_t, "cost": 0.0, "value": 0.0,
-            "retention_score": 0.0, "level": 0,
-        })
+        raw.append((base_t, cluster, None))
         i = j
+
+    groups = []
+    for t, ns, chord in raw:
+        parts = [p for p in _split_keys_hands(ns) if p]
+        for pi, part in enumerate(parts):
+            groups.append({
+                "type": "chord" if (chord is not None or len(part) > 1) else "note",
+                "notes": part, "chord": chord, "time": t,
+                "cost": 0.0, "value": 0.0, "retention_score": 0.0, "level": 0,
+                # Only the upper part of a two-hand onset can be the melody;
+                # an unsplit onset is judged against the register below.
+                "melody": len(parts) > 1 and pi == len(parts) - 1,
+                # Provenance: this group is one hand's half of a split onset.
+                # An authored chord and a separate single note that merely
+                # share a timestamp are NOT split groups.
+                "hand_split": len(parts) > 1,
+            })
+
+    # An unsplit onset is melody only if it sits in the upper register of the
+    # arrangement -- otherwise a left-hand-only filler would claim the bonus.
+    # The register is read off the SKYLINE (the highest note at each onset),
+    # not off every group: a split onset's lower half would otherwise pull the
+    # median down into the accompaniment range.
+    skyline = {}
+    for g in groups:
+        if g["notes"]:
+            top = max(_note_midi_keys(n) for n in g["notes"])
+            skyline[g["time"]] = max(top, skyline.get(g["time"], top))
+    tops = sorted(skyline.values())
+    median_top = tops[len(tops) // 2] if tops else 0
+    for g in groups:
+        if g["notes"] and not g["hand_split"]:
+            g["melody"] = max(_note_midi_keys(n) for n in g["notes"]) >= median_top
 
     groups.sort(key=lambda g: g["time"])
     return groups
@@ -2274,7 +2332,16 @@ def _melody_turning_points_keys(groups, tempo):
     identical: a strict local high/low among single-note groups, gated by
     the same `tempo.fret_jump_window_seconds` "not one continuous passage"
     neighbor-gap bound."""
-    singles = [i for i, g in enumerate(groups) if len(g["notes"]) == 1]
+    # A group created by a hand split is one half of a two-hand onset; its
+    # neighbour at dt == 0 is the other hand, so comparing them says nothing
+    # about melodic shape. Excluding only split-created groups (not every
+    # group that happens to share a timestamp) matches the pre-split
+    # behaviour, where such an onset was one multi-note group and never a
+    # candidate, while an authored single note over an authored chord still is.
+    singles = [
+        i for i, g in enumerate(groups)
+        if len(g["notes"]) == 1 and not g.get("hand_split")
+    ]
     pitches = {i: _note_midi_keys(groups[i]["notes"][0]) for i in singles}
     times = {i: float(groups[i]["time"]) for i in singles}
     max_gap = tempo.fret_jump_window_seconds
@@ -2293,6 +2360,8 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
     tempo = tempo or _TempoParams()
     total = len(groups)
     times_sorted = [float(g["time"]) for g in groups]
+    onset_times = sorted(set(times_sorted))
+    onset_index = {t: i for i, t in enumerate(onset_times)}
     # #103/B8: apply B2 (graded beat strength, via _beat_value) and B5
     # (melody-turning-point retention) to the keys path -- previously only
     # the fretted path (_score_groups) had either term, so a keys chart's
@@ -2306,20 +2375,34 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
             g["retention_score"] = 0.0
             continue
         midis = [_note_midi_keys(n) for n in ns]
+        if g.get("melody") and len(midis) > 1:
+            # The bottom tier plays a melody voicing as its outer voices, so
+            # what decides where the group first appears is the cost of the
+            # tune itself, not of the full right-hand chord. Scoring the whole
+            # voicing let a 3-note right hand (poly + span) outrank the
+            # left-hand filler by far more than the melody bonus, and tier 0
+            # then held no melody at all.
+            midis = [max(midis)]
 
-        poly = min(1.0, (len(ns) - 1) / 4.0)  # 1 note=0, 5+ at once=1
+        poly = min(1.0, (len(midis) - 1) / 4.0)  # 1 note=0, 5+ at once=1
         span = (max(midis) - min(midis)) if len(midis) > 1 else 0
         span_score = min(1.0, span / 12.0)  # an octave reach = 1.0
 
         # Distinct onsets in a tempo-relative time window, not each nearby
         # group's own note count -- same reasoning as the fretted path's
         # _sequential_density (#71): a wide block chord shouldn't inflate
-        # density on its own, since polyphony is already `poly` above.
-        density = _sequential_density(times_sorted, gi, tempo)
+        # density on its own, since polyphony is already `poly` above. The
+        # two hand-parts of a split onset are ONE onset, so density is read
+        # off the distinct onset times.
+        oi = onset_index[times_sorted[gi]]
+        density = _sequential_density(onset_times, oi, tempo)
 
+        # Speed is the interval to the NEXT DISTINCT onset, so it doesn't
+        # depend on the order the hand-parts of a split onset were emitted in
+        # (the first would otherwise see dt == 0 and score zero speed).
         speed = 0.0
-        if gi + 1 < total:
-            dt = float(groups[gi + 1]["time"]) - float(g["time"])
+        if oi + 1 < len(onset_times):
+            dt = onset_times[oi + 1] - float(g["time"])
             if dt > 0:
                 speed = min(1.0, max(0.0, (0.25 - dt) / 0.25))
 
@@ -2338,6 +2421,12 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
         retention_score = cost - _KEYS_BEAT_VALUE_COEF * value
         if gi in turning_points:
             retention_score -= _KEYS_MELODY_TURNING_BONUS
+        if g.get("melody") and retention_score > 0.0:
+            # Capped at half of what is left so a cheap, slow melody note
+            # (cost ~0.05) keeps a distinct score instead of clamping to 0.0
+            # alongside every other one; r - min(b, r/2) is strictly
+            # increasing in r, so ordering among melody groups is preserved.
+            retention_score -= min(_KEYS_MELODY_LINE_BONUS, retention_score / 2.0)
         g["cost"] = cost
         g["value"] = value
         g["retention_score"] = max(0.0, min(1.0, retention_score))
@@ -2890,17 +2979,31 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # blind 30s chunker) clamp their final window's end to `duration`,
         # so unlike an INTERNAL generated edge, the last window's end really
         # is the song's actual end (caught in PR #123 review).
+        # Keys only: the boundary onset is every group sharing the first/last
+        # time, since a two-hand onset is split into one group per hand and
+        # giving the bonus to only one half would leave the other (often the
+        # melody) without it. The fretted path keeps its single boundary group.
         if windows_are_authored or widx == 0:
-            first = phrase_groups[0]
-            first["retention_score"] = max(
-                0.0, first["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
-            )
+            first_t = phrase_groups[0]["time"]
+            for first in phrase_groups:
+                if first["time"] != first_t or (not is_keys and first is not phrase_groups[0]):
+                    break
+                first["retention_score"] = max(
+                    0.0, first["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
+                )
         is_last_window = widx == len(windows) - 1
         if (windows_are_authored or is_last_window) and phrase_groups[-1] is not phrase_groups[0]:
-            last = phrase_groups[-1]
-            last["retention_score"] = max(
-                0.0, last["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
-            )
+            last_t = phrase_groups[-1]["time"]
+            for last in reversed(phrase_groups):
+                if (
+                    last["time"] != last_t
+                    or (not is_keys and last is not phrase_groups[-1])
+                    or (is_keys and last["time"] == phrase_groups[0]["time"])
+                ):
+                    break
+                last["retention_score"] = max(
+                    0.0, last["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
+                )
         # Every phrase is built on the same n_levels-tier scale (see
         # _assign_tiers); how many DISTINCT levels a phrase ends up with
         # follows from how hard its content is, once

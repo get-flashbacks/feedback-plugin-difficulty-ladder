@@ -4289,3 +4289,222 @@ def test_notes_for_level_keys_nesting_survives_an_octave_adjacent_interior_pair(
         tiers.append({routes._note_midi_keys(n) for n in reduced})
     for lower, higher in pairwise(tiers):
         assert lower <= higher  # nosec B101 - real superset nesting, no dropped-then-reappeared voice
+
+
+# ── Keys: two-hand texture (hand split + melody-first bottom tier) ───────────
+
+def _midi_note(t, midi, sus=0.4):
+    return {"t": round(t, 3), "s": midi // 24, "f": midi % 24, "sus": sus}
+
+
+def _two_hand_keys_arrangement(bars=4):
+    """LH broken-chord eighths under an RH quarter-note melody -- the common
+    piano texture where bass and tune share downbeats."""
+    spb = 0.6
+    melody = [72, 74, 76, 77, 79, 77, 76, 74]
+    lh = [48, 52, 55, 52, 48, 52, 55, 52]
+    notes, beats = [], []
+    for bar in range(bars):
+        for b in range(4):
+            beats.append({"time": round(bar * 4 * spb + b * spb, 3), "measure": bar if b == 0 else -1})
+        for e in range(8):
+            notes.append(_midi_note(bar * 4 * spb + e * spb / 2, lh[e]))
+        for k in range(4):
+            notes.append(_midi_note(bar * 4 * spb + k * spb, melody[(bar + k) % 8], 0.5))
+    return {
+        "type": "keys", "name": "Keys", "notes": notes, "chords": [],
+        "beats": beats, "sections": [], "tuning": [],
+    }, spb
+
+
+def test_keys_cluster_spanning_both_hands_splits_into_two_groups():
+    notes = [_midi_note(1.0, 48), _midi_note(1.0, 72)]
+    groups = routes._group_notes_keys(notes, [])
+    assert [len(g["notes"]) for g in groups] == [1, 1]  # nosec B101 - pytest assertion
+    assert [g["melody"] for g in groups] == [False, True]  # nosec B101 - pytest assertion
+
+
+def test_keys_single_hand_chord_is_not_split():
+    notes = [_midi_note(1.0, m) for m in (60, 64, 67, 72)]
+    groups = routes._group_notes_keys(notes, [])
+    assert len(groups) == 1 and len(groups[0]["notes"]) == 4  # nosec B101 - pytest assertion
+
+
+def test_keys_bottom_tier_carries_the_melody_not_accompaniment_filler():
+    arr, spb = _two_hand_keys_arrangement()
+    phrases = routes.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[i * 4 * spb for i in range(4)],
+    )
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        bottom = p["levels"][0]["notes"]
+        assert any(routes._note_midi_keys(n) >= 60 for n in bottom)  # nosec B101 - pytest assertion
+
+
+def test_keys_two_hand_tiers_stay_nested():
+    arr, spb = _two_hand_keys_arrangement()
+    phrases = routes.generate_phrases_for_arrangement(
+        arr, n_levels=5, section_times=[i * 4 * spb for i in range(4)],
+    )
+    for p in phrases:
+        identities = [
+            {(n["t"], routes._note_midi_keys(n)) for n in lvl["notes"]}
+            for lvl in p["levels"]
+        ]
+        for lower, higher in pairwise(identities):
+            assert lower <= higher  # nosec B101 - pytest assertion
+
+
+def test_keys_melody_register_ignores_the_lower_hand_of_split_onsets():
+    # Many split onsets (low LH half, high RH half) plus LH-only fillers just
+    # below the median of ALL tops: reading the register off every group puts
+    # the cutoff in the accompaniment range and flags the filler as melody.
+    notes = []
+    for i in range(6):
+        notes += [_midi_note(i * 1.0, 40), _midi_note(i * 1.0, 76)]
+    notes += [_midi_note(i * 1.0 + 0.5, 50) for i in range(6)]
+    groups = routes._group_notes_keys(notes, [])
+    fillers = [g for g in groups if g["notes"][0]["s"] * 24 + g["notes"][0]["f"] == 50]
+    assert fillers and not any(g["melody"] for g in fillers)  # nosec B101 - pytest assertion
+
+
+def test_keys_turning_points_ignore_cross_hand_neighbours_at_one_onset():
+    arr, _ = _two_hand_keys_arrangement()
+    beats = [b["time"] for b in arr["beats"]]
+    tempo = routes._TempoParams.from_beats(beats, arr["beats"])
+    groups = routes._group_notes_keys(arr["notes"], [])
+    onset_sizes = {}
+    for g in groups:
+        onset_sizes[g["time"]] = onset_sizes.get(g["time"], 0) + 1
+    split_idx = {i for i, g in enumerate(groups) if onset_sizes[g["time"]] > 1}
+    turning = routes._melody_turning_points_keys(groups, tempo)
+    assert not (turning & split_idx)  # nosec B101 - pytest assertion
+
+
+def test_fretted_turning_points_still_count_a_note_sharing_an_onset_with_a_chord():
+    # The same-onset exclusion is keys-only: on the fretted path a lead note
+    # sounding with a chord block is still compared against its true melodic
+    # neighbours and can be a turning point.
+    def g(t, notes):
+        return {"type": "note" if len(notes) == 1 else "chord", "notes": notes, "time": t}
+    tempo = routes._TempoParams()
+    groups = [
+        g(0.0, [{"t": 0.0, "s": 2, "f": 3}]),
+        g(0.2, [{"t": 0.2, "s": 2, "f": 9}]),
+        g(0.2, [{"t": 0.2, "s": 1, "f": 3}, {"t": 0.2, "s": 0, "f": 3}]),
+        g(0.4, [{"t": 0.4, "s": 2, "f": 4}]),
+    ]
+    turning = routes._melody_turning_points(groups, (0,) * 6, 6, tempo)
+    assert 1 in turning  # nosec B101 - pytest assertion
+
+
+def test_keys_melody_bonus_keeps_cheap_melody_notes_distinguishable():
+    # Slow, sustained melody notes have a very low cost; the melody discount
+    # must neither drive a positive score to the 0.0 clamp nor collapse the
+    # ordering. Compared against the same groups scored WITHOUT the melody
+    # flag, so the existing beat-value discount (which can reach 0.0 on its
+    # own for the very cheapest notes) is not mistaken for the melody bonus.
+    sustains = [0.4, 0.8, 1.2, 1.6, 2.0, 2.4]
+    notes = [_midi_note(i * 2.0, 72 + (i % 5) * 2, sustains[i % len(sustains)]) for i in range(12)]
+    notes += [_midi_note(i * 2.0, 48, 3.0) for i in range(12)]
+    beats = [{"time": round(i * 0.5, 3), "measure": i // 4 if i % 4 == 0 else -1} for i in range(60)]
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    with_bonus = routes._group_notes_keys(notes, [])
+    routes._score_groups_keys(with_bonus, beat_times, tempo=tempo)
+    without = deepcopy(with_bonus)
+    for g in without:
+        g["melody"] = False
+    routes._score_groups_keys(without, beat_times, tempo=tempo)
+
+    pairs = [(w, o) for w, o in zip(with_bonus, without) if w["melody"] and o["retention_score"] > 0.0]
+    assert len(pairs) >= 3  # nosec B101 - pytest assertion
+    assert all(w["retention_score"] > 0.0 for w, _ in pairs)  # nosec B101 - pytest assertion
+    assert len({round(w["retention_score"], 9) for w, _ in pairs}) > 1  # nosec B101 - pytest assertion
+    for (wa, oa), (wb, ob) in pairwise(sorted(pairs, key=lambda p: p[1]["retention_score"])):
+        if oa["retention_score"] < ob["retention_score"]:
+            assert wa["retention_score"] < wb["retention_score"]  # nosec B101 - pytest assertion
+
+
+def test_keys_chordal_right_hand_still_reaches_the_bottom_tier():
+    # One left-hand note plus a 3-note right-hand voicing at every onset: the
+    # voicing's poly/span cost used to outrank the left-hand filler by far
+    # more than the melody bonus, leaving tier 0 with no melody at all.
+    beats = [{"time": round(i * 0.5, 3), "measure": i // 4 if i % 4 == 0 else -1} for i in range(40)]
+    notes = []
+    for i in range(40):
+        t = i * 0.5
+        notes.append(_midi_note(t, 48, 0.3))
+        notes += [_midi_note(t, m + (i % 5) * 2, 0.3) for m in (72, 76, 79)]
+    arr = {"type": "keys", "name": "Keys", "notes": notes, "chords": [],
+           "beats": beats, "sections": []}
+    phrases = routes.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[i * 4.0 for i in range(5)],
+    )
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        assert any(routes._note_midi_keys(n) >= 60 for n in p["levels"][0]["notes"])  # nosec B101 - pytest assertion
+
+
+def test_keys_split_onset_parts_share_one_density_and_speed():
+    # The two hand-parts of one onset are a single onset: neither the density
+    # nor the speed term may depend on the order they were emitted in.
+    notes = []
+    for i in range(8):
+        t = i * 0.15
+        notes += [_midi_note(t, 48, 0.1), _midi_note(t, 72 + i, 0.1)]
+    beats = [{"time": round(b * 0.5, 3)} for b in range(20)]
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    groups = routes._group_notes_keys(notes, [])
+    routes._score_groups_keys(groups, beat_times, tempo=tempo)
+    lower, upper = groups[0], groups[1]
+    assert lower["time"] == upper["time"]  # nosec B101 - pytest assertion
+    assert lower["cost"] == pytest.approx(upper["cost"])  # nosec B101 - pytest assertion
+
+
+def test_keys_authored_note_over_authored_chord_keeps_turning_point_candidacy():
+    # Only groups CREATED by a hand split are excluded from turning points; a
+    # separate authored single note that shares a timestamp with an authored
+    # chord is still a normal candidate.
+    notes = [_midi_note(0.0, 72), _midi_note(0.3, 76), _midi_note(0.6, 74)]
+    chords = [{"t": 0.3, "id": 0, "notes": [_midi_note(0.3, 48), _midi_note(0.3, 52)]}]
+    beats = [{"time": round(b * 0.5, 3)} for b in range(10)]
+    tempo = routes._TempoParams.from_beats([b["time"] for b in beats], beats)
+    groups = routes._group_notes_keys(notes, chords)
+    idx = next(i for i, g in enumerate(groups) if g["time"] == 0.3 and len(g["notes"]) == 1)
+    assert not groups[idx].get("hand_split")  # nosec B101 - pytest assertion
+    assert idx in routes._melody_turning_points_keys(groups, tempo)  # nosec B101 - pytest assertion
+
+
+def test_fretted_single_onset_window_discounts_both_boundary_groups(monkeypatch):
+    # A fretted window that starts and ends on the same instant (here a tail
+    # window holding one double stop, i.e. two groups at one time) must give
+    # the phrase-boundary discount to the first group AND to the last group,
+    # as before the keys hand split. The multi-group boundary handling is
+    # keys-only; the fretted path keeps one boundary group at each end.
+    notes = [{"t": round(i * 0.5, 3), "s": 2, "f": 3 + (i % 4), "sus": 0} for i in range(8)]
+    notes += [{"t": 4.0, "s": 5, "f": 8, "sus": 0}, {"t": 4.0, "s": 5, "f": 17, "sus": 0}]
+    arr = {"type": "lead", "name": "lead", "notes": notes, "chords": [],
+           "beats": [{"time": i * 0.5} for i in range(12)], "sections": [], "tuning": [0] * 6}
+
+    def tail_retention(bonus):
+        monkeypatch.setattr(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", bonus)
+        seen = []
+        real = routes._assign_tiers
+
+        def spy(groups, *a, **k):
+            seen.append({g["notes"][0]["f"]: g["retention_score"] for g in groups})
+            return real(groups, *a, **k)
+
+        monkeypatch.setattr(routes, "_assign_tiers", spy)
+        routes.generate_phrases_for_arrangement(arr, n_levels=4, section_times=[0.0, 2.0, 4.0])
+        monkeypatch.setattr(routes, "_assign_tiers", real)
+        return seen[-1]
+
+    bonus = 0.05
+    without, with_bonus = tail_retention(0.0), tail_retention(bonus)
+    # f8 is the FIRST group and f17 the LAST group of a window whose first and
+    # last onset coincide: each takes exactly one discount.
+    assert with_bonus[8] == pytest.approx(without[8] - bonus)  # nosec B101 - pytest assertion
+    assert with_bonus[17] == pytest.approx(without[17] - bonus)  # nosec B101 - pytest assertion
