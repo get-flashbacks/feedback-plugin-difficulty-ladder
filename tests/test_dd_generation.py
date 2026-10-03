@@ -4504,5 +4504,7 @@ def test_fretted_single_onset_window_discounts_both_boundary_groups(monkeypatch)
 
     bonus = 0.05
     without, with_bonus = tail_retention(0.0), tail_retention(bonus)
-    # f17 is the LAST group of a window whose first and last onset coincide.
+    # f8 is the FIRST group and f17 the LAST group of a window whose first and
+    # last onset coincide: each takes exactly one discount.
+    assert with_bonus[8] == pytest.approx(without[8] - bonus)  # nosec B101 - pytest assertion
     assert with_bonus[17] == pytest.approx(without[17] - bonus)  # nosec B101 - pytest assertion
