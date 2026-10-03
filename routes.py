@@ -2232,17 +2232,47 @@ _KEYS_BEAT_VALUE_COEF = 0.025
 _KEYS_MELODY_TURNING_BONUS = 0.025
 
 
+# A single hand spans roughly an octave (a 9th at a stretch). An interval this
+# wide INSIDE one simultaneous onset can't be one hand's chord voicing -- it is
+# a left-hand bass/accompaniment note sounding with a right-hand melody/chord.
+_KEYS_HAND_SPLIT_SEMITONES = 10
+# Retention discount for the melody (skyline) voice, in the same units as
+# _KEYS_BEAT_VALUE_COEF: sized to beat the cost spread between an equally
+# placed accompaniment filler and a melody note, so the bottom tier carries the
+# tune rather than whichever notes happen to be mechanically cheapest.
+_KEYS_MELODY_LINE_BONUS = 0.08
+
+
+def _split_keys_hands(ns):
+    """Split one simultaneous onset into (lower, upper) hand parts, or
+    (ns, []) when it reads as a single hand. Splits at the widest internal
+    interval when that interval is too wide for one hand to cover."""
+    if len(ns) < 2:
+        return list(ns), []
+    ranked = sorted(ns, key=_note_midi_keys)
+    gaps = [
+        (_note_midi_keys(ranked[i + 1]) - _note_midi_keys(ranked[i]), i)
+        for i in range(len(ranked) - 1)
+    ]
+    gap, at = max(gaps)
+    if gap < _KEYS_HAND_SPLIT_SEMITONES:
+        return ranked, []
+    return ranked[: at + 1], ranked[at + 1:]
+
+
 def _group_notes_keys(notes, chords, *, onset_window_ms=30):
     """Group keys notes into atomic units. No fretboard, so grouping is
     purely temporal: explicit chords stay chords, remaining notes sharing an
-    onset (within `onset_window_ms`) become a block-chord cluster."""
-    groups = []
+    onset (within `onset_window_ms`) become a block-chord cluster.
+
+    A cluster spanning both hands (bass + melody sounding together) is split
+    into one group per hand -- scoring it as a single huge chord made the
+    accompaniment's cheap filler outrank the tune at the bottom tier. The
+    topmost group of each onset is flagged `melody` (skyline) when it sits in
+    the arrangement's upper register; see `_score_groups_keys`."""
+    raw = []
     for ch in chords:
-        groups.append({
-            "type": "chord", "notes": list(ch.get("notes", []) or []), "chord": ch,
-            "time": float(ch.get("t", 0)), "cost": 0.0, "value": 0.0,
-            "retention_score": 0.0, "level": 0,
-        })
+        raw.append((float(ch.get("t", 0)), list(ch.get("notes", []) or []), ch))
 
     note_list = sorted((dict(n) for n in notes), key=lambda n: float(n.get("t", 0)))
     total = len(note_list)
@@ -2254,13 +2284,31 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
         while j < total and (float(note_list[j].get("t", 0)) - base_t) * 1000 <= onset_window_ms:
             cluster.append(note_list[j])
             j += 1
-        groups.append({
-            "type": "chord" if len(cluster) > 1 else "note",
-            "notes": cluster, "chord": None,
-            "time": base_t, "cost": 0.0, "value": 0.0,
-            "retention_score": 0.0, "level": 0,
-        })
+        raw.append((base_t, cluster, None))
         i = j
+
+    groups = []
+    for t, ns, chord in raw:
+        parts = [p for p in _split_keys_hands(ns) if p]
+        for pi, part in enumerate(parts):
+            groups.append({
+                "type": "chord" if (chord is not None or len(part) > 1) else "note",
+                "notes": part, "chord": chord, "time": t,
+                "cost": 0.0, "value": 0.0, "retention_score": 0.0, "level": 0,
+                # Only the upper part of a two-hand onset can be the melody;
+                # an unsplit onset is judged against the register below.
+                "melody": len(parts) > 1 and pi == len(parts) - 1,
+                "_split": len(parts) > 1,
+            })
+
+    # An unsplit onset is melody only if it sits in the upper register of the
+    # arrangement -- otherwise a left-hand-only filler would claim the bonus.
+    tops = sorted(max(_note_midi_keys(n) for n in g["notes"]) for g in groups if g["notes"])
+    median_top = tops[len(tops) // 2] if tops else 0
+    for g in groups:
+        if g["notes"] and not g["_split"]:
+            g["melody"] = max(_note_midi_keys(n) for n in g["notes"]) >= median_top
+        del g["_split"]
 
     groups.sort(key=lambda g: g["time"])
     return groups
@@ -2338,6 +2386,8 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
         retention_score = cost - _KEYS_BEAT_VALUE_COEF * value
         if gi in turning_points:
             retention_score -= _KEYS_MELODY_TURNING_BONUS
+        if g.get("melody"):
+            retention_score -= _KEYS_MELODY_LINE_BONUS
         g["cost"] = cost
         g["value"] = value
         g["retention_score"] = max(0.0, min(1.0, retention_score))

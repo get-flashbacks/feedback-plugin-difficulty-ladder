@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Keys/piano ladders no longer drop the tune at the bottom tier. A left-hand
+  note and a right-hand note sounding together were fused into one "chord"
+  cluster that scored as hard, so the lowest tiers kept cheap left-hand filler
+  and omitted the melody entirely. A cluster spanning both hands (internal gap
+  of a minor 7th or wider) now splits into one group per hand, and the melody (top)
+  voice earns a retention bonus, so tier 0 always includes the tune.
+
 ### Added
 - A render-neutral section payload, `difficulty_ladder.sections.v3` (#156, first
   tier-rail sub-issue of #131). The existing `difficulty:sections-updated` event

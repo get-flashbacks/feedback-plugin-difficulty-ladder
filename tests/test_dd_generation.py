@@ -4289,3 +4289,67 @@ def test_notes_for_level_keys_nesting_survives_an_octave_adjacent_interior_pair(
         tiers.append({routes._note_midi_keys(n) for n in reduced})
     for lower, higher in pairwise(tiers):
         assert lower <= higher  # nosec B101 - real superset nesting, no dropped-then-reappeared voice
+
+
+# ── Keys: two-hand texture (hand split + melody-first bottom tier) ───────────
+
+def _midi_note(t, midi, sus=0.4):
+    return {"t": round(t, 3), "s": midi // 24, "f": midi % 24, "sus": sus}
+
+
+def _two_hand_keys_arrangement(bars=4):
+    """LH broken-chord eighths under an RH quarter-note melody -- the common
+    piano texture where bass and tune share downbeats."""
+    spb = 0.6
+    melody = [72, 74, 76, 77, 79, 77, 76, 74]
+    lh = [48, 52, 55, 52, 48, 52, 55, 52]
+    notes, beats = [], []
+    for bar in range(bars):
+        for b in range(4):
+            beats.append({"time": round(bar * 4 * spb + b * spb, 3), "measure": bar if b == 0 else -1})
+        for e in range(8):
+            notes.append(_midi_note(bar * 4 * spb + e * spb / 2, lh[e]))
+        for k in range(4):
+            notes.append(_midi_note(bar * 4 * spb + k * spb, melody[(bar + k) % 8], 0.5))
+    return {
+        "type": "keys", "name": "Keys", "notes": notes, "chords": [],
+        "beats": beats, "sections": [], "tuning": [],
+    }, spb
+
+
+def test_keys_cluster_spanning_both_hands_splits_into_two_groups():
+    notes = [_midi_note(1.0, 48), _midi_note(1.0, 72)]
+    groups = routes._group_notes_keys(notes, [])
+    assert [len(g["notes"]) for g in groups] == [1, 1]  # nosec B101 - pytest assertion
+    assert [g["melody"] for g in groups] == [False, True]  # nosec B101 - pytest assertion
+
+
+def test_keys_single_hand_chord_is_not_split():
+    notes = [_midi_note(1.0, m) for m in (60, 64, 67, 72)]
+    groups = routes._group_notes_keys(notes, [])
+    assert len(groups) == 1 and len(groups[0]["notes"]) == 4  # nosec B101 - pytest assertion
+
+
+def test_keys_bottom_tier_carries_the_melody_not_accompaniment_filler():
+    arr, spb = _two_hand_keys_arrangement()
+    phrases = routes.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[i * 4 * spb for i in range(4)],
+    )
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        bottom = p["levels"][0]["notes"]
+        assert any(routes._note_midi_keys(n) >= 60 for n in bottom)  # nosec B101 - pytest assertion
+
+
+def test_keys_two_hand_tiers_stay_nested():
+    arr, spb = _two_hand_keys_arrangement()
+    phrases = routes.generate_phrases_for_arrangement(
+        arr, n_levels=5, section_times=[i * 4 * spb for i in range(4)],
+    )
+    for p in phrases:
+        identities = [
+            {(n["t"], routes._note_midi_keys(n)) for n in lvl["notes"]}
+            for lvl in p["levels"]
+        ]
+        for lower, higher in pairwise(identities):
+            assert lower <= higher  # nosec B101 - pytest assertion
