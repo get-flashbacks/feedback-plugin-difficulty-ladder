@@ -1086,7 +1086,18 @@ def _melody_turning_points(groups, tuning, n_strings, tempo, is_bass=False):
     intervening chord section, or either side of an unrelated authored
     phrase, could sit next to each other in `singles` and look like a
     contour turn that was never actually played that way."""
-    singles = [i for i, g in enumerate(groups) if len(g["notes"]) == 1]
+    # A single-note group that shares its onset with another group is one half
+    # of a two-hand onset (see _group_notes_keys); its neighbour at dt == 0 is
+    # the other hand, so comparing them says nothing about melodic shape.
+    # Leaving those onsets out matches the pre-split behaviour, where such an
+    # onset was one multi-note group and never a candidate.
+    onset_counts = {}
+    for g in groups:
+        onset_counts[g["time"]] = onset_counts.get(g["time"], 0) + 1
+    singles = [
+        i for i, g in enumerate(groups)
+        if len(g["notes"]) == 1 and onset_counts[g["time"]] == 1
+    ]
     pitches = {i: _approx_pitch(groups[i]["notes"][0], tuning, n_strings, is_bass) for i in singles}
     times = {i: float(groups[i]["time"]) for i in singles}
     max_gap = tempo.fret_jump_window_seconds
@@ -2303,7 +2314,15 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
 
     # An unsplit onset is melody only if it sits in the upper register of the
     # arrangement -- otherwise a left-hand-only filler would claim the bonus.
-    tops = sorted(max(_note_midi_keys(n) for n in g["notes"]) for g in groups if g["notes"])
+    # The register is read off the SKYLINE (the highest note at each onset),
+    # not off every group: a split onset's lower half would otherwise pull the
+    # median down into the accompaniment range.
+    skyline = {}
+    for g in groups:
+        if g["notes"]:
+            top = max(_note_midi_keys(n) for n in g["notes"])
+            skyline[g["time"]] = max(top, skyline.get(g["time"], top))
+    tops = sorted(skyline.values())
     median_top = tops[len(tops) // 2] if tops else 0
     for g in groups:
         if g["notes"] and not g["_split"]:
@@ -2322,7 +2341,18 @@ def _melody_turning_points_keys(groups, tempo):
     identical: a strict local high/low among single-note groups, gated by
     the same `tempo.fret_jump_window_seconds` "not one continuous passage"
     neighbor-gap bound."""
-    singles = [i for i, g in enumerate(groups) if len(g["notes"]) == 1]
+    # A single-note group that shares its onset with another group is one half
+    # of a two-hand onset (see _group_notes_keys); its neighbour at dt == 0 is
+    # the other hand, so comparing them says nothing about melodic shape.
+    # Leaving those onsets out matches the pre-split behaviour, where such an
+    # onset was one multi-note group and never a candidate.
+    onset_counts = {}
+    for g in groups:
+        onset_counts[g["time"]] = onset_counts.get(g["time"], 0) + 1
+    singles = [
+        i for i, g in enumerate(groups)
+        if len(g["notes"]) == 1 and onset_counts[g["time"]] == 1
+    ]
     pitches = {i: _note_midi_keys(groups[i]["notes"][0]) for i in singles}
     times = {i: float(groups[i]["time"]) for i in singles}
     max_gap = tempo.fret_jump_window_seconds
@@ -2940,17 +2970,27 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # blind 30s chunker) clamp their final window's end to `duration`,
         # so unlike an INTERNAL generated edge, the last window's end really
         # is the song's actual end (caught in PR #123 review).
+        # The boundary onset is every group sharing the first/last time: a
+        # two-hand onset is split into one group per hand (keys), and giving
+        # the bonus to only one half would leave the other (often the melody)
+        # without it.
         if windows_are_authored or widx == 0:
-            first = phrase_groups[0]
-            first["retention_score"] = max(
-                0.0, first["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
-            )
+            first_t = phrase_groups[0]["time"]
+            for first in phrase_groups:
+                if first["time"] != first_t:
+                    break
+                first["retention_score"] = max(
+                    0.0, first["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
+                )
         is_last_window = widx == len(windows) - 1
         if (windows_are_authored or is_last_window) and phrase_groups[-1] is not phrase_groups[0]:
-            last = phrase_groups[-1]
-            last["retention_score"] = max(
-                0.0, last["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
-            )
+            last_t = phrase_groups[-1]["time"]
+            for last in reversed(phrase_groups):
+                if last["time"] != last_t or last["time"] == phrase_groups[0]["time"]:
+                    break
+                last["retention_score"] = max(
+                    0.0, last["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
+                )
         # Every phrase is built on the same n_levels-tier scale (see
         # _assign_tiers); how many DISTINCT levels a phrase ends up with
         # follows from how hard its content is, once

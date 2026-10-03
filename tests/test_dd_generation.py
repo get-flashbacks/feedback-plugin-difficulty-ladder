@@ -4353,3 +4353,29 @@ def test_keys_two_hand_tiers_stay_nested():
         ]
         for lower, higher in pairwise(identities):
             assert lower <= higher  # nosec B101 - pytest assertion
+
+
+def test_keys_melody_register_ignores_the_lower_hand_of_split_onsets():
+    # Many split onsets (low LH half, high RH half) plus LH-only fillers just
+    # below the median of ALL tops: reading the register off every group puts
+    # the cutoff in the accompaniment range and flags the filler as melody.
+    notes = []
+    for i in range(6):
+        notes += [_midi_note(i * 1.0, 40), _midi_note(i * 1.0, 76)]
+    notes += [_midi_note(i * 1.0 + 0.5, 50) for i in range(6)]
+    groups = routes._group_notes_keys(notes, [])
+    fillers = [g for g in groups if g["notes"][0]["s"] * 24 + g["notes"][0]["f"] == 50]
+    assert fillers and not any(g["melody"] for g in fillers)  # nosec B101 - pytest assertion
+
+
+def test_keys_turning_points_ignore_cross_hand_neighbours_at_one_onset():
+    arr, _ = _two_hand_keys_arrangement()
+    beats = [b["time"] for b in arr["beats"]]
+    tempo = routes._TempoParams.from_beats(beats, arr["beats"])
+    groups = routes._group_notes_keys(arr["notes"], [])
+    onset_sizes = {}
+    for g in groups:
+        onset_sizes[g["time"]] = onset_sizes.get(g["time"], 0) + 1
+    split_idx = {i for i, g in enumerate(groups) if onset_sizes[g["time"]] > 1}
+    turning = routes._melody_turning_points_keys(groups, tempo)
+    assert not (turning & split_idx)  # nosec B101 - pytest assertion
