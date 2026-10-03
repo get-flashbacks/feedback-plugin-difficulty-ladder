@@ -4400,12 +4400,19 @@ def test_fretted_turning_points_still_count_a_note_sharing_an_onset_with_a_chord
 
 def test_keys_melody_bonus_keeps_cheap_melody_notes_distinguishable():
     # Slow, sustained melody notes have a very low cost; the melody discount
-    # must not drive them all to the 0.0 clamp, where they would tie.
-    notes = [_midi_note(i * 2.0, 72 + (i % 5) * 2, 3.0) for i in range(12)]
+    # must neither drive them to the 0.0 clamp nor collapse their ordering.
+    # Sustains differ so the notes' costs differ; every onset is a downbeat,
+    # so beat value is identical and cost alone should order the scores.
+    sustains = [0.4, 0.8, 1.2, 1.6, 2.0, 2.4]
+    notes = [_midi_note(i * 2.0, 72 + (i % 5) * 2, sustains[i % len(sustains)]) for i in range(12)]
     notes += [_midi_note(i * 2.0, 48, 3.0) for i in range(12)]
     beats = [{"time": round(i * 0.5, 3), "measure": i // 4 if i % 4 == 0 else -1} for i in range(60)]
     tempo = routes._TempoParams.from_beats([b["time"] for b in beats], beats)
     groups = routes._group_notes_keys(notes, [])
     routes._score_groups_keys(groups, [b["time"] for b in beats], tempo=tempo)
-    melody = [g["retention_score"] for g in groups if g["melody"]]
-    assert melody and all(score > 0.0 for score in melody)  # nosec B101 - pytest assertion
+    melody = [g for g in groups if g["melody"]]
+    assert melody and all(g["retention_score"] > 0.0 for g in melody)  # nosec B101 - pytest assertion
+    assert len({round(g["retention_score"], 9) for g in melody}) > 1  # nosec B101 - pytest assertion
+    for a_, b_ in pairwise(sorted(melody, key=lambda g: g["cost"])):
+        if a_["cost"] < b_["cost"]:
+            assert a_["retention_score"] < b_["retention_score"]  # nosec B101 - pytest assertion
