@@ -2996,8 +2996,9 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             last_t = phrase_groups[-1]["time"]
             for last in reversed(phrase_groups):
                 if (
-                    last["time"] != last_t or last["time"] == phrase_groups[0]["time"]
+                    last["time"] != last_t
                     or (not is_keys and last is not phrase_groups[-1])
+                    or (is_keys and last["time"] == phrase_groups[0]["time"])
                 ):
                     break
                 last["retention_score"] = max(

@@ -4475,3 +4475,34 @@ def test_keys_authored_note_over_authored_chord_keeps_turning_point_candidacy():
     idx = next(i for i, g in enumerate(groups) if g["time"] == 0.3 and len(g["notes"]) == 1)
     assert not groups[idx].get("hand_split")  # nosec B101 - pytest assertion
     assert idx in routes._melody_turning_points_keys(groups, tempo)  # nosec B101 - pytest assertion
+
+
+def test_fretted_single_onset_window_discounts_both_boundary_groups(monkeypatch):
+    # A fretted window that starts and ends on the same instant (here a tail
+    # window holding one double stop, i.e. two groups at one time) must give
+    # the phrase-boundary discount to the first group AND to the last group,
+    # as before the keys hand split. The multi-group boundary handling is
+    # keys-only; the fretted path keeps one boundary group at each end.
+    notes = [{"t": round(i * 0.5, 3), "s": 2, "f": 3 + (i % 4), "sus": 0} for i in range(8)]
+    notes += [{"t": 4.0, "s": 5, "f": 8, "sus": 0}, {"t": 4.0, "s": 5, "f": 17, "sus": 0}]
+    arr = {"type": "lead", "name": "lead", "notes": notes, "chords": [],
+           "beats": [{"time": i * 0.5} for i in range(12)], "sections": [], "tuning": [0] * 6}
+
+    def tail_retention(bonus):
+        monkeypatch.setattr(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", bonus)
+        seen = []
+        real = routes._assign_tiers
+
+        def spy(groups, *a, **k):
+            seen.append({g["notes"][0]["f"]: g["retention_score"] for g in groups})
+            return real(groups, *a, **k)
+
+        monkeypatch.setattr(routes, "_assign_tiers", spy)
+        routes.generate_phrases_for_arrangement(arr, n_levels=4, section_times=[0.0, 2.0, 4.0])
+        monkeypatch.setattr(routes, "_assign_tiers", real)
+        return seen[-1]
+
+    bonus = 0.05
+    without, with_bonus = tail_retention(0.0), tail_retention(bonus)
+    # f17 is the LAST group of a window whose first and last onset coincide.
+    assert with_bonus[17] == pytest.approx(without[17] - bonus)  # nosec B101 - pytest assertion
