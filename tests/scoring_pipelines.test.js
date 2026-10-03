@@ -38,9 +38,11 @@ const vm = require('node:vm');
 
 // Fixed, repo-relative path to the plugin under test; nothing here is user input.
 const SCREEN_JS = require.resolve('../screen.js');
-// The vm harness needs the plugin's source text. The read uses a literal path
-// (relative to the repo root, where `node --test` is run per CLAUDE.md) rather
-// than a computed one, so no path is built at runtime.
+// The vm harness needs the plugin's source text. It is read with a literal path
+// (relative to the repo root, where `node --test` is run per CLAUDE.md): Codacy
+// flags a read whose argument is a variable or computed path
+// (the previous `fs.readFileSync(SCREEN_JS)` form), so the trade is a working-
+// directory dependency, reported with a clear message below.
 let SCREEN_SRC;
 try {
     SCREEN_SRC = fs.readFileSync('screen.js', 'utf8');
