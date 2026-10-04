@@ -2506,32 +2506,37 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
     for gi, g in enumerate(groups):
         ns = g["notes"]
         anchor = (sum(_note_midi_keys(n) for n in ns) / len(ns)) if ns else None
-        prev_i = prev_by_hand.get(g.get("hand"))
-        if prev_i is None and anchor is not None and not g.get("hand_split"):
+        is_split = bool(g.get("hand_split"))
+        hand = g.get("hand")
+        key = (hand, is_split)
+        prev_i = prev_by_hand.get(key)
+        if prev_i is None and anchor is not None and not is_split:
             # Fallback predecessor: the nearest earlier group that actually
             # holds notes, skipping notes-less ones for the same reason they
-            # are not recorded as predecessors above.
+            # are not recorded as predecessors above. Only inherit from groups
+            # that are also NOT split-created to avoid crossing the namespace.
             j = gi - 1
             while j >= 0 and anchors[j] is None:
                 j -= 1
-            prev_i = j if j >= 0 else None
-        if anchor is None or prev_i is None or anchors[prev_i] is None:
-            leap_by_index.append(0.0)
-        else:
+            if j >= 0:
+                prev_candidate = j
+                cand_available = float(g["time"]) - float(groups[prev_candidate]["time"])
+                if cand_available > 0.0 and cand_available <= tempo.fret_jump_window_seconds:
+                    prev_i = prev_candidate
+                # If candidate is outside the window, do not chain to it; leave prev_i as None.
+        charged = False
+        if anchor is not None and prev_i is not None and anchors[prev_i] is not None:
             available = float(g["time"]) - float(groups[prev_i]["time"])
-            if available > tempo.fret_jump_window_seconds:
-                # Past the movement window this is no longer one continuous
-                # passage, so the hand had time to reposition -- the same
-                # "long enough that this isn't one move" bound
-                # `_melody_turning_points_keys` and the fretted shift bonus use.
-                leap_by_index.append(0.0)
-            else:
+            if available > 0.0 and available <= tempo.fret_jump_window_seconds:
                 leap_by_index.append(
                     _keys_leap_bonus(abs(anchor - anchors[prev_i]), available, tempo)
                 )
+                charged = True
+        if not charged:
+            leap_by_index.append(0.0)
         anchors.append(anchor)
         if anchor is not None:
-            prev_by_hand[g.get("hand")] = gi
+            prev_by_hand[(hand, is_split)] = gi
     for gi, g in enumerate(groups):
         ns = g["notes"]
         if not ns:

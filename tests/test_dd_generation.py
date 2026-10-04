@@ -4553,7 +4553,10 @@ def test_keys_split_onset_parts_share_one_density_and_speed(monkeypatch):
     # describes.
     ordered = routes._group_notes_keys(notes, [])
     routes._score_groups_keys(ordered, beat_times, tempo=tempo)
-    swapped_order = [g for pair in zip(ordered[::2], ordered[1::2]) for g in reversed(pair)]
+    # Build the second group list independently so scoring doesn't mutate
+    # shared dict objects (which would make the comparison vacuous).
+    ordered2 = routes._group_notes_keys(notes, [])
+    swapped_order = [g for pair in zip(ordered2[::2], ordered2[1::2]) for g in reversed(pair)]
     routes._score_groups_keys(swapped_order, beat_times, tempo=tempo)
     assert [g["hand"] for g in ordered] == ["lower", "upper"] * 8  # nosec B101 - pytest assertion
     assert [g["hand"] for g in swapped_order] == ["upper", "lower"] * 8  # nosec B101 - really reversed
