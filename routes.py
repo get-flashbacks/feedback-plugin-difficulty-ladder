@@ -2242,6 +2242,32 @@ _KEYS_HAND_SPLIT_SEMITONES = 10
 # tune rather than whichever notes happen to be mechanically cheapest.
 _KEYS_MELODY_LINE_BONUS = 0.08
 
+# #177: hand-position shift on the keys path -- the keys counterpart of the
+# fretted path's `_fitts_shift_bonus` (#103/B4 / issue #19), which the keys
+# path had no equivalent of, so a passage leaping two octaves every beat cost
+# exactly the same as a stepwise one.
+# Target width: a hand shifts for free within about a fourth. That is the
+# "no cost" width the log2 index is measured from, mirroring the fretted
+# path's conservative two-fret target width -- both are the tolerance of a
+# held hand position, not a threshold at which movement begins costing.
+_KEYS_LEAP_TARGET_WIDTH_SEMITONES = 5.0
+# Reference distance: a twelfth (an octave plus a fifth), roughly the widest
+# leap a hand plays comfortably in one go. At or beyond this the term
+# saturates, so a passage's worst jump cannot dominate its cost.
+_KEYS_LEAP_REFERENCE_SEMITONES = 19.0
+# Cap: about half the fretted `_SHIFT_MAX_BONUS` (0.10), for the same reason
+# `_KEYS_BEAT_VALUE_COEF` is 0.025 rather than the fretted 0.12 -- the keys
+# `cost` scale has a far narrower range than the fretted one (a melodic
+# single-note keys passage spread ~0.10 across an entire phrase, measured in
+# PR #126 review), so 0.10 here would be as large as the whole signal it
+# nudges. Still deliberately TWICE `_KEYS_BEAT_VALUE_COEF`: metrical position
+# is the weaker of the two signals for a beginner actually playing the note
+# (they can see the barline, they cannot see the span their hand must cross),
+# so a two-octave jump should outweigh the beat discount rather than be
+# outweighed by it. Must stay under the fretted beat coefficient 0.12 -- see
+# the term-vs-metrical-weight guard in the tests.
+_KEYS_LEAP_MAX_BONUS = 0.05
+
 
 def _split_keys_hands(ns):
     """Split one simultaneous onset into (lower, upper) hand parts, or
@@ -2258,6 +2284,49 @@ def _split_keys_hands(ns):
     if gap < _KEYS_HAND_SPLIT_SEMITONES:
         return ranked, []
     return ranked[: at + 1], ranked[at + 1:]
+
+
+def _keys_leap_bonus(distance, available_seconds, tempo):
+    """Keys counterpart of `_fitts_shift_bonus` (#177): a bounded per-hand
+    hand-position shift cost, where a longer interval lowers the same move.
+
+    Same bounded-log + time-pressure shape as the fretted term, re-derived on
+    a pitch scale rather than a fret scale, and reusing
+    `tempo.fret_jump_window_seconds` as its tempo-relative pressure scale (the
+    fretted path's window, not a new tempo constant): "how much time the
+    player has to move the hand" is one question with one answer per path.
+    Like `_fitts_shift_bonus` this is a model of relative difficulty, not an
+    estimate of actual human movement time.
+
+    DIFFERENCE FROM THE FRETTED TERM, AND IT IS A REAL ONE -- but note WHERE
+    it lives: `_keys_leap_bonus` itself is smooth in `available_seconds`, like
+    `_fitts_shift_bonus`. The cutoff is added entirely CALLER-SIDE, by the
+    `available > tempo.fret_jump_window_seconds` branch in `_score_groups_keys`.
+    `_fitts_shift_bonus`'s docstring says of its own window that it is "a
+    tempo-relative pressure scale, no longer a hard cutoff", and the keys caller
+    reintroduces one: it zeroes the term outright just past that window, which
+    puts a discontinuity in `cost` at the window edge (measured worst case
+    0.0279 over a grid of windows and distances, 1.12x the whole
+    `_KEYS_BEAT_VALUE_COEF` of 0.025, out of a 1 ms change in the inter-onset
+    gap). That cutoff is a DELIBERATE KEYS-ONLY ADDITION, kept because the
+    issue text points at this window and because
+    `_melody_turning_points_keys` bounds the same way: past the window this is
+    no longer one continuous passage, and a movement charge that ignored the
+    gap entirely would let one distant pair of notes dominate a phrase. It is
+    kept despite the cliff, not by accident of sharing the constant.
+    """
+    if distance <= 0:
+        return 0.0
+    index = math.log2(distance / _KEYS_LEAP_TARGET_WIDTH_SEMITONES + 1.0)
+    reference = math.log2(
+        _KEYS_LEAP_REFERENCE_SEMITONES / _KEYS_LEAP_TARGET_WIDTH_SEMITONES + 1.0
+    )
+    time_scale = max(float(tempo.fret_jump_window_seconds), 0.001)
+    pressure = time_scale / (time_scale + max(float(available_seconds), 0.0))
+    return min(
+        _KEYS_LEAP_MAX_BONUS,
+        _KEYS_LEAP_MAX_BONUS * index / reference * pressure,
+    )
 
 
 def _group_notes_keys(notes, chords, *, onset_window_ms=30):
@@ -2302,6 +2371,13 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
                 # An authored chord and a separate single note that merely
                 # share a timestamp are NOT split groups.
                 "hand_split": len(parts) > 1,
+                # Which hand plays this group (#177). A split onset's halves
+                # are exactly the (lower, upper) `_split_keys_hands`
+                # returned, and an unsplit onset is one hand by definition of
+                # the 10-semitone threshold -- that one is assigned by register
+                # in the skyline loop below, using the same judgement that
+                # picks the melody.
+                "hand": None if len(parts) < 2 else ("lower", "upper")[pi],
             })
 
     # An unsplit onset is melody only if it sits in the upper register of the
@@ -2317,8 +2393,22 @@ def _group_notes_keys(notes, chords, *, onset_window_ms=30):
     tops = sorted(skyline.values())
     median_top = tops[len(tops) // 2] if tops else 0
     for g in groups:
-        if g["notes"] and not g["hand_split"]:
-            g["melody"] = max(_note_midi_keys(n) for n in g["notes"]) >= median_top
+        if not g["notes"] or g["hand_split"]:
+            continue
+        in_upper_register = max(_note_midi_keys(n) for n in g["notes"]) >= median_top
+        g["melody"] = in_upper_register
+        # Hand identity comes off the SAME register judgement, computed in the
+        # same loop, rather than a second pass: deciding which voice owns a
+        # register is one judgement, and for an UNSPLIT onset the hand is the
+        # one that owns the register it sits in. Reusing `median_top` here (not
+        # a separate mean or span test) is what keeps the two assignments
+        # consistent by construction -- the leap term in `_score_groups_keys`
+        # then reads `hand` as meaning exactly what `melody` meant. It is a
+        # register GUESS, not an observed fingering: on a single melodic line
+        # that straddles the median the label alternates with the pitch, which
+        # is why `_score_groups_keys` falls back to the preceding group when a
+        # group has no same-hand predecessor.
+        g["hand"] = "upper" if in_upper_register else "lower"
 
     groups.sort(key=lambda g: g["time"])
     return groups
@@ -2367,6 +2457,81 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
     # the fretted path (_score_groups) had either term, so a keys chart's
     # ladder ignored metrical position and melodic shape entirely.
     turning_points = _melody_turning_points_keys(groups, tempo)
+    # #177: per-hand hand-position shift, precomputed in one linear pass so the
+    # scoring loop itself never rescans. Each group is anchored at the MEAN of
+    # its MIDI pitches (`_note_midi_keys`, so a single-note group anchors at
+    # that note): the fretted path's anchor is a fret-position PROXY, whereas
+    # a keys note carries exact pitch, and a hand's position is best read as
+    # the centre of the pitches it is holding rather than its top or bottom
+    # note -- for a multi-note voicing the extremes belong to whichever voice
+    # reaches furthest, not to the hand as a whole.
+    #
+    # A group's predecessor is the previous group of the SAME hand in list
+    # order (groups arrive time-sorted), never simply the previous group: the
+    # two hand-parts of a split onset are different hands playing at the same
+    # instant, so neither is the other's "previous position" -- scoring them
+    # against each other would charge the pair a phantom leap on both halves
+    # of every single split onset. Keying the lookup by `hand` (rather than by
+    # parity, or by "the group before this one") also makes the result
+    # independent of the order those parts were emitted in, the same
+    # emission-order independence `speed` below already relies on.
+    #
+    # The `hand` tag is a REGISTER judgement, not an observed fingering: for
+    # an unsplit onset it is exactly the `melody` test (see
+    # `_group_notes_keys`). On a SINGLE melodic line whose contour straddles
+    # the skyline median that label alternates lower/upper with every pitch,
+    # so no group ever has a same-hand predecessor and the whole term would
+    # silently evaluate to zero -- 41 semitones of dive free, which is the
+    # exact failure #177 exists to remove. So a group with no same-hand
+    # predecessor falls back to the group immediately before it in list
+    # order: strictly conservative (a real hand must get from the last thing
+    # it played to this one), and monotone in real travel.
+    #
+    # The fallback is gated OFF for a group CREATED by a hand split
+    # (`hand_split`): such a group's `hand` comes from `_split_keys_hands`, so
+    # having no same-hand predecessor genuinely means "this hand has not
+    # played yet", and the group before it is the OTHER half of its own
+    # onset -- at the same timestamp, a zero gap, and a full hand span away.
+    # The upper part of the FIRST two-hand onset would otherwise be charged
+    # that entire span for a move it never makes.
+    #
+    # Groups with no notes are skipped as predecessors too: a hand's position
+    # is read off notes it is playing, so an empty group is not a position.
+    # A group built outside `_group_notes_keys` (a unit-test fixture) has no
+    # `hand` at all; `g.get("hand")` reads that as one hand, which is the
+    # conservative reading and matches an unsplit single-hand passage.
+    leap_by_index = []
+    anchors = []
+    prev_by_hand = {}
+    for gi, g in enumerate(groups):
+        ns = g["notes"]
+        anchor = (sum(_note_midi_keys(n) for n in ns) / len(ns)) if ns else None
+        prev_i = prev_by_hand.get(g.get("hand"))
+        if prev_i is None and anchor is not None and not g.get("hand_split"):
+            # Fallback predecessor: the nearest earlier group that actually
+            # holds notes, skipping notes-less ones for the same reason they
+            # are not recorded as predecessors above.
+            j = gi - 1
+            while j >= 0 and anchors[j] is None:
+                j -= 1
+            prev_i = j if j >= 0 else None
+        if anchor is None or prev_i is None or anchors[prev_i] is None:
+            leap_by_index.append(0.0)
+        else:
+            available = float(g["time"]) - float(groups[prev_i]["time"])
+            if available > tempo.fret_jump_window_seconds:
+                # Past the movement window this is no longer one continuous
+                # passage, so the hand had time to reposition -- the same
+                # "long enough that this isn't one move" bound
+                # `_melody_turning_points_keys` and the fretted shift bonus use.
+                leap_by_index.append(0.0)
+            else:
+                leap_by_index.append(
+                    _keys_leap_bonus(abs(anchor - anchors[prev_i]), available, tempo)
+                )
+        anchors.append(anchor)
+        if anchor is not None:
+            prev_by_hand[g.get("hand")] = gi
     for gi, g in enumerate(groups):
         ns = g["notes"]
         if not ns:
@@ -2415,8 +2580,8 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
         )
         # Same operation order as the fretted path's _score_groups: base
         # cost, then the beat-value discount and melody-turning bonus, then
-        # the final clamp. `value` feeds `_assign_tiers`'s tie-break exactly
-        # as it does on the fretted path.
+        # the jump bonuses, then the final clamp. `value` feeds
+        # `_assign_tiers`'s tie-break exactly as it does on the fretted path.
         value = _beat_value(g["time"], beat_times, tempo)
         retention_score = cost - _KEYS_BEAT_VALUE_COEF * value
         if gi in turning_points:
@@ -2427,6 +2592,22 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
             # alongside every other one; r - min(b, r/2) is strictly
             # increasing in r, so ordering among melody groups is preserved.
             retention_score -= min(_KEYS_MELODY_LINE_BONUS, retention_score / 2.0)
+        # #177: the leap term is mechanical, so -- exactly like the fretted
+        # path's fret_jump_bonus -- it raises `cost` and `retention_score`
+        # together. It must NOT touch the cost/retention separation the
+        # beat-value discount established: `cost` stays intrinsic mechanical
+        # difficulty, and the only thing `retention_score` does on top of it is
+        # subtract the metrical discount. `cost` is left unclamped here to
+        # MIRROR `_score_groups`'s convention, NOT because keys `cost` can
+        # reach 1.0 -- it cannot, and claiming so is wrong for this path. The
+        # keys base formula's analytic ceiling is 0.9875 (poly and span both
+        # saturate at 1.0) and the highest value measured over ~60k dense
+        # clusters was 0.1750, so `min(1.0, ...)` is a no-op on any input seen
+        # so far and adding it would be a behaviour change dressed as
+        # tidiness. Only `retention_score` is clamped, as before.
+        leap_bonus = leap_by_index[gi]
+        cost += leap_bonus
+        retention_score += leap_bonus
         g["cost"] = cost
         g["value"] = value
         g["retention_score"] = max(0.0, min(1.0, retention_score))

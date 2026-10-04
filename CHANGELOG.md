@@ -91,6 +91,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   walked the remembered value down by one offset per such session. The ramp's
   first adjustment, or a manual slider move, re-persists from wherever it
   leaves the slider.
+- Keys/piano ladders now charge for large hand-position shifts (#177, first
+  tier-ladder sub-issue of the #175 difficulty-ladder roadmap; #103's evidence
+  convention applies as documented in the neighbouring #182 keys entry). The
+  fretted path has penalised a big fret jump since #19
+  (`_fitts_shift_bonus`), and `_score_groups_keys` had no equivalent, so a
+  passage leaping two octaves every beat cost exactly as much as a stepwise
+  one — on a keyboard the reach of the hand, which is the movement a beginner
+  is most likely to miss or fumble, was invisible to the model. `_group_notes_keys`
+  now tags each notes-bearing group with the `"hand"` that plays it: a split
+  onset's halves are exactly the lower/upper parts `_split_keys_hands`
+  returned, and an unsplit onset — one hand by definition of the
+  10-semitone threshold — is assigned by register in the same pass, off the
+  same skyline median, that decides which voice is the melody. That label is a
+  register GUESS, not an observed fingering: on a single melodic line whose
+  contour straddles the median it alternates lower/upper with every pitch, so
+  taken alone no group would ever have a same-hand predecessor and the term
+  would silently evaluate to zero. `_score_groups_keys` therefore measures each
+  group against the previous group of the SAME hand, falling back to the group
+  immediately before it when the same-hand lookup comes up empty — conservative,
+  since a real hand must get from the last thing it played to this one, and
+  monotone in real travel. The fallback is gated OFF for a group created by a
+  hand split: there, having no same-hand predecessor genuinely means the hand
+  has not played yet, and the group before it is the other half of the SAME
+  onset — same timestamp, full hand span — which the upper part of a first
+  two-hand onset must not be charged. Groups are anchored at the mean of their
+  MIDI pitches (keys notes carry exact pitch, so a hand's position is best read
+  as the centre of the pitches it is holding rather than its top or bottom note),
+  and the charge is `_keys_leap_bonus` — the same bounded
+  `log2(distance / target + 1)` index under the same time-pressure discount as
+  the fretted shift bonus, reusing `tempo.fret_jump_window_seconds` rather than
+  adding a new tempo constant, and zeroed outright past that window (a
+  deliberate keys-only addition: the fretted term treats its window as a pure
+  pressure scale with no cutoff, and dropping the keys charge there costs a
+  visible step in `cost`). Per-hand scoping matters: scoring the two halves of
+  one split onset against each other would charge a phantom leap to both halves
+  of every single onset. Constants: a 5-semitone target width (a hand shifts
+  for free within about a fourth), a 19-semitone reference (a twelfth, where
+  the term saturates), and a 0.05 cap — about half the fretted 0.10, because
+  the keys `cost` scale has a much narrower range than the fretted one (a
+  melodic single-note keys passage spread ~0.10 across an entire phrase,
+  measured in PR #126 review, versus the fretted path's typical 0.3–0.6), but
+  still twice `_KEYS_BEAT_VALUE_COEF` because for a beginner the span the hand
+  must cross is a bigger obstacle than the metrical position the note sits on.
+  Measured on fixtures that hold onsets, note counts and sustain fixed, so
+  poly/span/density/speed are equal by construction. Two hand chains, the
+  leaping one moving a full two octaves per move: mean cost 0.2228 against
+  0.2039 stepwise (mean `retention_score` 0.1448 against 0.1259), charging
+  +0.0280 per two-octave move against +0.0054 per whole tone. A SINGLE melodic
+  line — the case the register tag alone got wrong — zig-zagging two octaves
+  per note charges 0.1868 against 0.0501 for the same line walking in whole
+  tones, with 41 semitones of dive inside a single line charged 0.0260 where
+  the whole term used to read 0.0000. End to end through the generator, the
+  property that actually holds at every interval size is that the reported
+  difficulty cost rises: over a sweep of uniform-interval fixtures from k = 0
+  to k = 19 semitones, `difficulty_cost` increases strictly at every step
+  (0.1987 → 0.2154 and 0.1925 → 0.2175 across the two phrases) with all 12
+  notes surviving at the top tier throughout and the tier ladder nested at every
+  size, while the same sweep with the term disabled is flat at 0.1925 / 0.1925.
+  The bottom tier itself is NOT what moves — a uniform per-group shift barely
+  reorders a passage — so no absolute tier count is claimed or pinned. The term
+  is folded in exactly where the fretted path folds its shift bonus — added to
+  both `cost` and `retention_score`, after the beat-value discount and the
+  melody bonuses and before the final clamp, with `cost` left unclamped to
+  mirror `_score_groups` (on this path that clamp is not currently reachable:
+  the base formula's analytic ceiling is 0.9875) — so the cost/retention
+  separation #72/B1 established is untouched. Keys only: the
+  fretted path's own `fret_jump` term is unchanged.
 - Opt-in "Level up only" setting (#111). While on, Adaptive mode raises the
   master-difficulty slider as usual but never lowers it: a below-threshold
   phrase yields no ramp direction at all rather than a step-down, so

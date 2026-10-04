@@ -1295,7 +1295,21 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None, t
 
 
 def _legacy_keys_scores(groups, *, tempo=None):
-    """Independent oracle for the pre-split Keys score implementation."""
+    """Independent oracle for the pre-split Keys score implementation.
+
+    Deliberately BASE-FORMULA ONLY: this re-implements the poly / span /
+    density / speed / sustain cost from scratch, sharing no code with
+    `routes.py`'s implementation, and that independence is the whole point of
+    the pin -- it can catch a change to any of those five terms, including one
+    introduced by accident while editing something else.
+
+    It deliberately does NOT model #177's per-hand leap term. That term is
+    additive on top of this base and is pinned separately against
+    `routes._keys_leap_bonus` in
+    `test_keys_cost_exactly_matches_legacy_formula`; folding it in here would
+    make this oracle depend on the very implementation it exists to
+    independently check. The name stays accurate: the oracle IS the legacy
+    (base) formula."""
     tempo = tempo or routes._TempoParams()
     legacy = deepcopy(groups)
     total = len(legacy)
@@ -1416,6 +1430,21 @@ def test_keys_cost_and_retention_score_remain_identical_with_no_value():
 
 @pytest.mark.parametrize("sustain", [0, 2.0, -0.5, "2.0"])
 def test_keys_cost_exactly_matches_legacy_formula(sustain):
+    # The base formula is pinned INDEPENDENTLY by `_legacy_keys_scores`, an
+    # oracle that shares no code with the implementation; #177 then added a
+    # movement term on top of that base, so cost is pinned as base + leap
+    # rather than base alone.
+    #
+    # What the leap half of this expectation does and does NOT pin, stated
+    # honestly: it pins WHERE the leap is added (both `cost` and
+    # `retention_score`), AGAINST WHAT anchor (the mean of the group's MIDI
+    # pitches) and AGAINST WHOM (the previous group of the same hand). It
+    # does NOT pin the unit's shape or magnitude -- it calls the same
+    # `routes._keys_leap_bonus` production calls, so any change to the helper
+    # moves the expectation with it. Those are pinned separately, by hand, in
+    # `test_keys_leap_bonus_matches_its_documented_formula`. The anchor choice
+    # (mean, not max or min) is what this test catches: it is the sole catcher
+    # of that mutation, since the leap is the only term that reads an anchor.
     groups = [
         {"time": 0.0, "notes": []},
         {"time": 0.1, "notes": [
@@ -1424,9 +1453,32 @@ def test_keys_cost_exactly_matches_legacy_formula(sustain):
         ]},
         {"time": 0.2, "notes": [{"s": 3, "f": 7, "sus": sustain}]},
     ]
-    expected = _legacy_keys_scores(groups)
+    tempo = routes._TempoParams()
+    base = _legacy_keys_scores(groups)
+    expected = list(base)
+    # Anchor = mean of the group's MIDI pitches (`s * 24 + f`); group 1 sits
+    # at (48 + 60) / 2 and group 2 (one note, unsplit hand) at 79.
+    anchors = [
+        (
+            sum(routes._note_midi_keys(n) for n in g["notes"]) / len(g["notes"])
+            if g["notes"] else None
+        )
+        for g in groups
+    ]
+    # Group 0 is empty (no position) and group 1 is the first group of its
+    # hand, so only group 2 carries a leap: 0.1s after its predecessor, well
+    # inside the default 1.0s movement window.
+    assert anchors[1] is not None  # nosec B101 - pytest assertion
+    expected[2] += routes._keys_leap_bonus(
+        abs(anchors[2] - anchors[1]),
+        float(groups[2]["time"]) - float(groups[1]["time"]),
+        tempo,
+    )
+    # Guard the guard: if the fixture ever stopped producing a leap the test
+    # would silently degrade into re-pinning the base formula alone.
+    assert expected[2] > base[2]  # nosec B101 - pytest assertion
 
-    routes._score_groups_keys(groups)
+    routes._score_groups_keys(groups, tempo=tempo)
 
     assert [g["cost"] for g in groups] == expected  # nosec B101 - pytest assertion
     assert [g["retention_score"] for g in groups] == expected  # nosec B101 - pytest assertion
@@ -4446,9 +4498,18 @@ def test_keys_chordal_right_hand_still_reaches_the_bottom_tier():
         assert any(routes._note_midi_keys(n) >= 60 for n in p["levels"][0]["notes"])  # nosec B101 - pytest assertion
 
 
-def test_keys_split_onset_parts_share_one_density_and_speed():
+def test_keys_split_onset_parts_share_one_density_and_speed(monkeypatch):
     # The two hand-parts of one onset are a single onset: neither the density
     # nor the speed term may depend on the order they were emitted in.
+    #
+    # #177 added a movement term that is deliberately NOT shared by the two
+    # halves -- they are different hands, and here the upper one climbs a
+    # semitone per onset while the lower one holds, so the halves legitimately
+    # cost different amounts. The original `lower["cost"] == upper["cost"]`
+    # assertion would therefore have been measuring the movement term, not
+    # density and speed. It is therefore run with the term switched off, and
+    # the companion assertion below pins exactly what the term does to the
+    # difference instead of silently dropping it.
     notes = []
     for i in range(8):
         t = i * 0.15
@@ -4456,11 +4517,62 @@ def test_keys_split_onset_parts_share_one_density_and_speed():
     beats = [{"time": round(b * 0.5, 3)} for b in range(20)]
     beat_times = [b["time"] for b in beats]
     tempo = routes._TempoParams.from_beats(beat_times, beats)
-    groups = routes._group_notes_keys(notes, [])
-    routes._score_groups_keys(groups, beat_times, tempo=tempo)
-    lower, upper = groups[0], groups[1]
+    real_max_bonus = routes._KEYS_LEAP_MAX_BONUS
+
+    def scored(leap_bonus):
+        monkeypatch.setattr(routes, "_KEYS_LEAP_MAX_BONUS", leap_bonus)
+        groups = routes._group_notes_keys(notes, [])
+        routes._score_groups_keys(groups, beat_times, tempo=tempo)
+        return groups
+
+    without_leap = scored(0.0)
+    lower, upper = without_leap[0], without_leap[1]
     assert lower["time"] == upper["time"]  # nosec B101 - pytest assertion
     assert lower["cost"] == pytest.approx(upper["cost"])  # nosec B101 - pytest assertion
+
+    # Companion: with the term active, the two halves of the SECOND onset
+    # differ by exactly the leap bonus the upper hand earned against its own
+    # previous group (1 semitone, 0.15s earlier) while the lower hand, which
+    # never moves, earned none.
+    with_leap = scored(real_max_bonus)
+    leap = routes._keys_leap_bonus(1.0, 0.15, tempo)
+    assert leap > 0.0  # nosec B101 - pytest assertion
+    assert with_leap[2]["cost"] == pytest.approx(without_leap[2]["cost"])  # nosec B101 - pytest assertion
+    assert with_leap[3]["cost"] == pytest.approx(without_leap[3]["cost"] + leap)  # nosec B101 - pytest assertion
+
+    # The emission-order half of the claim this test's comment opens with,
+    # which the fixture above did not actually exercise: it built ONE fixed
+    # order and asserted nothing about the other.
+    #
+    # The swap has to happen at the GROUP list, not at the note list:
+    # `_group_notes_keys` sorts notes by onset time and `_split_keys_hands`
+    # ranks its parts by pitch, so a split onset's halves always reach the
+    # scorer lower-first no matter how the notes were written. Reversing each
+    # onset's pair of groups is therefore the only way to hand the scorer the
+    # opposite order, and it is also exactly the situation `speed`'s comment
+    # describes.
+    ordered = routes._group_notes_keys(notes, [])
+    routes._score_groups_keys(ordered, beat_times, tempo=tempo)
+    swapped_order = [g for pair in zip(ordered[::2], ordered[1::2]) for g in reversed(pair)]
+    routes._score_groups_keys(swapped_order, beat_times, tempo=tempo)
+    assert [g["hand"] for g in ordered] == ["lower", "upper"] * 8  # nosec B101 - pytest assertion
+    assert [g["hand"] for g in swapped_order] == ["upper", "lower"] * 8  # nosec B101 - really reversed
+    assert [g["time"] for g in swapped_order] == [g["time"] for g in ordered]  # nosec B101 - same onsets
+
+    def by_hand(groups):
+        return {
+            (round(float(g["time"]), 6), g["hand"]): (g["cost"], g["retention_score"])
+            for g in groups
+        }
+
+    # Compared per (onset, hand), not per index: the two lists are in opposite
+    # orders by construction, so an index-wise comparison would be vacuous.
+    swapped_by_hand = by_hand(swapped_order)
+    ordered_by_hand = by_hand(ordered)
+    assert swapped_by_hand.keys() == ordered_by_hand.keys()  # nosec B101 - same units either way
+    for key, (cost, retention_score) in ordered_by_hand.items():
+        assert swapped_by_hand[key][0] == pytest.approx(cost)  # nosec B101 - order-independent cost
+        assert swapped_by_hand[key][1] == pytest.approx(retention_score)  # nosec B101 - and retention
 
 
 def test_keys_authored_note_over_authored_chord_keeps_turning_point_candidacy():
@@ -4508,3 +4620,491 @@ def test_fretted_single_onset_window_discounts_both_boundary_groups(monkeypatch)
     # last onset coincide: each takes exactly one discount.
     assert with_bonus[8] == pytest.approx(without[8] - bonus)  # nosec B101 - pytest assertion
     assert with_bonus[17] == pytest.approx(without[17] - bonus)  # nosec B101 - pytest assertion
+
+
+# ── #177: keys hand-position shift (leap cost between successive groups) ─────
+#
+# The fretted path has penalised large position jumps since #19
+# (`_fitts_shift_bonus`); #177 gives the keys path its own equivalent, scored
+# per HAND (see `_keys_leap_bonus` and the `hand` tag in
+# `_group_notes_keys`). The fixtures below hold onsets, note counts, sustain
+# and therefore poly/span/density/speed fixed, so the only thing separating a
+# stepwise passage from a leaping one is the interval each hand covers.
+
+
+def _keys_register_pairs(low, high, *, spb=0.25, sus=0.4):
+    """Two register chains played alternately, one note per slot half a beat
+    apart, so the two never share an onset and each chain is one hand.
+
+    Timing, note count, density, speed and sustain are fixed by the helper, so
+    two arrangements built from different pitch lists of the same length differ
+    ONLY in the intervals each hand has to move through."""
+    notes = []
+    for i, (lo, hi) in enumerate(zip(low, high)):
+        notes.append(_midi_note(i * 2 * spb, lo, sus))
+        notes.append(_midi_note((i * 2 + 1) * spb, hi, sus))
+    n = 2 * len(low)
+    beats = [
+        {"time": round(i * spb, 3), "measure": i // 4 if i % 4 == 0 else -1}
+        for i in range(n + 8)
+    ]
+    return {
+        "type": "keys", "name": "Keys", "notes": notes, "chords": [],
+        "beats": beats, "sections": [], "tuning": [],
+    }
+
+
+def _scored_keys_groups(arr):
+    """`_group_notes_keys` + `_score_groups_keys` through the arrangement's
+    own beat grid -- the same two calls the generator itself makes."""
+    beat_times = [b["time"] for b in arr["beats"]]
+    tempo = routes._TempoParams.from_beats(beat_times, arr["beats"])
+    groups = routes._group_notes_keys(arr["notes"], arr["chords"])
+    routes._score_groups_keys(groups, beat_times, tempo=tempo)
+    return groups
+
+
+def _assert_keys_tiers_nested(phrases):
+    """The #99 nesting guarantee, as `test_keys_two_hand_tiers_stay_nested`
+    states it: every tier's note identities are a subset of the next tier's."""
+    for p in phrases:
+        identities = [
+            {(n["t"], routes._note_midi_keys(n)) for n in lvl["notes"]}
+            for lvl in p["levels"]
+        ]
+        for lower, higher in pairwise(identities):
+            assert lower <= higher  # nosec B101 - real superset nesting
+
+
+def test_keys_leap_term_scores_a_leaping_passage_harder_than_a_stepwise_one():
+    # #177 done-when, unit level. Same 16 onsets, same single notes, same
+    # sustain; the stepwise fixture walks up in whole tones, the leaping one
+    # jumps a full two octaves (24 semitones) per hand per pair of slots, and
+    # both chains stay inside their own register so each remains one hand.
+    # Measured: mean cost 0.2039 (stepwise) vs 0.2228 (leaping), mean
+    # retention 0.1259 vs 0.1448; every group past each hand's first costs
+    # strictly more when it leaps (+0.0280 charged for the two-octave move
+    # against +0.0054 for the whole tone).
+    stepwise = _keys_register_pairs([40, 42, 44, 46] * 2, [72, 74, 76, 78] * 2)
+    leaping = _keys_register_pairs([40, 64] * 4, [72, 96] * 4)
+    step_groups = _scored_keys_groups(stepwise)
+    leap_groups = _scored_keys_groups(leaping)
+
+    assert len(step_groups) == len(leap_groups) == 16  # nosec B101 - pytest assertion
+    # Single notes throughout, so poly and span are 0 on both sides and cannot
+    # be what separates the two.
+    assert all(len(g["notes"]) == 1 for g in step_groups + leap_groups)  # nosec B101 - pytest assertion
+    assert [g["hand"] for g in step_groups] == [g["hand"] for g in leap_groups]  # nosec B101 - pytest assertion
+    assert [g["melody"] for g in step_groups] == [g["melody"] for g in leap_groups]  # nosec B101 - pytest assertion
+    # Group 0 is the very first group of the passage: nothing to charge. Group
+    # 1 is the first group of the upper register, so it has no same-hand
+    # predecessor and falls back to the group before it -- but both fixtures
+    # put the same two pitches 32 semitones apart in that slot, so the
+    # fallback charges them identically (+0.0425 each) and only the groups
+    # from index 2 on can separate the two passages.
+    assert leap_groups[0]["cost"] == pytest.approx(step_groups[0]["cost"])  # nosec B101 - pytest assertion
+    assert leap_groups[1]["cost"] == pytest.approx(step_groups[1]["cost"])  # nosec B101 - pytest assertion
+    deltas = [lg["cost"] - sg["cost"] for sg, lg in zip(step_groups, leap_groups)]
+    assert min(deltas[2:]) > 0.0  # nosec B101 - pytest assertion
+    assert sum(deltas) / len(deltas) > 0.015  # nosec B101 - pytest assertion
+    assert (
+        sum(g["retention_score"] for g in leap_groups)
+        > sum(g["retention_score"] for g in step_groups)
+    )  # nosec B101 - pytest assertion
+
+
+def _keys_uniform_interval_arms(k, slots=6, lo=36, hi=60, spb=0.25, sus=0.4):
+    """`slots` low-register and `slots` high-register pitches, each chain
+    moving by EXACTLY `k` semitones per step and bouncing inside its own
+    24-semitone window so the two registers can never meet.
+
+    The bounce is what makes the sweep honest: it keeps the per-group shift
+    uniform at `k` for every `k` up to the window width (a plain ascending
+    walk would run out of keyboard, and a fixed ascending pair would drift
+    across the register median and change which groups count as the same
+    hand). Each fixture therefore differs from every other ONLY in `k`, and
+    the top tier keeps all 2 * `slots` notes at every `k`."""
+    def chain(start):
+        out, p = [], start
+        for _ in range(slots):
+            out.append(p)
+            p = p + k if p + k <= start + (hi - lo) else p - k
+        return out
+    return _keys_register_pairs(chain(lo), chain(lo + 24), spb=spb, sus=sus)
+
+
+def test_keys_leap_term_charges_a_single_alternating_two_register_melody(monkeypatch):
+    # THE #177 REGRESSION TEST, and the one the original fixtures missed.
+    #
+    # `_group_notes_keys` labels an unsplit group `lower`/`upper` by the same
+    # skyline-median test that decides `melody`, so a SINGLE melodic line
+    # whose contour straddles that median gets its label flipped with every
+    # pitch. Before the predecessor fallback, that meant no group ever had a
+    # same-hand predecessor and the whole term evaluated to EXACTLY 0.0000 --
+    # verified over 63 such lines, including a two-octave leap every beat, and
+    # a 41-semitone treble->bass dive charged 0.0000 while a 4-semitone step
+    # later in the same line was charged 0.0100.
+    #
+    # These two fixtures are single-note throughout (no split onset anywhere,
+    # so `hand_split` is False and the fallback is eligible) and their tags
+    # genuinely alternate lower/upper. Measured charges, with the term on vs
+    # `_KEYS_LEAP_MAX_BONUS = 0`:
+    #   two-octave crossing  -> [0, .037355, .009368 x 6]  total .093563
+    #   whole-tone crossing  -> [0, .037355, .005363 x 6]  total .069533
+    # The first alternating group is charged by the fallback (72 vs the 48
+    # just before it), and every later group is charged against its own
+    # register's previous note. So min(charged[1:]) > 0 -- which was 0.0
+    # before the fix, since index 1 was charged nothing at all.
+    leaping = _keys_register_pairs([48, 52, 56, 60], [72, 76, 80, 84])
+    stepwise = _keys_register_pairs([48, 50, 52, 54], [72, 74, 76, 78])
+    assert len(leaping["notes"]) == len(stepwise["notes"]) == 8  # nosec B101 - same onsets
+    assert all(len(g["notes"]) == 1 for g in _scored_keys_groups(leaping))  # nosec B101 - a single line
+
+    def charged(arr):
+        real = routes._KEYS_LEAP_MAX_BONUS
+        try:
+            on = [g["cost"] for g in _scored_keys_groups(arr)]
+            monkeypatch.setattr(routes, "_KEYS_LEAP_MAX_BONUS", 0.0)
+            off = [g["cost"] for g in _scored_keys_groups(arr)]
+        finally:
+            monkeypatch.setattr(routes, "_KEYS_LEAP_MAX_BONUS", real)
+        return [a - b for a, b in zip(on, off)]
+
+    leap_charge = charged(leaping)
+    step_charge = charged(stepwise)
+    tags = [g["hand"] for g in _scored_keys_groups(leaping)]
+    # The precondition this test exists for: one single line, and its register
+    # label really does alternate, so no group has a same-hand predecessor at
+    # index 1 and the fallback is the only thing that can charge it.
+    assert tags == ["lower", "upper"] * 4  # nosec B101 - alternating register labels
+    leap_groups = _scored_keys_groups(leaping)
+    step_groups = _scored_keys_groups(stepwise)
+    assert not any(g["hand_split"] for g in leap_groups)  # nosec B101 - no split onset
+    assert min(leap_charge[1:]) > 0.0  # nosec B101 - every later group is charged
+    assert min(step_charge[1:]) > 0.0  # nosec B101 - pytest assertion
+    # The leaping line is charged strictly more than the same line stepping by
+    # whole tones -- the motivating claim, on a single melodic line.
+    assert sum(leap_charge) > sum(step_charge)  # nosec B101 - pytest assertion
+    assert (
+        sum(g["cost"] for g in leap_groups) > sum(g["cost"] for g in step_groups)
+    )  # nosec B101 - pytest assertion
+    assert (
+        sum(g["retention_score"] for g in leap_groups)
+        > sum(g["retention_score"] for g in step_groups)
+    )  # nosec B101 - pytest assertion
+
+
+def test_keys_leap_term_makes_a_leaping_ladder_harder_end_to_end():
+    # #177 done-when, end to end through the real generator, as a SWEEP over
+    # interval sizes rather than a pair of hand-picked fixtures.
+    #
+    # It used to assert absolute bottom-tier counts (9 vs 7) on two fixtures
+    # whose intervals were hand-MIXED, because the real end-to-end claim does
+    # not hold in general: a UNIFORM per-group shift preserves a passage's
+    # internal ordering, so for a uniform interval the tier cut is essentially
+    # invariant (measured over 2568 fixture pairs in review: `difficulty_cost`
+    # rose in 2196 of them but the bottom tier shrank in only 3). What does
+    # hold for every interval size is that the reported difficulty cost rises.
+    #
+    # Measured over the sweep (12 notes, two phrases, `difficulty_cost` per
+    # phrase), strictly increasing at every step:
+    #   k=  0  0.1987 / 0.1925
+    #   k=  1  0.2007 / 0.1954
+    #   k=  2  0.2023 / 0.1979
+    #   k=  4  0.2050 / 0.2019
+    #   k=  7  0.2080 / 0.2065
+    #   k= 10  0.2104 / 0.2100
+    #   k= 13  0.2123 / 0.2129
+    #   k= 16  0.2140 / 0.2154
+    #   k= 17  0.2145 / 0.2161
+    #   k= 18  0.2149 / 0.2168
+    #   k= 19  0.2154 / 0.2175
+    # and with the term disabled (`_KEYS_LEAP_MAX_BONUS = 0`) all eleven
+    # collapse onto the same pair, 0.1925 / 0.1925, so the whole rise is
+    # this term and nothing else. The BOTTOM tier is 3 / 4 notes at every k up
+    # to 13 and 3 / 2 from k = 16 on — it does move, but far too little to be
+    # the property worth pinning, which is exactly why the old `== 9` / `== 7`
+    # assertion went: a uniform shift barely reorders a passage.
+    section_times = [0.0, 1.5, 3.0]
+    sizes = [0, 1, 2, 4, 7, 10, 13, 16, 17, 18, 19]
+    costs, top_sizes = [], set()
+    for k in sizes:
+        phrases = routes.generate_phrases_for_arrangement(
+            _keys_uniform_interval_arms(k), n_levels=4, section_times=section_times,
+        )
+        live = [p for p in phrases if p["levels"][-1]["notes"]]
+        assert len(live) == 2  # nosec B101 - two non-empty phrases, as measured
+        costs.append([float(p["difficulty_cost"]) for p in live])
+        # Same input notes at every interval size, so equal top-tier content
+        # is what rules out "harder" meaning "more notes" or "fewer tiers".
+        top_sizes.add(tuple(len(p["levels"][-1]["notes"]) for p in live))
+        # The #99 nesting guarantee, on every fixture in the sweep.
+        _assert_keys_tiers_nested(phrases)
+
+    assert top_sizes == {(6, 6)}  # nosec B101 - all 12 notes survive at every size
+    for smaller, larger in zip(costs, costs[1:]):
+        assert all(b > a for a, b in zip(smaller, larger))  # nosec B101 - strictly harder
+    # No absolute count is pinned here on purpose: every tier-cut threshold in
+    # the generator is free to move (and `_KEYS_LEAP_MAX_BONUS` may be
+    # re-tuned within the guards above) without falsifying "harder".
+
+    # Control: with the term switched off the sweep is flat, so the ordering
+    # above really is this term and not an artefact of the fixtures.
+    with patch.object(routes, "_KEYS_LEAP_MAX_BONUS", 0.0):
+        flat = [
+            [
+                float(p["difficulty_cost"])
+                for p in routes.generate_phrases_for_arrangement(
+                    _keys_uniform_interval_arms(k), n_levels=4, section_times=section_times,
+                ) if p["levels"][-1]["notes"]
+            ]
+            for k in sizes
+        ]
+    assert all(c == flat[0] for c in flat)  # nosec B101 - unconfounded control
+
+
+def test_keys_leap_is_measured_against_the_previous_group_of_the_same_hand(monkeypatch):
+    # The left hand holds one pitch while the right climbs an octave per beat.
+    # The two halves of one onset are NOT each other's predecessor: if they
+    # were, BOTH halves of every onset would be charged a phantom leap, and a
+    # passage whose left hand never moves would still pay for it.
+    notes = []
+    for i in range(4):
+        t = i * 0.5
+        notes += [_midi_note(t, 48, 0.1), _midi_note(t, 72 + 12 * i, 0.1)]
+    beats = [{"time": round(b * 0.5, 3), "measure": 0 if b % 4 == 0 else -1}
+             for b in range(12)]
+    beat_times = [b["time"] for b in beats]
+    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    leap = routes._keys_leap_bonus(12.0, 0.5, tempo)
+    assert leap > 0.0  # nosec B101 - pytest assertion
+    # The gap BETWEEN the two hands inside one onset is 24 semitones, which
+    # would charge a materially larger bonus than the 12 the upper hand
+    # actually travels -- so the per-hand scoping below is doing real work,
+    # not just avoiding a rounding difference.
+    assert routes._keys_leap_bonus(24.0, 0.5, tempo) > leap  # nosec B101 - pytest assertion
+
+    def scored():
+        groups = routes._group_notes_keys(deepcopy(notes), [])
+        routes._score_groups_keys(groups, beat_times, tempo=tempo)
+        return groups
+
+    with_leap = scored()
+    monkeypatch.setattr(routes, "_KEYS_LEAP_MAX_BONUS", 0.0)
+    without_leap = scored()
+
+    assert [g["hand"] for g in with_leap] == ["lower", "upper"] * 4  # nosec B101 - from _split_keys_hands
+    for i, (on, off) in enumerate(zip(with_leap, without_leap)):
+        hand, index = ("lower", i // 2) if i % 2 == 0 else ("upper", i // 2)
+        assert on["hand"] == hand  # nosec B101 - pytest assertion
+        if hand == "lower":
+            # The lower hand's anchor never moves: charged nothing at all.
+            assert on["cost"] == pytest.approx(off["cost"])  # nosec B101 - pytest assertion
+        elif index == 0:
+            # First group of the upper hand: no predecessor, nothing to pay.
+            assert on["cost"] == pytest.approx(off["cost"])  # nosec B101 - pytest assertion
+        else:
+            assert on["cost"] - off["cost"] == pytest.approx(leap)  # nosec B101 - pytest assertion
+
+
+def test_keys_leap_is_zero_past_the_movement_window(monkeypatch):
+    # A two-octave jump, but the previous group of that hand is far enough
+    # back that this is no longer one continuous passage -- the same
+    # tempo-relative bound the fretted shift bonus and
+    # `_melody_turning_points_keys` use. Three repeated low notes hold the
+    # skyline median down, so all four groups stay in one hand.
+    def scored(last_time):
+        notes = [_midi_note(t, 40, 0.1) for t in (0.0, 0.2, 0.4)]
+        notes.append(_midi_note(last_time, 64, 0.1))
+        arr = {"type": "keys", "name": "Keys", "notes": notes, "chords": [],
+               "beats": [{"time": round(b * 0.5, 3), "measure": 0 if b % 4 == 0 else -1}
+                         for b in range(10)],
+               "sections": [], "tuning": []}
+        groups = _scored_keys_groups(arr)
+        return groups, routes._TempoParams.from_beats(
+            [b["time"] for b in arr["beats"]], arr["beats"],
+        ).fret_jump_window_seconds
+
+    early, window = scored(0.6)
+    late, _ = scored(3.0)
+    assert all(g["hand"] == "upper" for g in early + late)  # nosec B101 - one hand throughout
+    assert 0.6 - 0.4 <= window  # nosec B101 - the early jump is inside the window
+    assert 3.0 - 0.4 > window  # nosec B101 - the late one is not
+    monkeypatch.setattr(routes, "_KEYS_LEAP_MAX_BONUS", 0.0)
+    early_off, _ = scored(0.6)
+    late_off, _ = scored(3.0)
+    assert early[-1]["cost"] > early_off[-1]["cost"]  # nosec B101 - charged inside the window
+    assert late[-1]["cost"] == pytest.approx(late_off[-1]["cost"])  # nosec B101 - charged nothing past it
+
+
+@pytest.mark.parametrize(
+    ("distance", "available", "window", "expected"),
+    [
+        # distance <= 0 short-circuits before the index is taken.
+        (0.0, 0.0, 1.0, 0.0),
+        (-12.0, 0.5, 1.0, 0.0),
+        # Half the target width, no time at all:
+        #   log2(0.5/5 + 1) = log2(1.1)  = 0.13750352...
+        #   / log2(19/5 + 1) = /log2(4.8) = /2.26303440...  -> 0.06076069
+        #   * 0.05 * pressure(0.0) = 0.05 * 1.0            -> 0.0030380343
+        (0.5, 0.0, 1.0, 0.0030380343),
+        # Exactly the target width, half the window available:
+        #   log2(5/5 + 1) = log2(2) = 1
+        #   1 / 2.26303440... = 0.44188458
+        #   * 0.05 * pressure(1.0) = * 0.05 * (1/2)        -> 0.0110471144
+        (5.0, 1.0, 1.0, 0.0110471144),
+        # Interior octave-ish point, three quarters of the window gone:
+        #   log2(12/5 + 1) = log2(3.4) = 1.76553475...
+        #   / 2.26303440... = 0.78016257
+        #   * 0.05 * pressure(0.5) = * 0.05 * (1/1.5)     -> 0.0260054191
+        (12.0, 0.5, 1.0, 0.0260054191),
+        # Interior point below the target width, short window:
+        #   log2(2/5 + 1) = log2(1.4) = 0.48542683...
+        #   / 2.26303440... = 0.21450263
+        #   * 0.05 * pressure(0.25) = * 0.05 * (1/1.25)  -> 0.0085801051
+        (2.0, 0.25, 1.0, 0.0085801051),
+        # EXACT SATURATION POINT, half the window: index == reference, so the
+        # ratio is exactly 1 and only pressure remains.
+        #   0.05 * 1.0 * (1/2)                            -> 0.025
+        (19.0, 1.0, 1.0, 0.025),
+        # The same reference distance with no time at all: exactly the cap.
+        #   0.05 * 1.0 * 1.0                              -> 0.05
+        (19.0, 0.0, 1.0, 0.05),
+        # Beyond the reference the index keeps growing but the cap binds:
+        #   log2(38/5 + 1) = log2(8.6) = 3.10433666...
+        #   / 2.26303440... = 1.37175849
+        #   * 0.05 * 1.0 = 0.0685879245 -> clamped down to 0.05
+        (38.0, 0.0, 1.0, 0.05),
+        # The tempo-relative pressure scale is honoured, not just the default:
+        # with fret_jump_window_seconds = 0.5 the pressure at t = 0.5 is
+        # 0.5 / (0.5 + 0.5) = 0.5, so the saturated reference distance
+        # charges 0.05 * 0.5 = 0.025 -- same as the default window at t = 1.0.
+        (19.0, 0.5, 0.5, 0.025),
+        # ... and at t = 1.5 with that scale it is 0.5 / 2.0 = 0.25 -> 0.0125.
+        (19.0, 1.5, 0.5, 0.0125),
+    ],
+)
+def test_keys_leap_bonus_matches_its_documented_formula(distance, available, window, expected):
+    """Pins the term's MAGNITUDE, not just its sign and bounds.
+
+    The expectations below are worked out by hand from the formula in
+    `_keys_leap_bonus`'s docstring, not by calling the helper -- otherwise the
+    test would be tautological. That matters: with only sign/bounds coverage,
+    injecting a flat `+ 0.001` into the helper left the whole suite green, as
+    did scaling `_KEYS_LEAP_MAX_BONUS` by 1.05x, 1.1x, 1.2x and 1.3x. Each
+    expected value is annotated at its parameter with the log2/pressure
+    arithmetic that produces it. This follows the repo convention of pinning
+    a weight exactly (see `_legacy_keys_scores`) rather than only bounding it.
+    """
+    tempo = routes._TempoParams(fret_jump_window_seconds=window)
+    assert routes._keys_leap_bonus(distance, available, tempo) == pytest.approx(expected)  # nosec B101 - hand-computed
+
+
+def test_keys_leap_bonus_is_bounded_and_saturates_at_the_reference_distance():
+    tempo = routes._TempoParams()
+    assert routes._keys_leap_bonus(0.0, 0.0, tempo) == 0.0  # nosec B101 - no movement, no cost
+    for distance in (0.5, 2.0, 5.0, 12.0, 19.0, 24.0, 48.0, 240.0):
+        for available in (0.0, 0.05, 0.5, 1.0, 5.0):
+            bonus = routes._keys_leap_bonus(distance, available, tempo)
+            assert 0.0 <= bonus <= routes._KEYS_LEAP_MAX_BONUS  # nosec B101 - pytest assertion
+    # At or beyond the reference distance with no time at all the term
+    # saturates exactly at its cap, and further distance buys nothing.
+    assert routes._keys_leap_bonus(
+        routes._KEYS_LEAP_REFERENCE_SEMITONES, 0.0, tempo,
+    ) == pytest.approx(routes._KEYS_LEAP_MAX_BONUS)  # nosec B101 - pytest assertion
+    assert routes._keys_leap_bonus(240.0, 0.0, tempo) == pytest.approx(routes._KEYS_LEAP_MAX_BONUS)  # nosec B101 - pytest assertion
+    # Strictly increasing in distance below the cap, non-increasing in the time
+    # available (a bounded-log index over a saturating pressure factor).
+    by_distance = [routes._keys_leap_bonus(d, 0.5, tempo) for d in (2, 5, 9, 12)]
+    assert all(a < b for a, b in zip(by_distance, by_distance[1:]))  # nosec B101 - pytest assertion
+    by_time = [routes._keys_leap_bonus(12.0, t, tempo) for t in (0.0, 0.25, 0.5, 1.0, 4.0)]
+    assert all(b <= a for a, b in zip(by_time, by_time[1:]))  # nosec B101 - pytest assertion
+    # The target width is the "no cost" width: anything narrower still costs
+    # something, but an order of magnitude less than the reference distance.
+    assert routes._keys_leap_bonus(5.0, 0.0, tempo) < routes._keys_leap_bonus(19.0, 0.0, tempo)  # nosec B101 - pytest assertion
+
+
+def test_keys_leap_term_preserves_the_cost_vs_retention_relationship():
+    # The leap term is mechanical, so it is added to `cost` AND
+    # `retention_score` alike -- exactly as the fretted path's fret_jump_bonus
+    # is. That must not disturb the cost/retention separation #72/B1
+    # established: for a group that is neither a melody nor a turning point,
+    # cost - retention_score stays EXACTLY the beat-value discount, whatever
+    # the leap. The fixture rises monotonically (so nothing is a turning
+    # point) and stays in the lower register (so nothing is the melody).
+    arr = {"type": "keys", "name": "Keys", "chords": [], "sections": [], "tuning": [],
+           "notes": [_midi_note(round(i * 0.5, 3), midi, 0.1)
+                     for i, midi in enumerate([40, 42, 44, 66, 68, 70, 72, 74])],
+           "beats": [{"time": round(b * 0.5, 3), "measure": 0 if b % 4 == 0 else -1}
+                     for b in range(20)]}
+    groups = _scored_keys_groups(arr)
+    turning = routes._melody_turning_points_keys(
+        groups, routes._TempoParams.from_beats(
+            [b["time"] for b in arr["beats"]], arr["beats"],
+        ),
+    )
+    checked = [g for g in groups if g["notes"] and not g["melody"]]
+    assert len(checked) >= 3  # nosec B101 - pytest assertion
+    assert any(g["value"] > 0.0 for g in checked)  # nosec B101 - the fixture must exercise a real discount
+    assert not turning  # nosec B101 - the fixture rises monotonically, so this really is the no-bonus case
+    # The last checked group is the 44 -> 66 jump: 22 semitones, 0.5s after its
+    # predecessor, so it carries a real leap while still being no melody and no
+    # turning point.
+    assert checked[-1]["notes"][0]["s"] * 24 + checked[-1]["notes"][0]["f"] == 66  # nosec B101 - pytest assertion
+    assert routes._keys_leap_bonus(22.0, 0.5, routes._TempoParams()) > 0.0  # nosec B101 - pytest assertion
+    for g in checked:
+        assert g["cost"] - g["retention_score"] == pytest.approx(
+            routes._KEYS_BEAT_VALUE_COEF * g["value"],
+        )  # nosec B101 - pytest assertion
+
+
+def test_keys_leap_max_bonus_stays_below_the_metrical_coefficient():
+    """#177's weight guard, mirroring
+    `test_key_stability_bonus_weight_is_below_beat_strength_weight`: the keys
+    movement term must stay under the metrical term's 0.12, for the same
+    reason -- measured beat position anchors the tier scale, and a heuristic
+    distance measure must never outweigh it. It also stays under the fretted
+    path's own `_SHIFT_MAX_BONUS`, because the keys `cost` range is far
+    narrower; see `_KEYS_LEAP_MAX_BONUS`.
+
+    This is a CONSTANT GUARD, not behaviour coverage: it is two literal
+    comparisons and nothing more, so it still passes with
+    `_KEYS_LEAP_MAX_BONUS = 0.0` (the term deleted outright) and it pins no
+    value the scoring path actually produces. The term's magnitude is pinned
+    by `test_keys_leap_bonus_matches_its_documented_formula`, which this
+    deliberately does not duplicate."""
+    assert routes._KEYS_LEAP_MAX_BONUS < 0.12  # nosec B101 - pytest assertion
+    assert routes._KEYS_LEAP_MAX_BONUS < routes._SHIFT_MAX_BONUS  # nosec B101 - pytest assertion
+
+
+def test_keys_unsplit_group_hand_follows_the_melody_register():
+    # #177's hand tag: a split onset's halves are exactly the (lower, upper)
+    # parts `_split_keys_hands` returned, and an unsplit onset -- one hand by
+    # definition of the 10-semitone threshold -- is assigned by the SAME
+    # register judgement that picks the melody, in the same pass. So on an
+    # unsplit passage `hand == "upper"` holds exactly where `melody` does.
+    #
+    # This is a TAG guard, not behaviour coverage: it asserts what
+    # `_group_notes_keys` puts in the dict and never scores anything, so it
+    # still passes with `_KEYS_LEAP_MAX_BONUS = 0.0` and with the predecessor
+    # fallback removed. It earns its place by pinning the PROVENANCE of the
+    # two tag sources (split halves vs skyline median), which is what lets
+    # `_score_groups_keys`'s `hand_split` gate be read as "a split group is
+    # exempt from the fallback" rather than as an unexplained special case.
+    # The term's behaviour on those tags is covered by
+    # `test_keys_leap_is_measured_against_the_previous_group_of_the_same_hand`
+    # and `test_keys_leap_term_charges_a_single_alternating_two_register_melody`.
+    split = routes._group_notes_keys(
+        [_midi_note(0.0, 40), _midi_note(0.0, 84)], [],
+    )
+    assert [g["hand"] for g in split] == ["lower", "upper"]  # nosec B101 - from _split_keys_hands
+
+    notes = [_midi_note(i * 0.5, 40 + 2 * i) for i in range(6)]
+    notes += [_midi_note(3.0 + i * 0.5, 72 + 2 * i) for i in range(6)]
+    groups = routes._group_notes_keys(notes, [])
+    assert all(not g["hand_split"] for g in groups)  # nosec B101 - pytest assertion
+    assert all(g["hand"] is not None for g in groups)  # nosec B101 - the key always exists
+    assert [g["melody"] for g in groups] == [False] * 6 + [True] * 6  # nosec B101 - pytest assertion
+    assert [g["hand"] for g in groups] == [
+        "upper" if g["melody"] else "lower" for g in groups
+    ]  # nosec B101 - one register judgement, so the two agree by construction
