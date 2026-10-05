@@ -2510,6 +2510,22 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
         hand = g.get("hand")
         key = (hand, is_split)
         prev_i = prev_by_hand.get(key)
+        # A same-hand predecessor sitting OUTSIDE the movement window is not a
+        # usable predecessor -- past the window this is no longer one continuous
+        # passage, so the hand had time to reposition. It used to be kept
+        # anyway (`prev_by_hand` is refreshed whatever the charge came out as),
+        # which let a stale distant group win every lookup for its hand
+        # forever: a line could pay for a two-semitone step and waive a
+        # 43-semitone dive, because the dive's nearest same-hand note was a
+        # bar back while the step right before it was well inside the window.
+        # Dropping it here hands the decision to the fallback below, so the
+        # nearest group actually inside the window gets the charge.
+        if prev_i is not None and not (
+            0.0
+            < float(g["time"]) - float(groups[prev_i]["time"])
+            <= tempo.fret_jump_window_seconds
+        ):
+            prev_i = None
         if prev_i is None and anchor is not None and not is_split:
             # Fallback predecessor: the nearest earlier group that actually
             # holds notes, skipping notes-less ones for the same reason they
