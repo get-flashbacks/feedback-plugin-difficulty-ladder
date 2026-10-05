@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Keys/piano ladders no longer charge a hand for a jump it did not make
+  (#177 review). Three ways the new per-hand leap term could charge movement
+  that never happened, now closed. A group whose nearest predecessor of the
+  same hand sat OUTSIDE the tempo-relative movement window used to waive the
+  charge outright and then keep that distant group as its predecessor for good,
+  so one stale entry decided every later lookup for that hand: on
+  `[60, 62, 64, 66, 68, 25, 27, 29, 84, 86]` at eighths, with a 0.5 s window,
+  the two-semitone step paid 0.0072 while the 43-semitone `68 → 25` dive and the
+  55-semitone `29 → 84` jump paid nothing at all, because their nearest
+  same-hand notes were a bar back while the group immediately before them sat
+  well inside the window. An out-of-window predecessor no longer counts as a
+  predecessor, so the nearest group actually inside the window is the one
+  measured; both now charge, at 0.0481 and 0.0500 on that fixture. Separately,
+  the predecessor FALLBACK — used when a group has no same-hand predecessor at
+  all — could inherit from a group created by a hand split, which is exactly the
+  `upper`/`upper` collision that pairing the chain key on
+  `(hand, hand_split)` exists to prevent: an authored left-hand chord that
+  splits, followed by a right-hand melody note half a second later, was charged
+  a full-hand-span leap off the chord's own upper half (0.0315) for a hand that
+  never moved. The fallback now skips split-created candidates as well as
+  notes-less ones. Groups sharing a timestamp were already excluded by the
+  `available > 0.0` gate. The pass itself moves into `_keys_leap_charges`,
+  split out of `_score_groups_keys` so that the scoring loop holds only the cost
+  model.
 - Keys/piano ladders no longer drop the tune at the bottom tier. A left-hand
   note and a right-hand note sounding together were fused into one "chord"
   cluster that scored as hard, so the lowest tiers kept cheap left-hand filler
@@ -154,8 +178,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is folded in exactly where the fretted path folds its shift bonus — added to
   both `cost` and `retention_score`, after the beat-value discount and the
   melody bonuses and before the final clamp, with `cost` left unclamped to
-  mirror `_score_groups` (on this path that clamp is not currently reachable:
-  the base formula's analytic ceiling is 0.9875) — so the cost/retention
+  mirror `_score_groups` (on this path that clamp is not reached in practice:
+  the base formula's weights sum to exactly 1.00 and its terms can all saturate
+  together, so the analytic base ceiling is 1.00 and the leap term can take it
+  to 1.05, though the highest value measured over ~60k dense clusters was
+  0.1750) — so the cost/retention
   separation #72/B1 established is untouched. Keys only: the
   fretted path's own `fret_jump` term is unchanged.
 - Opt-in "Level up only" setting (#111). While on, Adaptive mode raises the
