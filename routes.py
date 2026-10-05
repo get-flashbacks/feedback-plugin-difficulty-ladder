@@ -2446,60 +2446,59 @@ def _melody_turning_points_keys(groups, tempo):
     return turning
 
 
-def _score_groups_keys(groups, beat_times=(), *, tempo=None):
-    tempo = tempo or _TempoParams()
-    total = len(groups)
-    times_sorted = [float(g["time"]) for g in groups]
-    onset_times = sorted(set(times_sorted))
-    onset_index = {t: i for i, t in enumerate(onset_times)}
-    # #103/B8: apply B2 (graded beat strength, via _beat_value) and B5
-    # (melody-turning-point retention) to the keys path -- previously only
-    # the fretted path (_score_groups) had either term, so a keys chart's
-    # ladder ignored metrical position and melodic shape entirely.
-    turning_points = _melody_turning_points_keys(groups, tempo)
-    # #177: per-hand hand-position shift, precomputed in one linear pass so the
-    # scoring loop itself never rescans. Each group is anchored at the MEAN of
-    # its MIDI pitches (`_note_midi_keys`, so a single-note group anchors at
-    # that note): the fretted path's anchor is a fret-position PROXY, whereas
-    # a keys note carries exact pitch, and a hand's position is best read as
-    # the centre of the pitches it is holding rather than its top or bottom
-    # note -- for a multi-note voicing the extremes belong to whichever voice
-    # reaches furthest, not to the hand as a whole.
-    #
-    # A group's predecessor is the previous group of the SAME hand in list
-    # order (groups arrive time-sorted), never simply the previous group: the
-    # two hand-parts of a split onset are different hands playing at the same
-    # instant, so neither is the other's "previous position" -- scoring them
-    # against each other would charge the pair a phantom leap on both halves
-    # of every single split onset. Keying the lookup by `hand` (rather than by
-    # parity, or by "the group before this one") also makes the result
-    # independent of the order those parts were emitted in, the same
-    # emission-order independence `speed` below already relies on.
-    #
-    # The `hand` tag is a REGISTER judgement, not an observed fingering: for
-    # an unsplit onset it is exactly the `melody` test (see
-    # `_group_notes_keys`). On a SINGLE melodic line whose contour straddles
-    # the skyline median that label alternates lower/upper with every pitch,
-    # so no group ever has a same-hand predecessor and the whole term would
-    # silently evaluate to zero -- 41 semitones of dive free, which is the
-    # exact failure #177 exists to remove. So a group with no same-hand
-    # predecessor falls back to the group immediately before it in list
-    # order: strictly conservative (a real hand must get from the last thing
-    # it played to this one), and monotone in real travel.
-    #
-    # The fallback is gated OFF for a group CREATED by a hand split
-    # (`hand_split`): such a group's `hand` comes from `_split_keys_hands`, so
-    # having no same-hand predecessor genuinely means "this hand has not
-    # played yet", and the group before it is the OTHER half of its own
-    # onset -- at the same timestamp, a zero gap, and a full hand span away.
-    # The upper part of the FIRST two-hand onset would otherwise be charged
-    # that entire span for a move it never makes.
-    #
-    # Groups with no notes are skipped as predecessors too: a hand's position
-    # is read off notes it is playing, so an empty group is not a position.
-    # A group built outside `_group_notes_keys` (a unit-test fixture) has no
-    # `hand` at all; `g.get("hand")` reads that as one hand, which is the
-    # conservative reading and matches an unsplit single-hand passage.
+def _keys_leap_charges(groups, tempo):
+    """#177's per-hand hand-position shift for every group, as a list parallel to
+    `groups` (#177).
+
+    Split out of `_score_groups_keys` so the scoring loop there holds only the
+    cost model itself: this pass is a self-contained predecessor walk over the
+    whole list, and running it as its own linear pass is what lets the scoring
+    loop stay single-pass too. Each group is anchored at the MEAN of its MIDI
+    pitches (`_note_midi_keys`, so a single-note group anchors at that note):
+    the fretted path's anchor is a fret-position PROXY, whereas a keys note
+    carries exact pitch, and a hand's position is best read as the centre of
+    the pitches it is holding rather than its top or bottom note -- for a
+    multi-note voicing the extremes belong to whichever voice reaches furthest,
+    not to the hand as a whole.
+
+    A group's predecessor is the previous group of the SAME hand in list order
+    (groups arrive time-sorted), never simply the previous group: the two
+    hand-parts of a split onset are different hands playing at the same
+    instant, so neither is the other's "previous position" -- scoring them
+    against each other would charge the pair a phantom leap on both halves of
+    every single split onset. Keying the lookup by `hand` (rather than by
+    parity, or by "the group before this one") also makes the result
+    independent of the order those parts were emitted in, the same
+    emission-order independence `speed` in `_score_groups_keys` relies on.
+    The key carries the hand split's provenance as well, since `hand` names
+    two different things for the two sources: the lower/upper HALF of a split
+    onset and the lower/upper REGISTER of an unsplit one.
+
+    The `hand` tag is a REGISTER judgement, not an observed fingering: for an
+    unsplit onset it is exactly the `melody` test (see `_group_notes_keys`). On
+    a SINGLE melodic line whose contour straddles the skyline median that label
+    alternates lower/upper with every pitch, so no group ever has a same-hand
+    predecessor and the whole term would silently evaluate to zero -- 41
+    semitones of dive free, which is the exact failure #177 exists to remove.
+    So a group with no usable same-hand predecessor falls back to the nearest
+    earlier group of the same kind: strictly conservative (a real hand must get
+    from the last thing it played to this one), and monotone in real travel.
+
+    The fallback is gated OFF for a group CREATED by a hand split
+    (`hand_split`): such a group's `hand` comes from `_split_keys_hands`, so
+    having no same-hand predecessor genuinely means "this hand has not played
+    yet", and the group before it is the OTHER half of its own onset -- at the
+    same timestamp, a zero gap, and a full hand span away. The upper part of
+    the FIRST two-hand onset would otherwise be charged that entire span for a
+    move it never makes. For the same reason the fallback never INHERITS from a
+    split-created group either.
+
+    Groups with no notes are skipped as predecessors too: a hand's position is
+    read off notes it is playing, so an empty group is not a position. A group
+    built outside `_group_notes_keys` (a unit-test fixture) has no `hand` at
+    all; `g.get("hand")` reads that as one hand, which is the conservative
+    reading and matches an unsplit single-hand passage.
+    """
     leap_by_index = []
     anchors = []
     prev_by_hand = {}
@@ -2507,19 +2506,18 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
         ns = g["notes"]
         anchor = (sum(_note_midi_keys(n) for n in ns) / len(ns)) if ns else None
         is_split = bool(g.get("hand_split"))
-        hand = g.get("hand")
-        key = (hand, is_split)
+        key = (g.get("hand"), is_split)
         prev_i = prev_by_hand.get(key)
         # A same-hand predecessor sitting OUTSIDE the movement window is not a
         # usable predecessor -- past the window this is no longer one continuous
-        # passage, so the hand had time to reposition. It used to be kept
-        # anyway (`prev_by_hand` is refreshed whatever the charge came out as),
-        # which let a stale distant group win every lookup for its hand
-        # forever: a line could pay for a two-semitone step and waive a
-        # 43-semitone dive, because the dive's nearest same-hand note was a
-        # bar back while the step right before it was well inside the window.
-        # Dropping it here hands the decision to the fallback below, so the
-        # nearest group actually inside the window gets the charge.
+        # passage, so the hand had time to reposition. It used to be kept anyway
+        # (`prev_by_hand` is refreshed whatever the charge comes out as), which
+        # let a stale distant group win every lookup for its hand forever: a line
+        # could pay for a two-semitone step and waive a 43-semitone dive, because
+        # the dive's nearest same-hand note was a bar back while the step right
+        # before it was well inside the window. Dropping it here hands the
+        # decision to the fallback below, so the nearest group actually inside
+        # the window gets the charge.
         if prev_i is not None and not (
             0.0
             < float(g["time"]) - float(groups[prev_i]["time"])
@@ -2528,31 +2526,29 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
             prev_i = None
         if prev_i is None and anchor is not None and not is_split:
             # Fallback predecessor: the nearest earlier group that actually
-            # holds notes AND was not itself created by a hand split. Both
-            # skips are needed: a notes-less group holds no position to inherit
-            # (same reason it is not recorded as a predecessor above), and a
+            # holds notes AND was not itself created by a hand split. Both skips
+            # are needed: a notes-less group holds no position to inherit (same
+            # reason it is not recorded as a predecessor above), and a
             # split-created group belongs to the OTHER namespace of `hand`, so
             # inheriting from one is the `upper`/`upper` collision that pairing
-            # the chain key on `(hand, hand_split)` exists to prevent.
-            # Ordinary input reaches this: an authored left-hand chord that
-            # splits, then a right-hand melody note 0.5 s later, is charged a
-            # full-hand-span leap off the chord's own upper half even though
-            # that hand never moved.
+            # the chain key on `(hand, hand_split)` exists to prevent. Ordinary
+            # input reaches this: an authored left-hand chord that splits, then a
+            # right-hand melody note 0.5 s later, was charged a full-hand-span
+            # leap off the chord's own upper half even though that hand never
+            # moved.
             j = gi - 1
-            while j >= 0 and (
-                anchors[j] is None or groups[j].get("hand_split")
-            ):
+            while j >= 0 and (anchors[j] is None or groups[j].get("hand_split")):
                 j -= 1
             if j >= 0:
-                prev_candidate = j
-                cand_available = float(g["time"]) - float(groups[prev_candidate]["time"])
-                if cand_available > 0.0 and cand_available <= tempo.fret_jump_window_seconds:
-                    prev_i = prev_candidate
-                # If candidate is outside the window, do not chain to it; leave prev_i as None.
+                cand_available = float(g["time"]) - float(groups[j]["time"])
+                if 0.0 < cand_available <= tempo.fret_jump_window_seconds:
+                    prev_i = j
+                # A candidate past the window is not chained to either; prev_i
+                # stays None and the group is charged nothing.
         charged = False
         if anchor is not None and prev_i is not None and anchors[prev_i] is not None:
             available = float(g["time"]) - float(groups[prev_i]["time"])
-            if available > 0.0 and available <= tempo.fret_jump_window_seconds:
+            if 0.0 < available <= tempo.fret_jump_window_seconds:
                 leap_by_index.append(
                     _keys_leap_bonus(abs(anchor - anchors[prev_i]), available, tempo)
                 )
@@ -2561,7 +2557,23 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
             leap_by_index.append(0.0)
         anchors.append(anchor)
         if anchor is not None:
-            prev_by_hand[(hand, is_split)] = gi
+            prev_by_hand[key] = gi
+    return leap_by_index
+
+
+def _score_groups_keys(groups, beat_times=(), *, tempo=None):
+    tempo = tempo or _TempoParams()
+    times_sorted = [float(g["time"]) for g in groups]
+    onset_times = sorted(set(times_sorted))
+    onset_index = {t: i for i, t in enumerate(onset_times)}
+    # #103/B8: apply B2 (graded beat strength, via _beat_value) and B5
+    # (melody-turning-point retention) to the keys path -- previously only
+    # the fretted path (_score_groups) had either term, so a keys chart's
+    # ladder ignored metrical position and melodic shape entirely.
+    turning_points = _melody_turning_points_keys(groups, tempo)
+    # #177: the per-hand hand-position shift, precomputed in one linear pass so
+    # the scoring loop below never rescans for it.
+    leap_by_index = _keys_leap_charges(groups, tempo)
     for gi, g in enumerate(groups):
         ns = g["notes"]
         if not ns:
