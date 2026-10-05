@@ -254,6 +254,30 @@ contract.
   the collapse decides which voices survive — the top tier skips
   reduction entirely and returns the chord's own authored note order
   unchanged, same as always.
+- **Keys/piano hand movement is charged per hand (#177).** `_score_groups_keys`
+  applies the keys counterpart of the fretted path's time-aware fret-jump cost
+  (`_fitts_shift_bonus`, #19): a bounded `log2(distance / 5 + 1)` index,
+  discounted by the time available, capped at 0.05 and zeroed past
+  `tempo.fret_jump_window_seconds` — the same tempo-relative window the
+  fretted shift bonus and the melody-turning-point term already use, rather
+  than a second one. Each group is anchored at the MEAN of its MIDI pitches
+  (keys notes carry exact pitch, so a hand's position is best read as the
+  centre of what it is holding), and measured against the previous group of
+  the SAME hand: `_group_notes_keys` tags each notes-bearing group
+  `"lower"`/`"upper"`, taken from `_split_keys_hands` for a split onset and
+  from the same skyline register judgement that picks the melody for an
+  unsplit one, so scoring the two halves of one onset against each other
+  cannot charge a phantom leap. That label is a register guess, so a group with
+  no same-hand predecessor falls back to the group immediately before it (the
+  fallback is off for the halves of a split onset, where having no predecessor
+  really does mean the hand has not played yet); without it a single melodic
+  line whose contour straddles the median would charge 0.0000 for every note.
+  A 5-semitone target width (a hand shifts for free within about a fourth),
+  a 19-semitone reference (a twelfth, where it saturates) and a 0.05 cap —
+  about half the fretted 0.10, for the narrower keys `cost` range, but still
+  twice `_KEYS_BEAT_VALUE_COEF` — are heuristics, not measured player
+  thresholds. The term is keys-only; the fretted path's own shift bonus is
+  unchanged.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
@@ -265,7 +289,7 @@ contract.
 | Instrument | Supported? | Notes |
 |---|---|---|
 | Guitar / bass (fretted) | ✅ | Fret complexity, low-position stretch posture, time-aware hand shifts, string-skip/hand-shape distance, tempo/syncopation-aware density, sustain-ease. Technique scoring covers bend (base + pre-bend/round-trip/shaped-curve difficulty, `bt`/`bnv`), slide, hammer-on/pull-off, tremolo, natural vs. pinch harmonic (scored independently), palm/string mute, vibrato, fret-hand mute, and bass slap/pop (scored independently, slap weighted harder), plus a coordination bonus for a group using more than one distinct technique at once or switching technique from the group before (a chord mixing a bend and a palm mute scores above either alone; see "Technique difficulty counts coordination demand" below). Timing thresholds (grouping window, beat tolerance, movement time scale) scale with the song's own tempo instead of fixed wall-clock constants. |
-| Keys / piano | ✅ | Separate pitch-based heuristic (polyphony, hand-span, density, sustain-ease) — keys notes encode `midi = string*24 + fret`, so the fretted heuristic doesn't apply and never runs against them. No fret anchors/hand-shapes generated (the piano renderer doesn't consume them). |
+| Keys / piano | ✅ | Separate pitch-based heuristic (polyphony, hand-span, density, sustain-ease, per-hand position shift) — keys notes encode `midi = string*24 + fret`, so the fretted heuristic doesn't apply and never runs against them. No fret anchors/hand-shapes generated (the piano renderer doesn't consume them). |
 | Drums | ❌ | Drum parts are a `drum_tab.json` pointer, not a `notes`/`chords` file — outside this generator's data model entirely. Detected and skipped cleanly (`unsupported-instrument-drums`), never mis-scored. |
 | Anything else (vocals, harmony, notation-only, …) | ❌ | An arrangement whose `type` is a specific, non-empty value this generator doesn't recognize is rejected explicitly (`unsupported-instrument-type`) rather than silently treated as fretted. |
 
