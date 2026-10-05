@@ -2603,13 +2603,17 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
         # beat-value discount established: `cost` stays intrinsic mechanical
         # difficulty, and the only thing `retention_score` does on top of it is
         # subtract the metrical discount. `cost` is left unclamped here to
-        # MIRROR `_score_groups`'s convention, NOT because keys `cost` can
-        # reach 1.0 -- it cannot, and claiming so is wrong for this path. The
-        # keys base formula's analytic ceiling is 0.9875 (poly and span both
-        # saturate at 1.0) and the highest value measured over ~60k dense
-        # clusters was 0.1750, so `min(1.0, ...)` is a no-op on any input seen
-        # so far and adding it would be a behaviour change dressed as
-        # tidiness. Only `retention_score` is clamped, as before.
+        # MIRROR `_score_groups`'s convention, NOT because keys `cost` stays
+        # under 1.0 -- it does not. The base formula's weights sum to exactly
+        # 1.00 (0.30 + 0.25 + 0.20 + 0.15 + 0.10) and its terms can all
+        # saturate at once (5+ notes sounding, a 12-semitone reach,
+        # `_sequential_density` at its own 1.0 cap, dt -> 0, max_sus >= 2.0),
+        # so the analytic base ceiling is 1.00 and the leap bonus on top of
+        # it takes `cost` to 1.05. It stays unclamped to mirror
+        # `_score_groups`; the highest value measured over ~60k dense clusters
+        # was 0.1750, so `min(1.0, ...)` changes nothing on any input seen so
+        # far and adding it would be a behaviour change dressed as tidiness.
+        # Only `retention_score` is clamped, as before.
         leap_bonus = leap_by_index[gi]
         cost += leap_bonus
         retention_score += leap_bonus
