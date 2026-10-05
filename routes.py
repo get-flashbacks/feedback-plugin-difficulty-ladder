@@ -2528,11 +2528,20 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
             prev_i = None
         if prev_i is None and anchor is not None and not is_split:
             # Fallback predecessor: the nearest earlier group that actually
-            # holds notes, skipping notes-less ones for the same reason they
-            # are not recorded as predecessors above. Only inherit from groups
-            # that are also NOT split-created to avoid crossing the namespace.
+            # holds notes AND was not itself created by a hand split. Both
+            # skips are needed: a notes-less group holds no position to inherit
+            # (same reason it is not recorded as a predecessor above), and a
+            # split-created group belongs to the OTHER namespace of `hand`, so
+            # inheriting from one is the `upper`/`upper` collision that pairing
+            # the chain key on `(hand, hand_split)` exists to prevent.
+            # Ordinary input reaches this: an authored left-hand chord that
+            # splits, then a right-hand melody note 0.5 s later, is charged a
+            # full-hand-span leap off the chord's own upper half even though
+            # that hand never moved.
             j = gi - 1
-            while j >= 0 and anchors[j] is None:
+            while j >= 0 and (
+                anchors[j] is None or groups[j].get("hand_split")
+            ):
                 j -= 1
             if j >= 0:
                 prev_candidate = j
