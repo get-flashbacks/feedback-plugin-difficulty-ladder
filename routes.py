@@ -3219,14 +3219,46 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
                     0.0, first["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
                 )
         is_last_window = widx == len(windows) - 1
-        if (windows_are_authored or is_last_window) and phrase_groups[-1] is not phrase_groups[0]:
+        if windows_are_authored or is_last_window:
+            # #184: a window holding a single onset is by construction its
+            # own opening AND closing material. The old guard
+            # `phrase_groups[-1] is not phrase_groups[0]` skipped the ending
+            # discount for such a window entirely, so a generated (non-authored)
+            # last window holding one onset got NO boundary discount at all --
+            # its retention stayed at the raw cost (measured: a keys final
+            # window holding one two-hand onset kept retention 0.41, equal to
+            # its raw cost). The last window's end is the song's real end, so
+            # the closing material is meant to be kept when the rest of the
+            # tier allows it, same as any other last window.
             last_t = phrase_groups[-1]["time"]
+            if (windows_are_authored or widx == 0) and last_t == phrase_groups[0]["time"]:
+                # Exactly the groups the first-onset block above discounted:
+                # phrase_groups[0] on the fretted path, every group at first_t
+                # on the keys path.
+                first_onset_groups = (
+                    frozenset(id(g) for g in phrase_groups if g["time"] == last_t)
+                    if is_keys
+                    else frozenset([id(phrase_groups[0])])
+                )
+            else:
+                first_onset_groups = frozenset()
+            # Discount EVERY group sharing the final onset, on both paths. The
+            # fretted path used to break as soon as it left phrase_groups[-1],
+            # so a final window holding a double stop (two groups at one onset)
+            # discounted only the last of them and left the other closing
+            # material at its raw retention score -- while the keys path, which
+            # keys on time rather than identity, discounted both. A closing
+            # onset is a closing onset regardless of how many voices share it
+            # (measured: a fretted final window with fret-8 and fret-17 groups
+            # at t=31.5 kept retention 0.0793 / 0.2237 raw and applied the
+            # ending discount to 0.1237 only). Groups that already received the
+            # first-onset discount in this pass are skipped so a single onset
+            # that is its own opening and closing is discounted exactly once,
+            # preserving the pre-existing behaviour for an authored window that
+            # is both first and last (first-onset discount only, see issue
+            # #184's open question 2).
             for last in reversed(phrase_groups):
-                if (
-                    last["time"] != last_t
-                    or (not is_keys and last is not phrase_groups[-1])
-                    or (is_keys and last["time"] == phrase_groups[0]["time"])
-                ):
+                if last["time"] != last_t or id(last) in first_onset_groups:
                     break
                 last["retention_score"] = max(
                     0.0, last["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,

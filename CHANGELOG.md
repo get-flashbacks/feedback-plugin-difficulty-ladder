@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A generated (non-authored) last phrase window holding a single onset got
+  no phrase-boundary ending discount at all (#184). The discount's guard
+  `phrase_groups[-1] is not phrase_groups[0]` skipped it outright, so the
+  closing material kept its raw retention score -- measured: a keys final
+  window holding one two-hand onset kept retention 0.41, equal to its raw
+  cost. The last window's end is the song's real end, so the closing note is
+  meant to be kept when the rest of the tier allows it, same as any other
+  last window. The ending discount now applies to every group sharing the
+  last onset (a fretted double stop's two halves, or a keys two-hand onset's
+  split halves), except for groups that already received the first-onset
+  discount in the same pass -- a single onset that is its own opening and
+  closing gets the boundary discount exactly once, preserving the
+  pre-existing behaviour for an authored window that is both first and last
+  (first-onset discount only). Applies to the shared fretted and keys path.
+  Separately, the fretted path's reverse loop used to break as soon as it
+  left `phrase_groups[-1]`, so a final window holding a double stop
+  (two groups at one onset) discounted only the LAST of them and left the
+  other closing material at its raw retention score -- while the keys path,
+  which keys on time rather than identity, discounted both. Both paths now
+  discount every group sharing the final onset (measured: a fretted final
+  window with fret-8 and fret-17 groups at t=31.5 kept retention 0.0793 /
+  0.2237 raw and applied the ending discount to 0.1237 only). The fix is
+  covered by `test_fretted_double_stop_last_window_discounts_both_groups`
+  and `test_keys_authored_first_and_last_single_onset_keeps_first_onset_discount_only`.
+  The keys authored first-and-last test now makes its onset the window's ONLY
+  onset (filler moved to a later window), so the first-onset block actually
+  runs on it and a regression that double-discounts an onset shared by the
+  window boundaries would fail there.
 - Keys/piano ladders no longer charge a hand for a jump it did not make
   (#177 review). Three ways the new per-hand leap term could charge movement
   that never happened, now closed. A group whose nearest predecessor of the
