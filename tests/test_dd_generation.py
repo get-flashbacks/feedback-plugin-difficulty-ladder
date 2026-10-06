@@ -422,6 +422,42 @@ def test_flashy_techniques_are_gated_out_of_low_tiers():
     ), "tremolo/harmonic should not survive into the bottom tier of a technical phrase"
 
 
+def test_chords_are_thinned_below_the_top_tier_and_intact_at_the_top():
+    chord = {"t": 2.05, "notes": [
+        {"s": 5, "f": 0}, {"s": 4, "f": 2}, {"s": 3, "f": 2},
+        {"s": 2, "f": 1}, {"s": 1, "f": 0}, {"s": 0, "f": 0},
+    ]}
+    # plenty of simple filler so the chord isn't one of only ~2 groups
+    # (with too few groups, percentile bucketing is degenerate/arbitrary)
+    arr = _arrangement(_simple_notes(0, 8, step=0.1), chords=[chord])
+    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    assert phrases
+    levels = phrases[0]["levels"]
+    max_level = len(levels) - 1
+
+    def chord_note_count_at(lvl):
+        return sum(
+            1 for n in levels[lvl]["notes"] if abs(float(n.get("t", -1)) - chord["t"]) < 1e-6
+        ) + sum(
+            len(c.get("notes", [])) for c in levels[lvl]["chords"]
+            if abs(float(c.get("t", -1)) - chord["t"]) < 1e-6
+        )
+
+    top_count = chord_note_count_at(max_level)
+    assert top_count == 6, "top tier should keep the full chord intact"
+
+    # first level (if any) below the top tier where the chord group appears
+    # at all should be a partial voicing, not the full 6-note chord
+    for lvl in range(max_level):
+        count = chord_note_count_at(lvl)
+        if count > 0:
+            assert count < 6, (
+                f"chord should be thinned to a partial voicing at level {lvl}, "
+                f"not kept whole below the top tier"
+            )
+            break
+
+
 def _last_window_single_group_retention(arr, target_t, bonus, *, keys=False, section_times=None):
     """Score an arrangement with and without the phrase-boundary bonus and
     return the retention of the group at `target_t` in each run.
@@ -514,6 +550,72 @@ def test_keys_single_group_last_window_gets_an_ending_discount():
     assert with_bonus == pytest.approx(without - bonus)
 
 
+def _fretted_double_stop_last_window():
+    """Fretted fixture: a filler window (0-30) plus a final window holding a
+    DOUBLE STOP -- two groups at the same onset. Both are closing material and
+    both should get the ending discount."""
+    hard_a = {"s": 5, "f": 8, "sus": 0.05}
+    hard_b = {"s": 4, "f": 17, "sus": 0.05}
+    filler = [
+        {"t": round(i * 0.3, 3), "s": 0, "f": 0, "sus": 0}
+        for i in range(1, 100) if i * 0.3 < 30
+    ]
+    notes = filler + [{"t": 31.5, **hard_a}, {"t": 31.5, **hard_b}]
+    return {
+        "type": "lead", "name": "lead", "notes": notes, "chords": [],
+        "beats": [{"time": i * 0.5} for i in range(140)],
+        "sections": [], "tuning": [0] * 6,
+    }
+
+
+def _all_groups_at(arr, target_t, bonus, *, keys=False, section_times=None):
+    """Like `_last_window_single_group_retention` but returns the retention of
+    EVERY group at `target_t` (sorted by MIDI) for both runs."""
+    captured = []
+    scorer_attr = "_score_groups_keys" if keys else "_score_groups"
+    orig_scorer = getattr(routes, scorer_attr)
+
+    def wrapper(groups, *a, **k):
+        r = orig_scorer(groups, *a, **k)
+        captured.extend(groups)  # references; mutated in place by the discount
+        return r
+
+    out = {}
+    for label, b in (("without", 0.0), ("with", bonus)):
+        captured.clear()
+        with patch.object(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", b), \
+             patch.object(routes, scorer_attr, wrapper):
+            routes.generate_phrases_for_arrangement(
+                arr, n_levels=6, section_times=section_times
+            )
+        hit = sorted(
+            ((g["notes"][0].get("s", 0), g["notes"][0].get("f", 0)),
+             g["retention_score"])
+            for g in captured
+            if abs(g["time"] - target_t) < 1e-9 and g.get("notes")
+        )
+        out[label] = hit
+    return out["without"], out["with"]
+
+
+def test_fretted_double_stop_last_window_discounts_both_groups():
+    """Closing material is discounted per onset, not per group identity: a
+    fretted final window holding a double stop (two groups at one onset)
+    discounts BOTH, matching the keys path. Before the fix the fretted
+    reverse-loop broke as soon as it left phrase_groups[-1], so only the last
+    group got the discount and the other closing material kept its raw
+    retention score."""
+    arr = _fretted_double_stop_last_window()
+    bonus = 0.05
+    without, with_bonus = _all_groups_at(arr, 31.5, bonus, keys=False)
+    assert len(without) == 2 and len(with_bonus) == 2
+    for (f0, r0), (f1, r1) in zip(without, with_bonus):
+        assert f0 == f1
+        assert r1 == pytest.approx(r0 - bonus), (
+            f"fret {f0}: ending discount should apply to every closing group"
+        )
+
+
 def test_authored_first_and_last_window_keeps_pre_existing_discounts():
     """#184 open question 2, guarded: an AUTHORED window that is both first and
     last (a single windowed phrase) keeps the pre-existing discount pattern --
@@ -550,40 +652,36 @@ def test_authored_first_and_last_window_keeps_pre_existing_discounts():
     assert with_bonus != pytest.approx(without - 2 * bonus)
 
 
-def test_fretted_single_onset_window_discounts_both_boundary_groups(monkeypatch):
-    chord = {"t": 2.05, "notes": [
-        {"s": 5, "f": 0}, {"s": 4, "f": 2}, {"s": 3, "f": 2},
-        {"s": 2, "f": 1}, {"s": 1, "f": 0}, {"s": 0, "f": 0},
-    ]}
-    # plenty of simple filler so the chord isn't one of only ~2 groups
-    # (with too few groups, percentile bucketing is degenerate/arbitrary)
-    arr = _arrangement(_simple_notes(0, 8, step=0.1), chords=[chord])
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
-    assert phrases
-    levels = phrases[0]["levels"]
-    max_level = len(levels) - 1
-
-    def chord_note_count_at(lvl):
-        return sum(
-            1 for n in levels[lvl]["notes"] if abs(float(n.get("t", -1)) - chord["t"]) < 1e-6
-        ) + sum(
-            len(c.get("notes", [])) for c in levels[lvl]["chords"]
-            if abs(float(c.get("t", -1)) - chord["t"]) < 1e-6
-        )
-
-    top_count = chord_note_count_at(max_level)
-    assert top_count == 6, "top tier should keep the full chord intact"
-
-    # first level (if any) below the top tier where the chord group appears
-    # at all should be a partial voicing, not the full 6-note chord
-    for lvl in range(max_level):
-        count = chord_note_count_at(lvl)
-        if count > 0:
-            assert count < 6, (
-                f"chord should be thinned to a partial voicing at level {lvl}, "
-                f"not kept whole below the top tier"
-            )
-            break
+def test_keys_authored_first_and_last_single_onset_keeps_first_onset_discount_only():
+    """#184 open question 2, keys path: an AUTHORED window that is both first
+    and last, holding a single two-hand onset, gets the first-onset discount
+    exactly once -- the ending discount is NOT added on top, so the onset is
+    not discounted twice. The keys path splits a two-hand onset into one
+    group per hand, so both halves must carry the same single discount."""
+    notes = [
+        {"t": round(i * 0.2, 3), "s": 0, "sus": 0}
+        for i in range(1, 11) if i * 0.2 < 2
+    ]
+    notes += [
+        # A two-hand onset at t=2: lower hand (bass) + upper hand (melody).
+        {"t": 2.0, "s": 0, "sus": 0.05},
+        {"t": 2.0, "s": 5, "sus": 0.05},
+    ]
+    arr = {
+        "type": "keys", "name": "keys", "notes": notes, "chords": [],
+        "beats": [{"time": i * 0.5} for i in range(20)],
+        "sections": [], "tuning": [],
+    }
+    bonus = 0.05
+    without, with_bonus = _all_groups_at(
+        arr, 2.0, bonus, keys=True, section_times=[0.0, 4.0]
+    )
+    assert len(without) == 2 and len(with_bonus) == 2
+    for (f0, r0), (f1, r1) in zip(without, with_bonus):
+        assert f0 == f1
+        # Exactly one discount (first-onset), not two.
+        assert r1 == pytest.approx(r0 - bonus)
+        assert r1 != pytest.approx(r0 - 2 * bonus)
 
 
 def test_lower_tier_refinement_promotes_a_beat_anchor_and_continuity_bridge():
