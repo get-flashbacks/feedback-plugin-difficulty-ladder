@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.2237 raw and applied the ending discount to 0.1237 only). The fix is
   covered by `test_fretted_double_stop_last_window_discounts_both_groups`
   and `test_keys_authored_first_and_last_single_onset_keeps_first_onset_discount_only`.
+  The keys authored first-and-last test now makes its onset the window's ONLY
+  onset (filler moved to a later window), so the first-onset block actually
+  runs on it and a regression that double-discounts an onset shared by the
+  window boundaries would fail there.
 - Keys/piano ladders no longer charge a hand for a jump it did not make
   (#177 review). Three ways the new per-hand leap term could charge movement
   that never happened, now closed. A group whose nearest predecessor of the

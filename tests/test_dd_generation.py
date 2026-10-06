@@ -657,24 +657,31 @@ def test_keys_authored_first_and_last_single_onset_keeps_first_onset_discount_on
     and last, holding a single two-hand onset, gets the first-onset discount
     exactly once -- the ending discount is NOT added on top, so the onset is
     not discounted twice. The keys path splits a two-hand onset into one
-    group per hand, so both halves must carry the same single discount."""
+    group per hand, so both halves must carry the same single discount.
+
+    The tested onset is the window's ONLY onset (filler lives in a later
+    window to clear the generation floor), so the first-onset block above
+    actually runs on it and a regression that double-discounts an onset
+    shared by the window boundaries would fail here.
+    """
     notes = [
-        {"t": round(i * 0.2, 3), "s": 0, "sus": 0}
-        for i in range(1, 11) if i * 0.2 < 2
-    ]
-    notes += [
         # A two-hand onset at t=2: lower hand (bass) + upper hand (melody).
         {"t": 2.0, "s": 0, "sus": 0.05},
         {"t": 2.0, "s": 5, "sus": 0.05},
     ]
+    # Filler in a LATER window so window [0, 4] holds exactly one onset.
+    notes += [
+        {"t": round(4.0 + i * 0.2, 3), "s": 0, "sus": 0}
+        for i in range(1, 11)
+    ]
     arr = {
         "type": "keys", "name": "keys", "notes": notes, "chords": [],
-        "beats": [{"time": i * 0.5} for i in range(20)],
+        "beats": [{"time": i * 0.5} for i in range(40)],
         "sections": [], "tuning": [],
     }
-    bonus = 0.05
+    bonus = 0.02  # keys cost scale is ~0.10 wide; 0.05 would clamp to 0
     without, with_bonus = _all_groups_at(
-        arr, 2.0, bonus, keys=True, section_times=[0.0, 4.0]
+        arr, 2.0, bonus, keys=True, section_times=[0.0, 4.0, 8.0]
     )
     assert len(without) == 2 and len(with_bonus) == 2
     for (f0, r0), (f1, r1) in zip(without, with_bonus):
