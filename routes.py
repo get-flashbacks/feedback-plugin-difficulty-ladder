@@ -3238,14 +3238,11 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
             # THAT group only -- this preserves the pre-existing behaviour for
             # an authored window that is both first and last (first-onset
             # discount only, see issue #184's open question 2) and avoids
-            # double-counting. Other groups at the same onset (a fretted
-            # double stop's two halves, or a keys two-hand onset's split
-            # halves) are distinct boundary groups and still get the ending
-            # discount, same as before.
-            # Keys only: the boundary onset is every group sharing the first/last
-            # time, since a two-hand onset is split into one group per hand and
-            # giving the bonus to only one half would leave the other (often the
-            # melody) without it. The fretted path keeps its single boundary group.
+            # double-counting. On the keys path the other groups sharing the
+            # last onset (a two-hand onset's split halves) are distinct
+            # boundary groups and still get the ending discount; the fretted
+            # path keeps its single boundary group -- the loop below breaks
+            # unless `last is phrase_groups[-1]`.
             last_t = phrase_groups[-1]["time"]
             if (windows_are_authored or widx == 0) and last_t == phrase_groups[0]["time"]:
                 # Exactly the groups the first-onset block above discounted:

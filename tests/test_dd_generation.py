@@ -550,7 +550,61 @@ def test_authored_first_and_last_window_keeps_pre_existing_discounts():
     assert with_bonus != pytest.approx(without - 2 * bonus)
 
 
-def test_fretted_single_onset_window_discounts_both_boundary_groups(monkeypatch):
+def test_authored_single_onset_window_discounts_fretted_once():
+    """#184's "generated and authored" acceptance, authored half: an authored
+    window whose first AND last onset coincide (a single group, so it is its
+    own opening and closing) receives the boundary discount exactly ONCE --
+    the first-onset pass discounts it and the ending pass must then skip it
+    via `first_onset_groups`. Fails with `or id(last) in first_onset_groups`
+    removed from routes.py (the group would be discounted twice).
+
+    The arrangement needs >= MIN_EVENTS_FOR_GENERATION events, so the filler
+    lives in an earlier authored window and only the final window [6, 6.5)
+    holds the single group under test.
+    """
+    filler = [
+        {"t": round(0.2 + i * 0.3, 3), "s": 0, "f": 0, "sus": 0}
+        for i in range(13) if 0.2 + i * 0.3 < 3.8
+    ]
+    # A hard note keeps the group's retention well above 2 * bonus, so the
+    # exactly-once / twice distinction can't be hidden by max(0.0, ...).
+    notes = filler + [
+        {"t": 6.2, "s": 5, "f": 20, "bn": 1.0, "bt": 3, "tp": True, "sus": 0.3}
+    ]
+    arr = _arrangement(notes, n_beats=20)
+    bonus = 0.10
+    without, with_bonus = _last_window_single_group_retention(
+        arr, 6.2, bonus, keys=False, section_times=[0.0, 6.0]
+    )
+    assert without is not None and with_bonus is not None
+    # Exactly one ending discount on the shared group, not two.
+    assert with_bonus == pytest.approx(without - bonus)
+    assert with_bonus != pytest.approx(without - 2 * bonus)
+
+
+def test_authored_single_onset_window_discounts_keys_once():
+    """Keys counterpart: an authored window holding one onset gets exactly one
+    boundary discount, never two (see the fretted twin above)."""
+    filler = [
+        {"t": round(0.2 + i * 0.3, 3), "s": 0, "sus": 0}
+        for i in range(13) if 0.2 + i * 0.3 < 3.8
+    ]
+    notes = filler + [{"t": 6.2, "s": 0, "sus": 0.3}]
+    arr = {
+        "type": "keys", "name": "keys", "notes": notes, "chords": [],
+        "beats": [{"time": i * 0.5} for i in range(20)],
+        "sections": [], "tuning": [],
+    }
+    bonus = 0.02  # keys cost scale is ~0.10 wide; 0.90 would clamp to 0
+    without, with_bonus = _last_window_single_group_retention(
+        arr, 6.2, bonus, keys=True, section_times=[0.0, 6.0]
+    )
+    assert without is not None and with_bonus is not None
+    assert with_bonus == pytest.approx(without - bonus)
+    assert with_bonus != pytest.approx(without - 2 * bonus)
+
+
+def test_chords_are_thinned_below_the_top_tier_and_intact_at_the_top():
     chord = {"t": 2.05, "notes": [
         {"s": 5, "f": 0}, {"s": 4, "f": 2}, {"s": 3, "f": 2},
         {"s": 2, "f": 1}, {"s": 1, "f": 0}, {"s": 0, "f": 0},

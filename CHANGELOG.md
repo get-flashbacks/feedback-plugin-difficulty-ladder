@@ -15,13 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   window holding one two-hand onset kept retention 0.41, equal to its raw
   cost. The last window's end is the song's real end, so the closing note is
   meant to be kept when the rest of the tier allows it, same as any other
-  last window. The ending discount now applies to every group sharing the
-  last onset (a fretted double stop's two halves, or a keys two-hand onset's
-  split halves), except for groups that already received the first-onset
-  discount in the same pass -- a single onset that is its own opening and
+  last window. On the keys path the ending discount applies to every group
+  sharing the last onset (a two-hand onset's split halves); the fretted path
+  discounts only its single boundary group, so a double stop's other half is
+  untouched, as before. Groups that already received the first-onset discount
+  in the same pass are skipped, so a single onset that is its own opening and
   closing gets the boundary discount exactly once, preserving the
   pre-existing behaviour for an authored window that is both first and last
-  (first-onset discount only). Applies to the shared fretted and keys path.
+  (first-onset discount only).
 - Keys/piano ladders no longer charge a hand for a jump it did not make
   (#177 review). Three ways the new per-hand leap term could charge movement
   that never happened, now closed. A group whose nearest predecessor of the
