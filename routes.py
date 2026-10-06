@@ -3219,13 +3219,50 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
                     0.0, first["retention_score"] - _PHRASE_BOUNDARY_RETENTION_BONUS,
                 )
         is_last_window = widx == len(windows) - 1
-        if (windows_are_authored or is_last_window) and phrase_groups[-1] is not phrase_groups[0]:
+        if windows_are_authored or is_last_window:
+            # #184: a window holding a single onset is by construction its
+            # own opening AND closing material. The old guard
+            # `phrase_groups[-1] is not phrase_groups[0]` skipped the ending
+            # discount for such a window entirely, so a generated (non-authored)
+            # last window holding one onset got NO boundary discount at all --
+            # its retention stayed at the raw cost (measured: a keys final
+            # window holding one two-hand onset kept retention 0.41, equal to
+            # its raw cost). The last window's end is the song's real end, so
+            # the closing material is meant to be kept when the rest of the
+            # tier allows it, same as any other last window.
+            #
+            # A group that is its own opening and closing gets the boundary
+            # discount exactly ONCE. The first-onset block above already
+            # discounted it when the window is an authored-or-first boundary
+            # with first_t == last_t, so the ending discount is skipped for
+            # THAT group only -- this preserves the pre-existing behaviour for
+            # an authored window that is both first and last (first-onset
+            # discount only, see issue #184's open question 2) and avoids
+            # double-counting. Other groups at the same onset (a fretted
+            # double stop's two halves, or a keys two-hand onset's split
+            # halves) are distinct boundary groups and still get the ending
+            # discount, same as before.
+            # Keys only: the boundary onset is every group sharing the first/last
+            # time, since a two-hand onset is split into one group per hand and
+            # giving the bonus to only one half would leave the other (often the
+            # melody) without it. The fretted path keeps its single boundary group.
             last_t = phrase_groups[-1]["time"]
+            if (windows_are_authored or widx == 0) and last_t == phrase_groups[0]["time"]:
+                # Exactly the groups the first-onset block above discounted:
+                # phrase_groups[0] on the fretted path, every group at first_t
+                # on the keys path.
+                first_onset_groups = (
+                    frozenset(id(g) for g in phrase_groups if g["time"] == last_t)
+                    if is_keys
+                    else frozenset([id(phrase_groups[0])])
+                )
+            else:
+                first_onset_groups = frozenset()
             for last in reversed(phrase_groups):
                 if (
                     last["time"] != last_t
                     or (not is_keys and last is not phrase_groups[-1])
-                    or (is_keys and last["time"] == phrase_groups[0]["time"])
+                    or id(last) in first_onset_groups
                 ):
                     break
                 last["retention_score"] = max(

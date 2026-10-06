@@ -422,7 +422,135 @@ def test_flashy_techniques_are_gated_out_of_low_tiers():
     ), "tremolo/harmonic should not survive into the bottom tier of a technical phrase"
 
 
-def test_chords_are_thinned_below_the_top_tier_and_intact_at_the_top():
+def _last_window_single_group_retention(arr, target_t, bonus, *, keys=False, section_times=None):
+    """Score an arrangement with and without the phrase-boundary bonus and
+    return the retention of the group at `target_t` in each run.
+
+    Captures REFERENCES to the scored group dicts: the boundary discount
+    mutates them in place after `_score_groups` / `_score_groups_keys`
+    returns, so the same objects are observed in both runs.
+    """
+    captured = []
+    scorer_attr = "_score_groups_keys" if keys else "_score_groups"
+    orig_scorer = getattr(routes, scorer_attr)
+
+    def wrapper(groups, *a, **k):
+        r = orig_scorer(groups, *a, **k)
+        captured.extend(groups)  # references; mutated in place by the discount
+        return r
+
+    out = {}
+    for label, b in (("without", 0.0), ("with", bonus)):
+        captured.clear()
+        with patch.object(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", b), \
+             patch.object(routes, scorer_attr, wrapper):
+            routes.generate_phrases_for_arrangement(
+                arr, n_levels=6, section_times=section_times
+            )
+        hit = [g for g in captured if abs(g["time"] - target_t) < 1e-9]
+        out[label] = hit[-1]["retention_score"] if hit else None
+    return out["without"], out["with"]
+
+
+def _fretted_single_group_last_window():
+    """Fretted fixture: a filler window (0-30) plus a final window holding
+    exactly one group. The group is placed strictly inside the final window
+    (a small sustain tail pushes `duration` past its onset, mirroring
+    `test_generated_window_bonus_applies_only_at_song_start_and_song_end`).
+    """
+    hard = {"s": 5, "f": 20, "bn": 1.0, "bt": 3, "tp": True, "sus": 0}
+    filler = [
+        {"t": round(i * 0.3, 3), "s": 0, "f": 0, "sus": 0}
+        for i in range(1, 100) if i * 0.3 < 30
+    ]
+    notes = filler + [{**hard, "t": 31.5, "sus": 0.05}]
+    return {
+        "type": "lead", "name": "lead", "notes": notes, "chords": [],
+        "beats": [{"time": i * 0.5} for i in range(140)],
+        "sections": [], "tuning": [0] * 6,
+    }
+
+
+def _keys_single_group_last_window():
+    """Keys counterpart: the same filler plus one single-note onset in the
+    final window (a one-hand group, the simplest case)."""
+    filler = [
+        {"t": round(i * 0.3, 3), "s": 0, "sus": 0}
+        for i in range(1, 100) if i * 0.3 < 30
+    ]
+    notes = filler + [{"t": 31.5, "s": 0, "sus": 0.05}]
+    return {
+        "type": "keys", "name": "keys", "notes": notes, "chords": [],
+        "beats": [{"time": i * 0.5} for i in range(140)],
+        "sections": [], "tuning": [],
+    }
+
+
+def test_fretted_single_group_last_window_gets_an_ending_discount():
+    """#184 acceptance: a generated (non-authored) last window holding ONE
+    group gets the phrase-boundary ending discount, checking retention
+    scores rather than tier output (tier rounding can hide the difference).
+
+    Before the fix this group kept its raw retention score -- no discount.
+    """
+    arr = _fretted_single_group_last_window()
+    bonus = 0.10
+    without, with_bonus = _last_window_single_group_retention(
+        arr, 31.5, bonus, keys=False
+    )
+    assert without is not None and with_bonus is not None
+    assert with_bonus == pytest.approx(without - bonus)
+
+
+def test_keys_single_group_last_window_gets_an_ending_discount():
+    """#184 acceptance: the keys path has the same gap -- a final window
+    holding one onset (here a single note) gets the ending discount."""
+    arr = _keys_single_group_last_window()
+    bonus = 0.02  # keys cost scale is ~0.10 wide; 0.90 would clamp to 0
+    without, with_bonus = _last_window_single_group_retention(
+        arr, 31.5, bonus, keys=True
+    )
+    assert without is not None and with_bonus is not None
+    assert with_bonus == pytest.approx(without - bonus)
+
+
+def test_authored_first_and_last_window_keeps_pre_existing_discounts():
+    """#184 open question 2, guarded: an AUTHORED window that is both first and
+    last (a single windowed phrase) keeps the pre-existing discount pattern --
+    its first group gets the first-onset discount and its last group gets the
+    ending discount, each exactly once. The fix must not double-discount the
+    last group here (its onset differs from the first's), nor drop the ending
+    discount.
+
+    This is unchanged behaviour; the only case the fix changes is a
+    GENERATED last window holding a single onset.
+    """
+    # One authored window [0, 4] with several onsets; the last onset (t=3.5)
+    # differs from the first (t=0.2), so the ending discount applies normally.
+    notes = [
+        {"t": round(i * 0.2, 3), "s": 0, "f": 0, "sus": 0}
+        for i in range(1, 11) if i * 0.2 < 2
+    ]
+    notes += [
+        {"t": 2.5, "s": 5, "f": 20, "bn": 1.0, "bt": 3, "tp": True, "sus": 0},
+        {"t": 3.5, "s": 5, "f": 17, "bn": 1.0, "bt": 3, "tp": True, "sus": 0},
+    ]
+    arr = {
+        "type": "lead", "name": "lead", "notes": notes, "chords": [],
+        "beats": [{"time": i * 0.5} for i in range(20)],
+        "sections": [], "tuning": [0] * 6,
+    }
+    bonus = 0.10
+    without, with_bonus = _last_window_single_group_retention(
+        arr, 3.5, bonus, keys=False, section_times=[0.0, 4.0]
+    )
+    assert without is not None and with_bonus is not None
+    # Exactly one ending discount on the last group, not two.
+    assert with_bonus == pytest.approx(without - bonus)
+    assert with_bonus != pytest.approx(without - 2 * bonus)
+
+
+def test_fretted_single_onset_window_discounts_both_boundary_groups(monkeypatch):
     chord = {"t": 2.05, "notes": [
         {"s": 5, "f": 0}, {"s": 4, "f": 2}, {"s": 3, "f": 2},
         {"s": 2, "f": 1}, {"s": 1, "f": 0}, {"s": 0, "f": 0},
