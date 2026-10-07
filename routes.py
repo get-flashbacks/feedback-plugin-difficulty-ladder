@@ -2268,6 +2268,37 @@ _KEYS_LEAP_REFERENCE_SEMITONES = 19.0
 # the term-vs-metrical-weight guard in the tests.
 _KEYS_LEAP_MAX_BONUS = 0.05
 
+# #181: minimum musical floor for the keys bottom tier. The
+# proportional floor in _assign_tiers guarantees tier 0 a share of
+# the phrase's GROUPS -- ceil(((1/n_tiers)^1.35) * total), about 15%
+# of them -- but a keys group is one onset, often a whole chord, so
+# on a dense chordal passage that share materializes as only 1-2
+# NOTES against 20+ at the top tier: a learner at the easiest
+# setting has almost nothing to play (measured on a 2-bar phrase of
+# quarter-note 4-voice chords: tier 0 held 2-3 notes while the top
+# tier held 32). The floor has two parts, applied per phrase AFTER
+# _assign_tiers (the arrangement-wide thresholds are untouched -- see
+# the interaction notes in _keys_tier0_floor's docstring):
+#   1. a strong-beat skeleton: one group at tier 0 covering every
+#      grid position graded at least _STRENGTH_STRONG_BEAT (a
+#      downbeat, or the mid-bar strong beat of a 4-beat measure),
+#      so the easiest tier always carries the phrase's metrical
+#      landmarks;
+#   2. a note-density backstop: tier 0 materializes at least the
+#      bottom tier's equal share of the phrase's notes (1/n_levels,
+#      capped at what a full demotion of the phrase could emit at
+#      tier 0 -- a voicing whose outer voices are an octave apart
+#      collapses to one note at tier 0 however many voices it has),
+#      topping up with the cheapest remaining groups when the
+#      skeleton alone -- thin in 3/4 or 6/8, or absent entirely when
+#      no graded grid exists -- leaves it sparser.
+# Both parts only DEMOTE groups into tier 0, so the top tier's
+# group set (every group) is unchanged and every lower tier only
+# grows; the anti-collapse guard inside _keys_tier0_floor keeps the
+# floor from making ANY tier byte-identical to its neighbour (which
+# _collapse_identical_levels would silently merge, costing the
+# ladder a tier -- #181's second acceptance criterion).
+
 
 def _split_keys_hands(ns):
     """Split one simultaneous onset into (lower, upper) hand parts, or
@@ -2980,6 +3011,206 @@ def _collapse_identical_levels(levels_out):
     return collapsed
 
 
+def _keys_identical_tier_pairs(phrase_groups, top_tier):
+    """Indices k such that this phrase's tiers k and k+1 materialize
+    byte-identical note lists -- exactly the comparison
+    `_collapse_identical_levels` makes (through
+    `_canonical_note_for_compare`, so prune-artifact sentinel keys
+    cannot fake a difference). A demotion into tier 0 grows every
+    tier set `{g["level"] <= k}` it crosses, so ANY adjacent
+    boundary can become a duplicate, not just the bottom one:
+    demoting every group that sat at level k+1 equalizes the two
+    tiers' group sets, and when their per-tier voice budgets then
+    agree (always for two-voice groups, and for wider voicings
+    whose extra voices are all octave duplicates of exposed outer
+    voices) the materialized notes collide and
+    `_collapse_identical_levels` would silently merge the pair,
+    costing the ladder a tier."""
+    materialized = [
+        [_canonical_note_for_compare(n)
+         for n in _notes_for_level_keys(phrase_groups, k, top_tier)[0]]
+        for k in range(top_tier + 1)
+    ]
+    return frozenset(
+        k for k in range(top_tier) if materialized[k] == materialized[k + 1]
+    )
+
+
+def _keys_tier0_note_count(group, top_tier):
+    """How many notes `group` emits at tier 0, whatever level
+    it currently holds. A group's tier-0 materialization
+    depends only on its own notes -- `_notes_for_level_keys`
+    reduces each group independently -- so a phrase's tier-0
+    size is the sum of its groups' sizes, computable once per
+    group instead of by rematerializing the whole phrase.
+    `_notes_for_level_keys` skips a group whose level exceeds
+    the requested tier, so the group is briefly held at
+    level 0 for the measurement and its real level restored
+    immediately after."""
+    held = group["level"]
+    group["level"] = 0
+    try:
+        return len(_notes_for_level_keys([group], 0, top_tier)[0])
+    finally:
+        group["level"] = held
+
+
+def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
+    """#181: enforce the keys bottom-tier density floor on one phrase
+    window (see the #181 design comment in the keys constants
+    region for the two-part floor definition and the measured
+    failure it fixes).
+
+    INTERACTION WITH THE TIER THRESHOLDS AND _collapse_identical_levels
+    (#181's second work item): this pass runs AFTER `_assign_tiers`,
+    so it never sees or moves the arrangement-wide `global_thresholds`
+    -- it only relabels `g["level"]` DOWNWARDS within this phrase.
+    `_notes_for_level_keys` materializes tier k from the group set
+    `{g["level"] <= k}`, and a demotion moves a group INTO every
+    such set it crosses, never out of one, so tiers only grow and
+    the top tier (all groups) is untouched. The boundary a demotion
+    can cross is any adjacent pair: demoting EVERY group that sat at
+    level k+1 equalizes tiers k and k+1, and when every group's
+    level-k and level-(k+1) reductions then agree their materialized
+    notes become byte-identical -- which `_collapse_identical_levels`
+    would silently merge, costing the ladder a tier. The guard
+    therefore makes sure the floor never CREATES a new identical
+    pair -- a pair already identical BEFORE the floor is a
+    pre-existing collapse, #70's own territory, and not the floor's
+    to fix or worsen. A pair (k, k+1) can only become newly identical
+    when every group that sat at level k+1 was demoted (one group at
+    level k+1 alone separates the pair's group sets, since a group
+    materializes at least one note at every tier), so the fix is
+    surgical: restore the most recently demoted group with original
+    level k+1 -- one per threatened boundary, every other demotion
+    intact. Boundaries are walked top-down because restoring a group
+    with original level L removes it from every tier set below L,
+    which can only threaten boundaries below L -- each visited later
+    in the walk.
+
+    Strong positions come from `tempo.beat_grid` (the graded #103/B2
+    grid), filtered to this window [t0, t1). Without a graded grid
+    (no beats[], or none carrying a downbeat) there are no positions
+    of known strength to guarantee -- every beat is equally (un)known
+    -- so the skeleton is skipped and the note-density backstop is the
+    whole floor. A strong position's cover is the phrase group nearest
+    to it (unbounded, so a syncopated or subdivided onset still
+    covers the beat it displaces; a position nobody plays near, a
+    rest, keeps whatever group is genuinely closest); ties -- a pair
+    of sixteenths straddling the beat -- go to the cheaper group, the
+    one the ladder already prefers at tier 0, then to the earlier
+    group, so the choice is deterministic.
+    """
+    if not phrase_groups:
+        return
+    top_tier = n_levels - 1
+    original_levels = [int(g["level"]) for g in phrase_groups]
+    # Only groups that hold notes can cover a position or contribute
+    # to tier 0's density; an empty group (a unit-test fixture
+    # shape) materializes nothing either way.
+    coverable = [i for i, g in enumerate(phrase_groups) if g["notes"]]
+    if not coverable:
+        return
+    # The identical-pair set the floor must not extend (see the
+    # docstring): pairs already collapsing before any demotion.
+    pre_floor_pairs = _keys_identical_tier_pairs(phrase_groups, top_tier)
+
+    # Part 1: the strong-beat skeleton.
+    positions = ()
+    if tempo.beat_grid:
+        positions = sorted(
+            float(t) for t, strength in tempo.beat_grid
+            if strength >= _STRENGTH_STRONG_BEAT and t0 <= t < t1
+        )
+    demotions = []
+    chosen = set()
+    for pos in positions:
+        cover = min(
+            coverable,
+            key=lambda i: (
+                abs(float(phrase_groups[i]["time"]) - pos),
+                phrase_groups[i]["retention_score"],
+                -_beat_value(phrase_groups[i]["time"], beat_times, tempo),
+                i,
+            ),
+        )
+        if cover not in chosen and original_levels[cover] > 0:
+            chosen.add(cover)
+            demotions.append(cover)
+    for i in demotions:
+        phrase_groups[i]["level"] = 0
+
+    # Part 2: the note-density backstop. The target is the
+    # bottom tier's equal share of the phrase's notes (1/n_levels),
+    # counted the way a reader experiences it -- the MATERIALIZED
+    # tier-0 note count, after outer-voice reduction and the
+    # octave collapse -- so the guarantee is on what the learner
+    # actually plays, not on raw input note counts. The raw share
+    # is capped at what a full demotion of the phrase could emit
+    # at tier 0: a voicing whose outer voices are an octave apart
+    # collapses to one note at tier 0 however many voices it has,
+    # so on such a passage the raw share is unreachable even with
+    # every group at tier 0, and an uncapped target would only
+    # send the backstop chasing it to exhaustion.
+    tier0_sizes = {
+        i: _keys_tier0_note_count(phrase_groups[i], top_tier)
+        for i in coverable
+    }
+    # Each group's tier-0 size is independent of every group's
+    # level (see _keys_tier0_note_count), so the emitted tier-0
+    # count is tracked incrementally -- the per-group sizes are
+    # computed once and each demotion adds its group's size --
+    # instead of rematerializing and re-sorting the whole phrase
+    # after every demotion, which is quadratic in the phrase's
+    # group count on dense passages.
+    emitted = sum(
+        tier0_sizes[i] for i in coverable
+        if phrase_groups[i]["level"] == 0
+    )
+    target = min(
+        math.ceil(
+            sum(len(phrase_groups[i]["notes"]) for i in coverable)
+            / n_levels,
+        ),
+        sum(tier0_sizes.values()),
+    )
+    remaining = [
+        i for i in sorted(
+            coverable,
+            key=lambda i: (
+                phrase_groups[i]["retention_score"],
+                -_beat_value(phrase_groups[i]["time"], beat_times, tempo),
+                i,
+            ),
+        )
+        if i not in chosen and original_levels[i] > 0
+    ]
+    next_candidate = 0
+    while next_candidate < len(remaining) and emitted < target:
+        i = remaining[next_candidate]
+        next_candidate += 1
+        phrase_groups[i]["level"] = 0
+        demotions.append(i)
+        emitted += tier0_sizes[i]
+
+    # Anti-collapse guard (see the docstring): a pair already
+    # identical BEFORE the floor is a pre-existing collapse, not
+    # the floor's to fix; a pair the floor made identical gets the
+    # most recently demoted group of the level it lost back --
+    # sacrificing backstop additions before strong-beat skeleton
+    # positions, one restoration per threatened boundary.
+    for k in range(top_tier - 1, -1, -1):
+        if k in pre_floor_pairs:
+            continue
+        if k not in _keys_identical_tier_pairs(phrase_groups, top_tier):
+            continue
+        for i in reversed(demotions):
+            if original_levels[i] == k + 1:
+                phrase_groups[i]["level"] = original_levels[i]
+                demotions.remove(i)
+                break
+
+
 # ── Public entry point ───────────────────────────────────────────────────────
 #
 # The seam's only public door: everything above is private scoring math, and
@@ -3270,6 +3501,14 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # changing — an easy riff is complete early, a hard passage differs
         # at every tier.
         _assign_tiers(phrase_groups, n_levels, global_thresholds, beat_times, tempo=tempo)
+        # #181: the keys bottom-tier density floor. Fretted is
+        # untouched -- its degenerate-sparsity failure mode is
+        # keys-only (a keys group is one onset, often a whole
+        # chord, so the proportional group-share floor can
+        # materialize as 1-2 notes; see the _KEYS_TIER0 design
+        # comment in the keys constants region).
+        if is_keys:
+            _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels)
         # #103/B10: computed once per phrase (not per level) since the
         # landmark stage only ever applies at level 0 -- see the loop below.
         chord_stage_drop_ids = (

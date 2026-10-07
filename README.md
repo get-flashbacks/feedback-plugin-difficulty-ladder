@@ -278,6 +278,50 @@ contract.
   twice `_KEYS_BEAT_VALUE_COEF` — are heuristics, not measured player
   thresholds. The term is keys-only; the fretted path's own shift bonus is
   unchanged.
+- **Keys/piano bottom tier has a minimum musical density (#181, item 6 of
+  the keys roadmap #175).** The proportional tier floor in `_assign_tiers`
+  guarantees tier 0 a share of the phrase's GROUPS (~15%), but a keys group
+  is one onset — often a whole chord — so on a dense chordal passage that
+  share materialized as only 1-2 NOTES against 20+ at the top tier: a
+  learner at the easiest setting had almost nothing to play (measured on a
+  2-bar phrase of quarter-note 4-voice chords: tier 0 held 2-3 notes while
+  the top tier held 32). The keys path now applies a per-phrase floor after
+  tier assignment: a strong-beat skeleton (one group at tier 0 covering
+  every grid position graded at least `_STRENGTH_STRONG_BEAT` — a
+  downbeat, or the mid-bar strong beat of a 4/4 measure), plus a
+  note-density backstop (tier 0 materializes at least the bottom tier's
+  equal share of the phrase's notes, 1/n_levels, capped at what a full
+  demotion of the phrase could emit at tier 0 — a voicing whose outer
+  voices are an octave apart collapses to one note at tier 0 however
+  many voices it has, so the raw share can be unreachable even with
+  every group at tier 0; the emitted count is tracked incrementally —
+  a group's tier-0 materialization is independent of every group's
+  level, so the per-group sizes are computed once and each demotion
+  adds its group's size — instead of rematerializing the whole phrase
+  after every demotion, which is quadratic in the phrase's group count
+  on dense passages), topping up with the
+  cheapest remaining groups when the skeleton alone is thin — in 3/4 or
+  6/8, or when no graded beat grid exists at all). Measured on the same
+  fixture: tier 0 now holds 7 notes (the bass voice of nearly every
+  chord); on 2 bars of sixteenth notes, 9 of 32 with every strong beat
+  covered. The floor only relabels levels downwards within a phrase (the
+  arrangement-wide thresholds are untouched and every tier's group set only
+  grows), but a demotion can make an ADJACENT pair of tiers
+  byte-identical: demoting every group that sat at level k+1 equalizes
+  the pair's group sets, and when their per-tier voice budgets then agree
+  (always for two-voice groups, and for octave voicings whose extra voices
+  duplicate exposed outer voices) `_collapse_identical_levels` would
+  silently merge the pair, costing the ladder a tier. The anti-collapse
+  guard therefore never lets the floor create a new identical pair: a pair
+  already identical beforehand is a pre-existing collapse (issue #70's own
+  territory), and the surgical fix restores the most recently demoted group
+  of the level the boundary lost — one restoration per threatened boundary,
+  every other demotion intact, sacrificing backstop additions before
+  strong-beat skeleton positions. Where the guard and the floor conflict,
+  the ladder without the collapsed tier wins: on a passage of nothing but
+  two-voice chords, any demotion at all would create a new identical pair,
+  so the floor leaves the tier assignment untouched. The floor is keys-only;
+  the fretted path is untouched.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
