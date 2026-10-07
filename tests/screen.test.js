@@ -3182,6 +3182,64 @@ test('malformed dropResistance storage updates reset the setting to false', () =
     assert.equal(mod.settings.dropResistance, false);
 });
 
+// Issue #158 (tier rail 3/4): `showGlasses` was renamed to "Show difficulty
+// guide", stored under `showDifficultyGuide`. An existing user's on/off
+// choice migrates forward on first read instead of resetting to the
+// default, and the migration is idempotent.
+
+test('a legacy-only showGlasses false keeps the guide off after upgrading', () => {
+    const mod = freshPlugin({ stored: { 'difficulty_ladder.showGlasses': JSON.stringify(false) } });
+    assert.equal(mod.settings.showDifficultyGuide, false);
+    assert.equal(global.localStorage.getItem('difficulty_ladder.showDifficultyGuide'), 'false');
+});
+
+test('a legacy-only showGlasses true keeps the guide on after upgrading', () => {
+    const mod = freshPlugin({ stored: { 'difficulty_ladder.showGlasses': JSON.stringify(true) } });
+    assert.equal(mod.settings.showDifficultyGuide, true);
+    assert.equal(global.localStorage.getItem('difficulty_ladder.showDifficultyGuide'), 'true');
+});
+
+test('an existing showDifficultyGuide value wins over a stale showGlasses value', () => {
+    const mod = freshPlugin({ stored: {
+        'difficulty_ladder.showDifficultyGuide': JSON.stringify(false),
+        'difficulty_ladder.showGlasses': JSON.stringify(true),
+    } });
+    assert.equal(mod.settings.showDifficultyGuide, false);
+});
+
+test('neither key present takes the on-by-default without writing storage', () => {
+    const written = [];
+    const mod = freshPlugin({ onSet: (key) => written.push(key) });
+    assert.equal(mod.settings.showDifficultyGuide, true);
+    assert.ok(!written.includes('difficulty_ladder.showDifficultyGuide'));
+});
+
+test('the difficulty-guide migration is idempotent across reloads', () => {
+    const first = freshPlugin({ stored: { 'difficulty_ladder.showGlasses': JSON.stringify(false) } });
+    assert.equal(first.settings.showDifficultyGuide, false);
+    const persisted = global.localStorage.getItem('difficulty_ladder.showDifficultyGuide');
+    const second = freshPlugin({ stored: {
+        'difficulty_ladder.showGlasses': JSON.stringify(false),
+        'difficulty_ladder.showDifficultyGuide': persisted,
+    } });
+    assert.equal(second.settings.showDifficultyGuide, false);
+    assert.equal(global.localStorage.getItem('difficulty_ladder.showDifficultyGuide'), 'false');
+});
+
+test('a legacy-key storage event from a pre-rename tab is adopted, not dropped', () => {
+    const mod = freshPlugin();
+    assert.equal(mod.settings.showDifficultyGuide, true);
+
+    global.window.dispatchEvent({
+        type: 'storage',
+        key: 'difficulty_ladder.showGlasses',
+        newValue: JSON.stringify(false),
+    });
+
+    assert.equal(mod.settings.showDifficultyGuide, false);
+    assert.equal(global.localStorage.getItem('difficulty_ladder.showDifficultyGuide'), 'false');
+});
+
 // Issue #64: minMastery/maxMastery are persisted independently by the two
 // settings.html number inputs, so an inverted pair (min > max) can reach
 // screen.js from a stale write, a manual localStorage edit, or a race

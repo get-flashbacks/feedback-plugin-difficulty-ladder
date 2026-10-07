@@ -21,7 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keys beat coefficient (`_KEYS_BEAT_VALUE_COEF`), the same guard the
   fretted bonus obeys. Like the fretted term it applies per section BEFORE
   the shared tier scale is frozen, and the correlation guard disables it on
-  near-uniform/atonal sections, so atonal input is unaffected.
+   near-uniform/atonal sections, so atonal input is unaffected.
+
+### Changed
+- The `showGlasses` setting is renamed to **Show difficulty guide**
+  (#158, item 3 of the tier rail in #131) and its stored key becomes
+  `showDifficultyGuide`. An existing user's on/off choice is migrated to
+  the new key on first read — off stays off, on stays on — and the
+  migration is idempotent. The setting's help text and the README now
+  state where the guide appears when Section Map is installed (the
+  standalone overlay is suppressed and the guide renders in Section
+  Map's section bar instead). The README and `plugin.json` description
+  no longer describe the setting in glass terms.
 
 ### Fixed
 - Keys/piano ladders no longer generate a degenerate, near-empty

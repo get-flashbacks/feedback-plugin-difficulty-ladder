@@ -66,6 +66,27 @@
         delete _pendingSettingWrites[key];
     }
 
+    // Issue #158 (tier rail 3/4): the `showGlasses` setting was renamed to
+    // "Show difficulty guide", stored under `showDifficultyGuide`. The new
+    // key is read first; a value under the legacy key is migrated forward
+    // (persisted to the new key) so an existing user's on/off choice
+    // survives the upgrade instead of resetting to the default. Runs once
+    // at settings-load time — never from a gameplay-event handler — and is
+    // idempotent: once the new key exists the legacy key is never consulted
+    // again, and a fresh install (neither key present) takes the default
+    // without writing anything.
+    function _resolveDifficultyGuideSetting() {
+        var current = lsGet('showDifficultyGuide', null);
+        if (current !== null) return current === true;
+        var legacy = lsGet('showGlasses', null);
+        if (legacy !== null) {
+            var migrated = legacy === true;
+            lsSet('showDifficultyGuide', migrated);
+            return migrated;
+        }
+        return true;
+    }
+
     // ---- Player-scoped progress persistence ------------------------------
     // Core only persists master_difficulty as a single global (server.py's
     // /api/settings) — switching songs mid-session keeps whatever % the
@@ -1135,7 +1156,7 @@
         autoAdjust: lsGet('autoAdjust', false),
         dropResistance: lsGet('dropResistance', false) === true,
         levelUpOnly: lsGet('levelUpOnly', false) === true,
-        showGlasses: lsGet('showGlasses', true),
+        showDifficultyGuide: _resolveDifficultyGuideSetting(),
         sensitivity: lsGet('sensitivity', 2),     // 1 (lenient) .. 3 (strict) — confidence thresholds + step size
         downStepRatio: lsGet('downStepRatio', 1), // 1..2 — downward target multiplier; upward target is unchanged
         reactionSpeed: lsGet('reactionSpeed', 2), // 1 (slow) .. 3 (fast) — EMA_ALPHA, how much one phrase's result moves the rolling average
@@ -2076,7 +2097,7 @@
             last_auto_action: _lastAutoAction,
             provider_registered: !!provider,
             auto_adjust_enabled: settings.autoAdjust,
-            show_glasses: settings.showGlasses,
+            show_difficulty_guide: settings.showDifficultyGuide,
             phrase_attempt_log: {
                 storage_key: PHRASE_ATTEMPTS_V2_LS_KEY,
                 schema: 'difficulty_ladder.phrase_attempt.v2',
@@ -3056,7 +3077,7 @@
         // does not query or mutate DOM on the animation path.
         var sectionMapOwnsGlasses = !!window.__slopsmithSectionMapHooksInstalled;
         var ss = window.feedBackSplitscreen || window.slopsmithSplitscreen;
-        if (!settings.showGlasses || sectionMapOwnsGlasses || (ss && typeof ss.isActive === 'function' && ss.isActive())) {
+        if (!settings.showDifficultyGuide || sectionMapOwnsGlasses || (ss && typeof ss.isActive === 'function' && ss.isActive())) {
             if (_hudCanvas) _hudCanvas.style.display = 'none';
             return;
         }
@@ -3542,6 +3563,22 @@
         if (e.key === PHRASE_ATTEMPTS_V2_LS_KEY) _phraseAttemptStore.invalidate();
         if (e.key === SONG_MASTERY_LS_KEY) _songMasteryStore.invalidate(false);
         var short = e.key.slice(LS_PREFIX.length);
+        // Issue #158: a foreign tab running a pre-rename build may still
+        // write the legacy key. Treat it as the new setting (persisted
+        // forward), so a pre-upgrade tab can't silently lose the user's
+        // choice.
+        if (short === 'showGlasses') {
+            try { settings.showDifficultyGuide = JSON.parse(e.newValue) === true; } catch (_) {
+                settings.showDifficultyGuide = false;
+            }
+            lsSet('showDifficultyGuide', settings.showDifficultyGuide);
+            var migrated = {};
+            migrated.showDifficultyGuide = true;
+            _applySettingsChange(migrated);
+            syncControlsUI();
+            contributeDiagnostics();
+            return;
+        }
         if (Object.prototype.hasOwnProperty.call(settings, short)) {
             try { settings[short] = JSON.parse(e.newValue); } catch (_) {
                 if (short === 'dropResistance' || short === 'levelUpOnly') settings[short] = false;
@@ -3573,6 +3610,7 @@
         module.exports = {
             thresholds, emaAlpha, downStepRatio, songKeyOf,
             judgmentKey, settings,
+            _resolveDifficultyGuideSetting,
             _normalizeMasteryBounds,
             _dominantSongMastery,
             aggregateMasteryByInstrument, renderProfileBaseline,
