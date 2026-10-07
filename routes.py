@@ -1146,17 +1146,27 @@ _MINOR_SCALE_PITCH_CLASSES = {0, 2, 3, 5, 7, 8, 10}
 _KEY_STABILITY_RANK_MAX = 3.5
 
 
-def _pitch_class_histogram(groups, tuning, n_strings, is_bass):
+def _pitch_class_histogram(groups, tuning, n_strings, is_bass, *, is_keys=False):
     """Duration-weighted pitch-class histogram (12 bins) over every note in
     `groups`, using `_approx_pitch`'s direction-preserving approximation
     (already tuning/instrument-aware) mod 12. A note with no `sus` (a
     struck, undampened single hit) still contributes a nominal weight
     rather than zero -- an unweighted note shouldn't vanish from the
-    profile just because its wire data doesn't carry a duration."""
+    profile just because its wire data doesn't carry a duration.
+
+    #179: when `is_keys` is set, pitch is read directly off the note's
+    REAL MIDI value (`_note_midi_keys`) instead of `_approx_pitch`'s
+    string/fret+tuning approximation -- keys notes carry absolute pitch
+    (midi = string*24 + fret) with no fretboard to approximate from, so
+    the estimate is simpler, not unavailable (the reason this weighting
+    was skipped for keys in the first place)."""
     hist = [0.0] * 12
+    pitch_fn = (lambda n: _note_midi_keys(n)) if is_keys else (
+        lambda n: _approx_pitch(n, tuning, n_strings, is_bass)
+    )
     for g in groups:
         for n in g.get("notes", []) or []:
-            pc = _approx_pitch(n, tuning, n_strings, is_bass) % 12
+            pc = pitch_fn(n) % 12
             hist[pc] += float(n.get("sus", 0)) or 0.25
     return hist
 
@@ -1173,7 +1183,7 @@ def _pearson_correlation(a, b):
     return numerator / (denom_a * denom_b)
 
 
-def _estimate_key(groups, tuning, n_strings, is_bass):
+def _estimate_key(groups, tuning, n_strings, is_bass, *, is_keys=False):
     """Krumhansl-Schmuckler key estimate for one section's `groups`.
 
     Returns `(tonic_pitch_class, is_major, correlation)` for the
@@ -1181,8 +1191,13 @@ def _estimate_key(groups, tuning, n_strings, is_bass):
     has no notes at all (an empty phrase). `correlation` is the raw Pearson
     r against that rotation -- callers gate on `_KEY_FIT_MIN_CORRELATION`
     before trusting the estimate (#103/B7's "disable for a poor-fit
-    section" guard)."""
-    hist = _pitch_class_histogram(groups, tuning, n_strings, is_bass)
+    section" guard).
+
+    #179: when `is_keys` is set, the histogram is built from the notes'
+    real MIDI pitch (`_note_midi_keys`) rather than `_approx_pitch`'s
+    string/fret approximation -- keys notes carry absolute pitch, so the
+    estimate is simpler, not unavailable."""
+    hist = _pitch_class_histogram(groups, tuning, n_strings, is_bass, is_keys=is_keys)
     if sum(hist) <= 0:
         return None
     best = None
@@ -1217,7 +1232,7 @@ def _pitch_class_stability_rank(pc, tonic_pc, is_major, chord_pcs=None):
     return rank
 
 
-def _chord_pitch_class_windows(chords, tuning, n_strings, is_bass):
+def _chord_pitch_class_windows(chords, tuning, n_strings, is_bass, *, is_keys=False):
     """Precompute each explicit chord event's [start, end) sounding window
     and pitch-class set, sorted by start time -- the "a chord is currently
     sounding" signal `_group_key_stability_bonus` needs to tell a chord
@@ -1225,7 +1240,15 @@ def _chord_pitch_class_windows(chords, tuning, n_strings, is_bass):
     arpeggio/run group whose notes happen to fall under a sustained chord).
     `end` falls back to a nominal 0.05s window when a chord's constituent
     notes carry no `sus` at all, so a zero-duration/undampened chord event
-    still covers its own onset instant."""
+    still covers its own onset instant.
+
+    #179: when `is_keys` is set, pitch is read off the note's real MIDI
+    value (`_note_midi_keys`) instead of `_approx_pitch`'s string/fret
+    approximation -- keys chords carry absolute pitch, so the window's
+    pitch-class set is exact rather than an approximation."""
+    pitch_fn = (lambda n: _note_midi_keys(n)) if is_keys else (
+        lambda n: _approx_pitch(n, tuning, n_strings, is_bass)
+    )
     windows = []
     for c in chords:
         c_notes = c.get("notes", []) or []
@@ -1234,7 +1257,7 @@ def _chord_pitch_class_windows(chords, tuning, n_strings, is_bass):
         start = float(c.get("t", 0))
         max_sus = max((float(n.get("sus", 0)) for n in c_notes), default=0.0)
         end = start + max(max_sus, 0.05)
-        pcs = {_approx_pitch(n, tuning, n_strings, is_bass) % 12 for n in c_notes}
+        pcs = {pitch_fn(n) % 12 for n in c_notes}
         windows.append((start, end, pcs))
     windows.sort(key=lambda w: w[0])
     return windows
@@ -1254,8 +1277,8 @@ def _chord_pcs_at_time(chord_windows, t):
 
 
 def _group_key_stability_bonus(g, tonic_pc, is_major, tuning, n_strings, is_bass,
-                                chord_windows=None):
-    """Retention-score discount (0..`_KEY_STABILITY_RETENTION_BONUS`) for
+                                chord_windows=None, *, is_keys=False, retention_bonus=None):
+    """Retention-score discount (0..`retention_bonus`) for
     `g`'s most tonally-stable note -- mirrors the melody-turning-point
     bonus's shape (a flat subtraction gated by an arrangement-level
     signal), just keyed on harmonic stability instead of melodic contour.
@@ -1271,25 +1294,39 @@ def _group_key_stability_bonus(g, tonic_pc, is_major, tuning, n_strings, is_bass
     pick up the chord-tone bonus when they land under a sustained chord —
     this is what actually lets a chord tone rank above a passing tone
     played alongside it, rather than the bonus only ever comparing a
-    chord's notes against themselves (caught in PR #125 review)."""
+    chord's notes against themselves (caught in PR #125 review).
+
+    #179: when `is_keys` is set, pitch is read off the note's real MIDI
+    value (`_note_midi_keys`) instead of `_approx_pitch`'s string/fret
+    approximation -- keys notes carry absolute pitch, so the ranking is
+    simpler, not unavailable. `retention_bonus` defaults to the fretted
+    `_KEY_STABILITY_RETENTION_BONUS` (0.08) when not given; the keys
+    path passes its own smaller `_KEYS_KEY_STABILITY_RETENTION_BONUS`
+    (0.018), since a keys group's `cost` scale is far narrower than the
+    fretted one's and the fretted bonus would overwhelm it."""
     notes = g.get("notes", []) or []
     if not notes:
         return 0.0
     is_chord = g.get("type") == "chord"
+    pitch_fn = (lambda n: _note_midi_keys(n)) if is_keys else (
+        lambda n: _approx_pitch(n, tuning, n_strings, is_bass)
+    )
     if is_chord and len(notes) > 1:
-        chord_pcs = {_approx_pitch(n, tuning, n_strings, is_bass) % 12 for n in notes}
+        chord_pcs = {pitch_fn(n) % 12 for n in notes}
     elif chord_windows:
         chord_pcs = _chord_pcs_at_time(chord_windows, float(g.get("time", 0)))
     else:
         chord_pcs = None
     best_rank = max(
         _pitch_class_stability_rank(
-            _approx_pitch(n, tuning, n_strings, is_bass) % 12, tonic_pc, is_major,
+            pitch_fn(n) % 12, tonic_pc, is_major,
             chord_pcs=chord_pcs,
         )
         for n in notes
     )
-    return (best_rank / _KEY_STABILITY_RANK_MAX) * _KEY_STABILITY_RETENTION_BONUS
+    if retention_bonus is None:
+        retention_bonus = _KEY_STABILITY_RETENTION_BONUS
+    return (best_rank / _KEY_STABILITY_RANK_MAX) * retention_bonus
 
 
 def _score_groups(groups, n_strings, beat_times=(), *, tempo=None, tuning=(), is_bass=False):
@@ -2267,6 +2304,24 @@ _KEYS_LEAP_REFERENCE_SEMITONES = 19.0
 # outweighed by it. Must stay under the fretted beat coefficient 0.12 -- see
 # the term-vs-metrical-weight guard in the tests.
 _KEYS_LEAP_MAX_BONUS = 0.05
+
+# #179: keys key-stability weighting. The fretted path's
+# `_KEY_STABILITY_RETENTION_BONUS` (0.08) is sized against the fretted
+# `cost` model's typical range (0.3-0.6 for a mid-difficulty group, dominated
+# by 0.35*fretting + 0.30*technique). A keys group's `cost` lives on a far
+# narrower scale: a single-note keys melody can only move `cost` through
+# density/speed/sustain (poly and span_score are 0 for a single note),
+# giving a typical spread of roughly 0.10 across an entire melodic passage
+# (measured in PR #126 review: min 0.125 / max 0.225, stdev 0.0168 on a
+# representative fixture). Reusing the fretted 0.08 verbatim would be a
+# discount larger than the whole mechanical signal it's meant to nudge, so
+# the keys path gets its own coefficient, scaled to the same RELATIVE
+# influence the fretted bonus has on the fretted cost range (0.08 / ~0.45
+# typical ≈ 18%; 0.10 spread * 18% ≈ 0.018) rather than the same absolute
+# number. Deliberately BELOW `_KEYS_BEAT_VALUE_COEF` (0.025): beat position
+# is a stronger, better-evidenced retention signal (#103/B2) than a
+# heuristic key estimate is, same guard the fretted bonus obeys.
+_KEYS_KEY_STABILITY_RETENTION_BONUS = 0.018
 
 # #181: minimum musical floor for the keys bottom tier. The
 # proportional floor in _assign_tiers guarantees tier 0 a share of
@@ -3345,6 +3400,12 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
     if is_keys:
         groups_all = _group_notes_keys(notes, chords)
         _score_groups_keys(groups_all, beat_times, tempo=tempo)
+        # Keys arrangements have no tuning/string model to approximate pitch
+        # from -- their notes carry REAL MIDI pitch (`_note_midi_keys`), so
+        # the key estimate below reads pitch directly off the notes rather
+        # than being skipped (the old comment's premise was wrong -- keys
+        # notes carry absolute pitch; #179).
+        effective_is_bass = False
     else:
         groups_all = _group_notes(
             notes, chords, time_window_ms=tempo.time_window_ms,
@@ -3367,36 +3428,48 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # compute cross-phrase survivorship once up front (issue #68
         # review follow-up) rather than per phrase/level.
         link_next_keep_ids = _global_link_next_survivors(groups_all)
-        # #103/B7: per-SECTION key estimate (a song can modulate). Applied
-        # PRE-threshold, over `windows` (the same section/phrase boundaries
-        # used below), so the discount participates in `global_thresholds`
-        # construction below exactly like the B2 beat-value and B5 melody-
-        # turning-point terms already do inside _score_groups -- applying
-        # it AFTER the tier scale is frozen would re-label a whole
-        # phrase's groups against cutoffs that never saw the discount,
-        # which can silently collapse a tier on ordinary tonal material
-        # (caught in PR #125 review). Gated per-window on the correlation
-        # guard (a poor tonal fit -- near-uniform/atonal pitch-class
-        # content -- disables the weighting for that window rather than
-        # ranking notes against an estimate the data doesn't support) and
-        # skipped entirely for keys (no tuning/string model to approximate
-        # pitch from there).
-        chord_windows = _chord_pitch_class_windows(chords, tuning, n_strings, effective_is_bass)
-        for (win_t0, win_t1) in windows:
-            window_groups = [g for g in groups_all if win_t0 <= g["time"] < win_t1]
-            if not window_groups:
-                continue
-            key_est = _estimate_key(window_groups, tuning, n_strings, effective_is_bass)
-            if key_est is None or key_est[2] < _KEY_FIT_MIN_CORRELATION:
-                continue
-            tonic_pc, is_major, _corr = key_est
-            for g in window_groups:
-                bonus = _group_key_stability_bonus(
-                    g, tonic_pc, is_major, tuning, n_strings, effective_is_bass,
-                    chord_windows=chord_windows,
-                )
-                if bonus:
-                    g["retention_score"] = max(0.0, g["retention_score"] - bonus)
+    # #103/B7: per-SECTION key estimate (a song can modulate). Applied
+    # PRE-threshold, over `windows` (the same section/phrase boundaries
+    # used below), so the discount participates in `global_thresholds`
+    # construction below exactly like the B2 beat-value and B5 melody-
+    # turning-point terms already do inside _score_groups -- applying
+    # it AFTER the tier scale is frozen would re-label a whole
+    # phrase's groups against cutoffs that never saw the discount,
+    # which can silently collapse a tier on ordinary tonal material
+    # (caught in PR #125 review). Gated per-window on the correlation
+    # guard (a poor tonal fit -- near-uniform/atonal pitch-class
+    # content -- disables the weighting for that window rather than
+    # ranking notes against an estimate the data doesn't support).
+    # #179: the weighting now runs for keys too (reading pitch off the
+    # notes' real MIDI values via `_note_midi_keys`), using the keys-
+    # specific `_KEYS_KEY_STABILITY_RETENTION_BONUS` coefficient rather
+    # than the fretted `_KEY_STABILITY_RETENTION_BONUS` -- a keys group's
+    # `cost` scale is far narrower than the fretted one's, so the fretted
+    # bonus would overwhelm it.
+    chord_windows = _chord_pitch_class_windows(
+        chords, tuning, n_strings, effective_is_bass, is_keys=is_keys,
+    )
+    key_retention_bonus = (
+        _KEYS_KEY_STABILITY_RETENTION_BONUS if is_keys else _KEY_STABILITY_RETENTION_BONUS
+    )
+    for (win_t0, win_t1) in windows:
+        window_groups = [g for g in groups_all if win_t0 <= g["time"] < win_t1]
+        if not window_groups:
+            continue
+        key_est = _estimate_key(
+            window_groups, tuning, n_strings, effective_is_bass, is_keys=is_keys,
+        )
+        if key_est is None or key_est[2] < _KEY_FIT_MIN_CORRELATION:
+            continue
+        tonic_pc, is_major, _corr = key_est
+        for g in window_groups:
+            bonus = _group_key_stability_bonus(
+                g, tonic_pc, is_major, tuning, n_strings, effective_is_bass,
+                chord_windows=chord_windows, is_keys=is_keys,
+                retention_bonus=key_retention_bonus,
+            )
+            if bonus:
+                g["retention_score"] = max(0.0, g["retention_score"] - bonus)
 
     top_tier = n_levels - 1
     global_thresholds = _tier_thresholds([g["retention_score"] for g in groups_all], n_levels)

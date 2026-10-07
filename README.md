@@ -184,7 +184,9 @@ contract.
 - **Key and chord awareness (#103/B7).** Each phrase gets its own key
   estimate — the classic Krumhansl-Schmuckler algorithm: a duration-weighted
   pitch-class histogram (reusing the same tuning/instrument-aware pitch
-  approximation as the B5 melody-turning-point signal) correlated against
+  approximation as the B5 melody-turning-point signal on the fretted path;
+  reading the note's real MIDI pitch directly on the keys path, which needs
+  none of the fretted version's pitch-approximation) correlated against
   all 24 rotations of the Krumhansl & Kessler (1982) major/minor key
   profiles, keeping the best-fitting rotation. Notes are then ranked by
   tonal stability — tonic > a chord/triad tone > another scale tone >
@@ -217,12 +219,14 @@ contract.
   when the name doesn't parse or no template matched.
 - **Keys/piano generator parity (#103/B8).** `_score_groups_keys` now
   applies the same graded beat-strength retention term (#103/B2's
-  `_beat_value`) and melody-turning-point retention (#103/B5) the fretted
+  `_beat_value`), melody-turning-point retention (#103/B5), and per-section
+  key-stability discount (#103/B7, #179) the fretted
   path already had — the keys path needs none of the fretted version's
   tuning/string pitch-approximation, since a keys note already carries a
-  real MIDI pitch (`_note_midi_keys`). The two terms use keys-SPECIFIC
+  real MIDI pitch (`_note_midi_keys`). The terms use keys-SPECIFIC
   coefficients (`_KEYS_BEAT_VALUE_COEF`/`_KEYS_MELODY_TURNING_BONUS`,
-  0.025 each), not the fretted path's 0.12/0.12 — keys' `cost` model has
+  0.025 each, `_KEYS_KEY_STABILITY_RETENTION_BONUS`, 0.018), not the fretted
+  path's 0.12/0.12/0.08 — keys' `cost` model has
   a much narrower dynamic range for melodic content (measured spread
   ~0.10 across an entire passage vs. the fretted path's typical 0.3-0.6),
   so reusing the fretted weight verbatim would let one discount alone
