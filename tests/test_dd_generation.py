@@ -5051,7 +5051,15 @@ def test_keys_tier0_floor_caps_the_backstop_at_the_emittable_count():
     guarantee is defined against the notes tier 0 can actually
     play. Each level still materializes a distinct voicing of
     the 5-voice chord (1/2/3/5 notes), so no tier pair can
-    become identical and the guard never fires."""
+    become identical and the guard never fires.
+
+    The assertions below lock the OUTCOME, not the cap itself:
+    every coverable group emits at least one note at tier 0, so
+    the capped loop only reaches the cap once every group is
+    demoted -- exactly where the uncapped loop ran out of
+    candidates -- and these same numbers hold with the
+    ``min(...)`` removed. Don't hunt for a behavior delta this
+    test alone cannot show."""
     spb = 0.4
     notes = []
     for q in range(8):
