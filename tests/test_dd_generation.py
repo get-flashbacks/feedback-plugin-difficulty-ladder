@@ -4857,6 +4857,207 @@ def test_keys_authored_note_over_authored_chord_keeps_turning_point_candidacy():
     assert idx in routes._melody_turning_points_keys(groups, tempo)  # nosec B101 - pytest assertion
 
 
+# ── Keys: bottom-tier density floor (#181) ─────────────────
+
+def _keys_arrangement(notes, beats):
+    return {
+        "type": "keys", "name": "Keys", "notes": notes, "chords": [],
+        "beats": beats, "sections": [], "tuning": [],
+    }
+
+
+def _tier0_keys_groups(arr):
+    """Group and score a keys arrangement exactly as
+    generate_phrases_for_arrangement does, returning
+    (groups, beat_times, tempo) so the tier pipeline
+    below them can be unit-tested directly."""
+    beat_times = [b["time"] for b in arr["beats"]]
+    tempo = routes._TempoParams.from_beats(beat_times, arr["beats"])
+    groups = routes._group_notes_keys(arr["notes"], arr["chords"])
+    routes._score_groups_keys(groups, beat_times, tempo=tempo)
+    return groups, beat_times, tempo
+
+
+def _assign_keys_tiers(groups, beat_times, tempo, n_levels=4):
+    thresholds = routes._tier_thresholds(
+        [g["retention_score"] for g in groups], n_levels,
+    )
+    routes._assign_tiers(groups, n_levels, thresholds, beat_times, tempo=tempo)
+
+
+def _keys_beats_without_downbeats(n_measures, beat_interval):
+    """4/4 beats[] with every measure flag cleared (-1):
+    a beat grid with real spacing but no downbeat, so
+    _beat_grid grades nothing and the tier-0 floor's
+    strong-beat skeleton has no positions to cover."""
+    return [
+        {"time": round(i * beat_interval, 6), "measure": -1}
+        for i in range(n_measures * 4)
+    ]
+
+
+def test_keys_tier0_floor_denses_the_measured_degenerate_fixture():
+    """#181's measured failure: a 2-bar phrase of quarter-note
+    4-voice chords, where the proportional group-share floor in
+    _assign_tiers materialized 2-3 notes at tier 0 against 32
+    at the top tier -- nearly empty, nothing for a learner to
+    play. The floor densifies tier 0 to a playable skeleton
+    (measured: 7 notes, the bass voice of nearly every chord)
+    while keeping all four tiers distinct."""
+    spb = 0.4
+    notes = []
+    for q in range(8):
+        base = 60 + (q * 2) % 5
+        for iv in (0, 4, 7, 12):
+            notes.append(_midi_note(q * spb, base + iv, 0.35))
+    phrases = routes.generate_phrases_for_arrangement(
+        _keys_arrangement(notes, _four_four_beats(2, spb)),
+        n_levels=4, section_times=[0.0],
+    )
+    assert phrases  # nosec B101 - pytest assertion
+    assert len(phrases) == 1  # nosec B101 - pytest assertion
+    p = phrases[0]
+    # All four tiers survive: no tier became byte-identical to
+    # its neighbour (the anti-collapse guard's contract, and
+    # #181's second acceptance criterion).
+    assert len(p["levels"]) == 4  # nosec B101 - pytest assertion
+    # The documented minimum density on this fixture: measured
+    # 7 notes, against 2-3 before the floor.
+    assert len(p["levels"][0]["notes"]) >= 6  # nosec B101 - pytest assertion
+    # The top tier still holds the complete voicing.
+    assert len(p["levels"][3]["notes"]) == 32  # nosec B101 - pytest assertion
+
+
+def test_keys_tier0_floor_covers_every_strong_beat_position():
+    """The skeleton half of the floor: every grid position graded
+    at least _STRENGTH_STRONG_BEAT (a downbeat, or the mid-bar
+    strong beat of a 4/4 measure) keeps a group at tier 0 -- the
+    metrical landmarks a learner plays at the easiest setting. On
+    a 16th-note texture demoting a few of 32 groups empties no
+    level, so the anti-collapse guard never fires: coverage is
+    complete and the note-density backstop reaches its 1/n_levels
+    share."""
+    spb = 0.4
+    notes = []
+    for bar in range(2):
+        for s in range(16):
+            notes.append(_midi_note(bar * 4 * spb + s * spb / 4,
+                                    60 + (s * 3 + bar) % 12, 0.12))
+    groups, beat_times, tempo = _tier0_keys_groups(
+        _keys_arrangement(notes, _four_four_beats(2, spb)),
+    )
+    _assign_keys_tiers(groups, beat_times, tempo)
+    routes._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
+    strong = [t for t, strength in tempo.beat_grid
+              if strength >= routes._STRENGTH_STRONG_BEAT
+              and 0.0 <= t < 8 * spb]
+    assert len(strong) == 4  # nosec B101 - the fixture's 2 bars of 4/4
+    tier0_times = {g["time"] for g in groups if g["level"] == 0}
+    for pos in strong:
+        assert pos in tier0_times  # nosec B101 - pytest assertion
+    # The backstop's documented share: at least 1/n_levels of
+    # the phrase's notes.
+    assert len(routes._notes_for_level_keys(groups, 0, 3)[0]) >= -(-len(notes) // 4)
+
+
+def test_keys_tier0_floor_never_creates_an_identical_tier_pair():
+    """#181's second acceptance criterion, checked directly: no
+    tier may become byte-identical to its neighbour as a result
+    of the floor. A pair already identical before the floor is a
+    pre-existing collapse (issue #70's territory, which
+    _collapse_identical_levels exists to merge); the floor must
+    not add one. Exercised on the three textures the floor
+    actually demotes on: the dense chordal fixture (whose octave
+    voicing makes adjacent level budgets coincide -- the case
+    that found the guard), a 16th-note texture, and a two-voice
+    texture."""
+    spb = 0.4
+    chordal = []
+    for q in range(8):
+        base = 60 + (q * 2) % 5
+        for iv in (0, 4, 7, 12):
+            chordal.append(_midi_note(q * spb, base + iv, 0.35))
+    sixteenths = []
+    for bar in range(2):
+        for s in range(16):
+            sixteenths.append(_midi_note(bar * 4 * spb + s * spb / 4,
+                                         60 + (s * 3 + bar) % 12, 0.12))
+    fifths = []
+    for i in range(8):
+        fifths.append(_midi_note(i * spb, 60))
+        fifths.append(_midi_note(i * spb, 67))
+    for notes in (chordal, sixteenths, fifths):
+        groups, beat_times, tempo = _tier0_keys_groups(
+            _keys_arrangement(notes, _four_four_beats(2, spb)),
+        )
+        _assign_keys_tiers(groups, beat_times, tempo)
+        pre = routes._keys_identical_tier_pairs(groups, 3)
+        routes._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
+        assert routes._keys_identical_tier_pairs(groups, 3) <= pre
+
+
+def test_keys_tier0_floor_guard_keeps_the_ladder_over_density():
+    """The guard's documented priority: a ladder without a
+    collapsed tier beats a denser tier 0. Every group here is a
+    two-voice chord, so EVERY tier pair materializes identically
+    once its level is emptied -- any demotion at all would create
+    a new identical pair, so the floor must leave the tier
+    assignment untouched rather than collapse the ladder."""
+    spb = 0.4
+    notes = []
+    for i in range(4):
+        t = i * 2 * spb
+        notes.append(_midi_note(t, 60))
+        notes.append(_midi_note(t, 67))
+    groups, beat_times, tempo = _tier0_keys_groups(
+        _keys_arrangement(notes, _four_four_beats(2, spb)),
+    )
+    _assign_keys_tiers(groups, beat_times, tempo)
+    before = [g["level"] for g in groups]
+    routes._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
+    assert [g["level"] for g in groups] == before
+
+
+def test_keys_tier0_floor_backstops_density_without_a_graded_grid():
+    """beats[] without a single downbeat gives no graded grid
+    (_beat_grid needs one to grade any position), so the
+    strong-beat skeleton is skipped and the note-density backstop
+    is the whole floor: tier 0 still materializes at least
+    1/n_levels of the phrase's notes."""
+    spb = 0.4
+    notes = []
+    for bar in range(2):
+        for s in range(16):
+            notes.append(_midi_note(bar * 4 * spb + s * spb / 4,
+                                    60 + (s * 3 + bar) % 12, 0.12))
+    beats = _keys_beats_without_downbeats(2, spb)
+    groups, beat_times, tempo = _tier0_keys_groups(
+        _keys_arrangement(notes, beats),
+    )
+    assert not tempo.beat_grid  # nosec B101 - pytest assertion
+    _assign_keys_tiers(groups, beat_times, tempo)
+    routes._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
+    assert len(routes._notes_for_level_keys(groups, 0, 3)[0]) >= -(-len(notes) // 4)
+
+
+def test_keys_tier0_floor_leaves_an_already_dense_bottom_tier_alone():
+    """A phrase whose groups all sit at tier 0 already (a slow,
+    sustained, sparse line: every retention score is 0.0) needs
+    no floor -- the strong-beat covers are already kept and the
+    backstop's share is already met, so the assignment is
+    untouched."""
+    spb = 0.4
+    notes = [_midi_note(bar * 4 * spb, 60 + bar % 5, 2.0) for bar in range(8)]
+    groups, beat_times, tempo = _tier0_keys_groups(
+        _keys_arrangement(notes, _four_four_beats(8, spb)),
+    )
+    _assign_keys_tiers(groups, beat_times, tempo)
+    before = [g["level"] for g in groups]
+    assert set(before) == {0}  # nosec B101 - pytest assertion
+    routes._keys_tier0_floor(groups, 0.0, 32 * spb, beat_times, tempo, 4)
+    assert [g["level"] for g in groups] == before
+
+
 def test_fretted_single_onset_window_discounts_both_boundary_groups(monkeypatch):
     # A fretted window that starts and ends on the same instant (here a tail
     # window holding one double stop, i.e. two groups at one time) must give

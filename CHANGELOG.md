@@ -8,6 +8,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Keys/piano ladders no longer generate a degenerate, near-empty
+  bottom tier (#181, item 6 of the keys roadmap #175). The
+  proportional tier floor in `_assign_tiers` guarantees tier 0 a
+  share of the phrase's GROUPS (~15%), but a keys group is one
+  onset -- often a whole chord -- so on a dense chordal passage that
+  share materialized as only 1-2 NOTES against 20+ at the top tier:
+  a learner at the easiest setting had almost nothing to play
+  (measured on a 2-bar phrase of quarter-note 4-voice chords: tier
+  0 held 2-3 notes while the top tier held 32). The keys path now
+  applies a minimum musical floor per phrase, after tier assignment:
+  (1) a strong-beat skeleton -- one group at tier 0 covering every
+  grid position graded at least `_STRENGTH_STRONG_BEAT` (a
+  downbeat, or the mid-bar strong beat of a 4/4 measure), so the
+  easiest tier always carries the phrase's metrical landmarks; and
+  (2) a note-density backstop -- tier 0 materializes at least the
+  bottom tier's equal share of the phrase's notes (1/n_levels),
+  topping up with the cheapest remaining groups when the skeleton
+  alone (thin in 3/4 or 6/8, or absent entirely when no graded beat
+  grid exists) leaves it sparser. Measured on the same fixture: tier
+  0 now holds 7 notes (the bass voice of nearly every chord); on 2
+  bars of sixteenth notes, 9 of 32 notes with every strong beat
+  covered. Interaction with the tier machinery (#181's second work
+  item): the floor runs after `_assign_tiers`, so the
+  arrangement-wide thresholds are untouched -- it only relabels
+  levels downwards within a phrase, and every tier's group set only
+  grows, never shrinks. A demotion can therefore make an ADJACENT
+  pair of tiers byte-identical: demoting every group that sat at
+  level k+1 equalizes the pair's group sets, and when their per-tier
+  voice budgets then agree (always for two-voice groups, and for
+  octave voicings whose extra voices are duplicates of exposed outer
+  voices) their materialized notes collide and
+  `_collapse_identical_levels` would silently merge the pair, costing
+  the ladder a tier. The anti-collapse guard keeps the floor from
+  ever creating a new identical pair: a pair already identical
+  before the floor is a pre-existing collapse (issue #70's own
+  territory), and the surgical fix restores the most recently
+  demoted group of the level the boundary lost -- one restoration per
+  threatened boundary, every other demotion intact, sacrificing
+  backstop additions before strong-beat skeleton positions. Where
+  the guard and the floor conflict, the ladder without the collapsed
+  tier wins: on a passage of nothing but two-voice chords, every
+  demotion would create a new identical pair, so the floor leaves
+  the assignment untouched rather than collapse the ladder. Covered
+  by `test_keys_tier0_floor_denses_the_measured_degenerate_fixture`,
+  `test_keys_tier0_floor_covers_every_strong_beat_position`,
+  `test_keys_tier0_floor_never_creates_an_identical_tier_pair`,
+  `test_keys_tier0_floor_guard_keeps_the_ladder_over_density`,
+  `test_keys_tier0_floor_backstops_density_without_a_graded_grid`,
+  and `test_keys_tier0_floor_leaves_an_already_dense_bottom_tier_alone`.
 - A generated (non-authored) last phrase window holding a single onset got
   no phrase-boundary ending discount at all (#184). The discount's guard
   `phrase_groups[-1] is not phrase_groups[0]` skipped it outright, so the
