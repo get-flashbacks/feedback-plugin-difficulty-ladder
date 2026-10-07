@@ -42,11 +42,11 @@
 
     <div class="flex items-center justify-between bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
         <div>
-            <h3 class="text-sm font-medium text-gray-200">Glass-filling section HUD</h3>
-            <p class="text-[11px] text-gray-500">Show upcoming song sections as glasses in the player — glass size reflects each section's peak difficulty, fill level reflects the current master-difficulty setting.</p>
+            <h3 class="text-sm font-medium text-gray-200">Show difficulty guide</h3>
+            <p class="text-[11px] text-gray-500">Show the difficulty guide in the player — each bar's height reflects its section's peak difficulty, and the fill level reflects the current master-difficulty setting. With Section Map installed the standalone overlay is suppressed and the guide renders in its section bar instead.</p>
         </div>
         <label class="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" id="dd-show-glasses" class="sr-only peer" onchange="window._ddSet('showGlasses', this.checked)">
+            <input type="checkbox" id="dd-show-guide" class="sr-only peer" aria-label="Show difficulty guide" onchange="window._ddSet('showDifficultyGuide', this.checked)">
             <div class="w-9 h-5 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
         </label>
     </div>
@@ -217,8 +217,16 @@
             var levelUpOnlyEl = document.getElementById('dd-level-up-only');
             if (levelUpOnlyEl) levelUpOnlyEl.checked = lsGet('levelUpOnly', false) === true;
 
-            var glassesEl = document.getElementById('dd-show-glasses');
-            if (glassesEl) glassesEl.checked = lsGet('showGlasses', true) !== false;
+            // Issue #158: read through the renamed key first, falling back to
+            // the legacy one; screen.js's own load migrates it forward, so
+            // this is only a display fallback for a panel opened before that
+            // migration has run.
+            var guideEl = document.getElementById('dd-show-guide');
+            if (guideEl) {
+                var guide = lsGet('showDifficultyGuide', null);
+                if (guide === null) guide = lsGet('showGlasses', true);
+                guideEl.checked = guide !== false;
+            }
 
             var sens = lsGet('sensitivity', 2);
             var sensEl = document.getElementById('dd-sensitivity');

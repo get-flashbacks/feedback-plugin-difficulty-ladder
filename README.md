@@ -414,8 +414,8 @@ claim marker prevents another player sharing that profile from reading it.
 - No-ops entirely for songs without a phrase-level difficulty ladder
   (`highway.hasPhraseData() === false` — GP imports, legacy sloppak).
 
-**Glass-filling section HUD**
-- Renders upcoming sections in the player as "glasses" — taller glass = a
+**Difficulty guide**
+- Renders upcoming sections in the player as bars — taller bar = a
   harder section (scaled by that section's peak authored difficulty), fill
   level = how much of that section's difficulty range the current
   master-difficulty setting reaches.
@@ -423,6 +423,9 @@ claim marker prevents another player sharing that profile from reading it.
   accuracy or better light a gold Mastery streak badge. Pausing or entering
   or leaving a split-screen session resets it.
 - Purely a visualization; can be toggled independently of auto-adjust.
+- With Section Map installed the standalone overlay is suppressed and the
+  guide renders in Section Map's own section bar instead. The *Show
+  difficulty guide* setting controls both surfaces, whichever is active.
 
 ## Requirements
 
@@ -430,7 +433,7 @@ claim marker prevents another player sharing that profile from reading it.
   (`window.feedBack.ui.playerControlSlot()`) — the only chrome feedBack core ships as of v0.3.0.
   The player-controls buttons (Auto-Difficulty, Generate Difficulties) mount via a
   `window.feedBack.uiVersion === 'v3'` guard, which is vacuously satisfied on any current Host;
-  see `COMPLIANCE.md` for why this is no longer tracked as a gap. The glass-filling HUD itself
+  see `COMPLIANCE.md` for why this is no longer tracked as a gap. The difficulty guide itself
   never depended on `uiVersion` and renders regardless.
 - feedBack core with the `note-detection` capability / `setNoteStateProvider`
   contract (spec 009) and phrase-level difficulty data (feedBack#48).
@@ -504,7 +507,7 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 | Difficulty mode | **Standard** (default) keeps difficulty fixed — no automatic movement. **Adaptive** enables today's live auto-adjust (`setMastery()` calls driven by accuracy). |
 | Resist isolated difficulty drops | Require two consecutive below-threshold sections before a downward adjustment; upward adjustments remain immediate. Off by default. Inert while *Level up only* is on. |
 | Level up only (#111) | Opt-in comfort switch: auto-adjust raises difficulty as usual but never lowers it, at any accuracy. The manual slider still works, and moving it still stands auto-adjust down entirely — both directions — exactly as without this setting. Off by default, and deliberately presented as a comfort option rather than a learning aid (a 2022 meta-analysis, McKay et al., found the self-controlled-practice benefit close to zero after bias correction). |
-| Glass-filling section HUD | Show/hide the in-player glass row. |
+| Show difficulty guide | Show/hide the in-player difficulty guide (per-section bars whose height tracks peak difficulty and whose fill tracks the current master-difficulty setting). |
 | Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. A step is 10 / 15 / 20 percentage points; the per-song warm-up start is a fraction of one (see above). |
 | Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
 | Difficulty drop speed (1×-2×) | Multiplies only the downward auto-adjust target so difficulty can ease off faster than it climbs. The default 1× preserves symmetric behavior. Inert while *Level up only* is on. |
