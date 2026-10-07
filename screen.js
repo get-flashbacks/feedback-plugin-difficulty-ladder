@@ -3572,9 +3572,6 @@
                 settings.showDifficultyGuide = false;
             }
             lsSet('showDifficultyGuide', settings.showDifficultyGuide);
-            var migrated = {};
-            migrated.showDifficultyGuide = true;
-            _applySettingsChange(migrated);
             syncControlsUI();
             contributeDiagnostics();
             return;

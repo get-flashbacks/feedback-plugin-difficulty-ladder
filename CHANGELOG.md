@@ -31,7 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migration is idempotent. The setting's help text and the README now
   state where the guide appears when Section Map is installed (the
   standalone overlay is suppressed and the guide renders in Section
-  Map's section bar instead). The README and `plugin.json` description
+  Map's section bar instead; the setting gates only this plugin's
+  overlay, not that surface). The README and `plugin.json` description
   no longer describe the setting in glass terms.
 
 ### Fixed
