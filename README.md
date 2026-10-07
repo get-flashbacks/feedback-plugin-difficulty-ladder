@@ -425,7 +425,8 @@ claim marker prevents another player sharing that profile from reading it.
 - Purely a visualization; can be toggled independently of auto-adjust.
 - With Section Map installed the standalone overlay is suppressed and the
   guide renders in Section Map's own section bar instead. The *Show
-  difficulty guide* setting controls both surfaces, whichever is active.
+  difficulty guide* setting only gates this plugin's overlay; it is not
+  wired to Section Map's section bar.
 
 ## Requirements
 
@@ -507,7 +508,7 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 | Difficulty mode | **Standard** (default) keeps difficulty fixed — no automatic movement. **Adaptive** enables today's live auto-adjust (`setMastery()` calls driven by accuracy). |
 | Resist isolated difficulty drops | Require two consecutive below-threshold sections before a downward adjustment; upward adjustments remain immediate. Off by default. Inert while *Level up only* is on. |
 | Level up only (#111) | Opt-in comfort switch: auto-adjust raises difficulty as usual but never lowers it, at any accuracy. The manual slider still works, and moving it still stands auto-adjust down entirely — both directions — exactly as without this setting. Off by default, and deliberately presented as a comfort option rather than a learning aid (a 2022 meta-analysis, McKay et al., found the self-controlled-practice benefit close to zero after bias correction). |
-| Show difficulty guide | Show/hide the in-player difficulty guide (per-section bars whose height tracks peak difficulty and whose fill tracks the current master-difficulty setting). |
+| Show difficulty guide | Show/hide this plugin's standalone overlay (per-section bars whose height tracks peak difficulty and whose fill tracks the current master-difficulty setting). With Section Map installed the overlay is suppressed and the guide renders in Section Map's section bar instead; this setting does not control that surface. |
 | Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. A step is 10 / 15 / 20 percentage points; the per-song warm-up start is a fraction of one (see above). |
 | Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
 | Difficulty drop speed (1×-2×) | Multiplies only the downward auto-adjust target so difficulty can ease off faster than it climbs. The default 1× preserves symmetric behavior. Inert while *Level up only* is on. |
