@@ -290,7 +290,16 @@ contract.
   every grid position graded at least `_STRENGTH_STRONG_BEAT` — a
   downbeat, or the mid-bar strong beat of a 4/4 measure), plus a
   note-density backstop (tier 0 materializes at least the bottom tier's
-  equal share of the phrase's notes, 1/n_levels, topping up with the
+  equal share of the phrase's notes, 1/n_levels, capped at what a full
+  demotion of the phrase could emit at tier 0 — a voicing whose outer
+  voices are an octave apart collapses to one note at tier 0 however
+  many voices it has, so the raw share can be unreachable even with
+  every group at tier 0; the emitted count is tracked incrementally —
+  a group's tier-0 materialization is independent of every group's
+  level, so the per-group sizes are computed once and each demotion
+  adds its group's size — instead of rematerializing the whole phrase
+  after every demotion, which is quadratic in the phrase's group count
+  on dense passages), topping up with the
   cheapest remaining groups when the skeleton alone is thin — in 3/4 or
   6/8, or when no graded beat grid exists at all). Measured on the same
   fixture: tier 0 now holds 7 notes (the bass voice of nearly every

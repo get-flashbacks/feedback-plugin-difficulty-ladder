@@ -2285,7 +2285,10 @@ _KEYS_LEAP_MAX_BONUS = 0.05
 #      so the easiest tier always carries the phrase's metrical
 #      landmarks;
 #   2. a note-density backstop: tier 0 materializes at least the
-#      bottom tier's equal share of the phrase's notes (1/n_levels),
+#      bottom tier's equal share of the phrase's notes (1/n_levels,
+#      capped at what a full demotion of the phrase could emit at
+#      tier 0 -- a voicing whose outer voices are an octave apart
+#      collapses to one note at tier 0 however many voices it has),
 #      topping up with the cheapest remaining groups when the
 #      skeleton alone -- thin in 3/4 or 6/8, or absent entirely when
 #      no graded grid exists -- leaves it sparser.
@@ -3033,6 +3036,25 @@ def _keys_identical_tier_pairs(phrase_groups, top_tier):
     )
 
 
+def _keys_tier0_note_count(group, top_tier):
+    """How many notes `group` emits at tier 0, whatever level
+    it currently holds. A group's tier-0 materialization
+    depends only on its own notes -- `_notes_for_level_keys`
+    reduces each group independently -- so a phrase's tier-0
+    size is the sum of its groups' sizes, computable once per
+    group instead of by rematerializing the whole phrase.
+    `_notes_for_level_keys` skips a group whose level exceeds
+    the requested tier, so the group is briefly held at
+    level 0 for the measurement and its real level restored
+    immediately after."""
+    held = group["level"]
+    group["level"] = 0
+    try:
+        return len(_notes_for_level_keys([group], 0, top_tier)[0])
+    finally:
+        group["level"] = held
+
+
 def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
     """#181: enforce the keys bottom-tier density floor on one phrase
     window (see the #181 design comment in the keys constants
@@ -3118,14 +3140,40 @@ def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
     for i in demotions:
         phrase_groups[i]["level"] = 0
 
-    # Part 2: the note-density backstop. The target is the bottom
-    # tier's equal share of the phrase's notes (1/n_levels), counted
-    # the way a reader experiences it -- the MATERIALIZED tier-0 note
-    # count, after outer-voice reduction and the octave collapse --
-    # so the guarantee is on what the learner actually plays, not on
-    # raw input note counts.
-    total_notes = sum(len(phrase_groups[i]["notes"]) for i in coverable)
-    target = math.ceil(total_notes / n_levels)
+    # Part 2: the note-density backstop. The target is the
+    # bottom tier's equal share of the phrase's notes (1/n_levels),
+    # counted the way a reader experiences it -- the MATERIALIZED
+    # tier-0 note count, after outer-voice reduction and the
+    # octave collapse -- so the guarantee is on what the learner
+    # actually plays, not on raw input note counts. The raw share
+    # is capped at what a full demotion of the phrase could emit
+    # at tier 0: a voicing whose outer voices are an octave apart
+    # collapses to one note at tier 0 however many voices it has,
+    # so on such a passage the raw share is unreachable even with
+    # every group at tier 0, and an uncapped target would only
+    # send the backstop chasing it to exhaustion.
+    tier0_sizes = {
+        i: _keys_tier0_note_count(phrase_groups[i], top_tier)
+        for i in coverable
+    }
+    # Each group's tier-0 size is independent of every group's
+    # level (see _keys_tier0_note_count), so the emitted tier-0
+    # count is tracked incrementally -- the per-group sizes are
+    # computed once and each demotion adds its group's size --
+    # instead of rematerializing and re-sorting the whole phrase
+    # after every demotion, which is quadratic in the phrase's
+    # group count on dense passages.
+    emitted = sum(
+        tier0_sizes[i] for i in coverable
+        if phrase_groups[i]["level"] == 0
+    )
+    target = min(
+        math.ceil(
+            sum(len(phrase_groups[i]["notes"]) for i in coverable)
+            / n_levels,
+        ),
+        sum(tier0_sizes.values()),
+    )
     remaining = [
         i for i in sorted(
             coverable,
@@ -3138,14 +3186,12 @@ def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
         if i not in chosen and original_levels[i] > 0
     ]
     next_candidate = 0
-    while (
-        next_candidate < len(remaining)
-        and len(_notes_for_level_keys(phrase_groups, 0, top_tier)[0]) < target
-    ):
+    while next_candidate < len(remaining) and emitted < target:
         i = remaining[next_candidate]
         next_candidate += 1
         phrase_groups[i]["level"] = 0
         demotions.append(i)
+        emitted += tier0_sizes[i]
 
     # Anti-collapse guard (see the docstring): a pair already
     # identical BEFORE the floor is a pre-existing collapse, not

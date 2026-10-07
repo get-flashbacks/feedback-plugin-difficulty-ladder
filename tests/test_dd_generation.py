@@ -5040,6 +5040,37 @@ def test_keys_tier0_floor_backstops_density_without_a_graded_grid():
     assert len(routes._notes_for_level_keys(groups, 0, 3)[0]) >= -(-len(notes) // 4)
 
 
+def test_keys_tier0_floor_caps_the_backstop_at_the_emittable_count():
+    """A voicing whose outer voices are an octave apart collapses
+    to one note at tier 0 however many voices it has, so on such
+    a passage the raw 1/n_levels share of RAW notes is unreachable
+    even with every group at tier 0 (measured: 8 five-voice
+    chords hold 40 notes, the raw share is 10, and a full
+    demotion emits 8 -- one note per chord). The backstop's
+    target is capped at what a full demotion can emit, so the
+    guarantee is defined against the notes tier 0 can actually
+    play. Each level still materializes a distinct voicing of
+    the 5-voice chord (1/2/3/5 notes), so no tier pair can
+    become identical and the guard never fires."""
+    spb = 0.4
+    notes = []
+    for q in range(8):
+        base = 58 + (q * 3) % 6
+        for iv in (0, 2, 4, 7, 12):
+            notes.append(_midi_note(q * spb, base + iv, 0.35))
+    phrases = routes.generate_phrases_for_arrangement(
+        _keys_arrangement(notes, _four_four_beats(2, spb)),
+        n_levels=4, section_times=[0.0],
+    )
+    assert phrases  # nosec B101 - pytest assertion
+    p = phrases[0]
+    # 40 raw notes, raw share 10, but only 8 emittable at
+    # tier 0: the capped target is what tier 0 holds.
+    assert len(p["levels"][0]["notes"]) == 8  # nosec B101 - pytest assertion
+    assert len(p["levels"]) == 4  # nosec B101 - pytest assertion
+    assert len(p["levels"][3]["notes"]) == 40  # nosec B101 - pytest assertion
+
+
 def test_keys_tier0_floor_leaves_an_already_dense_bottom_tier_alone():
     """A phrase whose groups all sit at tier 0 already (a slow,
     sustained, sparse line: every retention score is 0.0) needs

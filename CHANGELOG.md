@@ -23,10 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downbeat, or the mid-bar strong beat of a 4/4 measure), so the
   easiest tier always carries the phrase's metrical landmarks; and
   (2) a note-density backstop -- tier 0 materializes at least the
-  bottom tier's equal share of the phrase's notes (1/n_levels),
+  bottom tier's equal share of the phrase's notes (1/n_levels,
+  capped at what a full demotion of the phrase could emit at tier
+  0 -- a voicing whose outer voices are an octave apart collapses
+  to one note at tier 0 however many voices it has, so the raw
+  share can be unreachable even with every group at tier 0),
   topping up with the cheapest remaining groups when the skeleton
   alone (thin in 3/4 or 6/8, or absent entirely when no graded beat
-  grid exists) leaves it sparser. Measured on the same fixture: tier
+  grid exists) leaves it sparser. The backstop tracks the emitted
+  tier-0 note count incrementally (a group's tier-0 materialization
+  is independent of every group's level, so the per-group sizes are
+  computed once and each demotion adds its group's size) instead of
+  rematerializing and re-sorting the whole phrase after every
+  demotion, which is quadratic in the phrase's group count on dense
+  passages. Measured on the same fixture: tier
   0 now holds 7 notes (the bass voice of nearly every chord); on 2
   bars of sixteenth notes, 9 of 32 notes with every strong beat
   covered. Interaction with the tier machinery (#181's second work
@@ -56,6 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test_keys_tier0_floor_never_creates_an_identical_tier_pair`,
   `test_keys_tier0_floor_guard_keeps_the_ladder_over_density`,
   `test_keys_tier0_floor_backstops_density_without_a_graded_grid`,
+  `test_keys_tier0_floor_caps_the_backstop_at_the_emittable_count`,
   and `test_keys_tier0_floor_leaves_an_already_dense_bottom_tier_alone`.
 - A generated (non-authored) last phrase window holding a single onset got
   no phrase-boundary ending discount at all (#184). The discount's guard
