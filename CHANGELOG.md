@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Keys/piano ladders now get the same per-section key and chord awareness
+  the fretted path already had (#179, item 3 of the keys roadmap #175).
+  The per-section Krumhansl-Schmuckler key estimate and stability discount
+  (`_group_key_stability_bonus`) previously ran only for fretted
+  arrangements; on keys they now read the notes' real MIDI pitch directly
+  instead of the fretted path's string/fret-plus-tuning approximation.
+  The discount uses a keys-specific coefficient
+  (`_KEYS_KEY_STABILITY_RETENTION_BONUS`, 0.018) rather than the fretted
+  0.08 -- a keys group's `cost` scale is far narrower than the fretted
+  one's, so the fretted bonus would overwhelm it -- and stays under the
+  keys beat coefficient (`_KEYS_BEAT_VALUE_COEF`), the same guard the
+  fretted bonus obeys. Like the fretted term it applies per section BEFORE
+  the shared tier scale is frozen, and the correlation guard disables it on
+  near-uniform/atonal sections, so atonal input is unaffected.
+
 ### Fixed
 - Keys/piano ladders no longer generate a degenerate, near-empty
   bottom tier (#181, item 6 of the keys roadmap #175). The

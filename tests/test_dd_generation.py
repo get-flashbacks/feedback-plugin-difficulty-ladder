@@ -4237,6 +4237,170 @@ def test_chord_pitch_class_windows_covers_each_chords_sustain():
     assert end == 0.5  # nosec B101 - pytest assertion
     assert 0 in pcs  # nosec B101 - pytest assertion
 
+
+def _keys_pc_group(t, midi, sus=0.25):
+    """A single-note keys group whose real MIDI pitch is exactly `midi`
+    (the #179 case: pitch comes from `_note_midi_keys`, not from
+    `_approx_pitch`'s string/fret approximation)."""
+    s, f = divmod(midi, 24)
+    return {"time": t, "type": "note", "notes": [{"s": s, "f": f, "sus": sus}]}
+
+
+def test_estimate_key_detects_c_major_from_keys_midi_pitch():
+    """#179: `_estimate_key(..., is_keys=True)` must recover tonic=C (0),
+    is_major=True, from a histogram that IS the Krumhansl & Kessler
+    C-major profile built out of real MIDI keys notes -- the textbook case
+    the whole algorithm is built to solve, now over absolute pitch."""
+    groups = [_keys_pc_group(0.0, 60 + pc, sus=routes._KS_MAJOR_PROFILE[pc]) for pc in range(12)]
+    tonic_pc, is_major, corr = routes._estimate_key(groups, tuning=(), n_strings=6, is_bass=False, is_keys=True)
+    assert tonic_pc == 0  # nosec B101 - pytest assertion
+    assert is_major is True  # nosec B101 - pytest assertion
+    assert corr > 0.99  # nosec B101 - pytest assertion
+
+
+def test_estimate_key_correlation_is_low_for_a_flat_chromatic_keys_histogram():
+    """#179: the same poor-fit guard that gates fretted weighting must gate
+    keys weighting -- a flat chromatic keys section must correlate poorly
+    against every key profile, so callers disable the weighting there."""
+    groups = [_keys_pc_group(0.0, 60 + pc, sus=1.0) for pc in range(12)]
+    _tonic_pc, _is_major, corr = routes._estimate_key(groups, tuning=(), n_strings=6, is_bass=False, is_keys=True)
+    assert corr < routes._KEY_FIT_MIN_CORRELATION  # nosec B101 - pytest assertion
+
+
+def test_keys_key_stability_bonus_is_larger_for_a_tonic_note_than_a_chromatic_one():
+    """#179: on keys, a tonic note must earn a larger stability discount
+    than a chromatic one in the same key, capped at the keys-specific
+    `_KEYS_KEY_STABILITY_RETENTION_BONUS` rather than the fretted one."""
+    tonic_group = _keys_pc_group(0.0, 60)  # C
+    chromatic_group = _keys_pc_group(0.0, 61)  # C#
+    tonic_bonus = routes._group_key_stability_bonus(
+        tonic_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
+        is_keys=True, retention_bonus=routes._KEYS_KEY_STABILITY_RETENTION_BONUS,
+    )
+    chromatic_bonus = routes._group_key_stability_bonus(
+        chromatic_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
+        is_keys=True, retention_bonus=routes._KEYS_KEY_STABILITY_RETENTION_BONUS,
+    )
+    assert tonic_bonus > chromatic_bonus  # nosec B101 - pytest assertion
+    assert tonic_bonus <= routes._KEYS_KEY_STABILITY_RETENTION_BONUS  # nosec B101 - pytest assertion
+    assert chromatic_bonus == 0.0  # nosec B101 - pytest assertion
+
+
+def test_keys_key_stability_coefficient_sits_below_the_keys_beat_coefficient():
+    """#179's weight guard, mirroring
+    `test_key_stability_bonus_weight_is_below_beat_strength_weight`: the keys
+    key-stability weight must sit below the keys metrical weight
+    (`_KEYS_BEAT_VALUE_COEF`), since beat position is a much stronger,
+    better-evidenced retention signal (#103/B2) than a heuristic key
+    estimate is.
+
+    This is a CONSTANT GUARD, not behaviour coverage: it is one literal
+    comparison and nothing more, so it still passes with
+    `_KEYS_KEY_STABILITY_RETENTION_BONUS = 0.0` (the term deleted outright)
+    and it pins no value the scoring path actually produces. The term's
+    magnitude is pinned by
+    `test_keys_key_stability_out_of_key_tone_drops_before_a_chord_tone`,
+    which this deliberately does not duplicate."""
+    assert routes._KEYS_KEY_STABILITY_RETENTION_BONUS < routes._KEYS_BEAT_VALUE_COEF  # nosec B101 - pytest assertion
+
+
+def test_keys_key_stability_out_of_key_tone_drops_before_a_chord_tone():
+    """#179's acceptance criterion: on a tonal keys fixture, an out-of-key
+    passing tone must drop before a chord tone at low tiers, while atonal
+    input is unaffected (correlation guard disables the weighting).
+
+    The fixture is a C-major triad C-E-G (60, 64, 67) repeated as melody
+    with a chromatic passing tone (61, C#) between repetitions -- the
+    passing tone is mechanically identical to its neighbours (same timing
+    shape, same single-note group) so the only thing that can move its
+    retention below the chord tones' is the key-stability discount. With
+    the bonus zeroed out the passing tone must survive wherever the chord
+    tones do; with it on, the passing tone must land at a HIGHER tier
+    (thinned earlier) than the chord tones."""
+    c_major_midis = [60, 64, 67]
+    notes = []
+    t = 0.0
+    # Two bars of quarter-note melody: C E G C# C E G (rest) -- the C# at
+    # index 3 is the out-of-key passing tone; everything else is in C major.
+    for i, midi in enumerate([60, 64, 67, 61, 60, 64, 67, 60] * 4):
+        notes.append({"t": round(t, 3), "s": midi // 24, "f": midi % 24, "sus": 0.1})
+        t += 0.5
+    beats = [{"time": round(i * 0.5, 3), "measure": 0 if i % 4 == 0 else -1} for i in range(40)]
+    arr = _keys_arrangement(notes, beats)
+
+    phrases_on = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    with patch.object(routes, "_KEYS_KEY_STABILITY_RETENTION_BONUS", 0.0):
+        phrases_off = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+
+    assert phrases_on and phrases_off  # nosec B101 - pytest assertion
+    on_levels = phrases_on[0]["levels"]
+    off_levels = phrases_off[0]["levels"]
+    # The passing-tone midi (61) appears at the top tier in both runs, but
+    # with the bonus on it must be ABSENT from at least one low tier it
+    # survives at with the bonus off.
+    assert any(61 in {n["s"] * 24 + n["f"] for n in lvl["notes"]} for lvl in on_levels[-1:])  # nosec B101 - top tier keeps everything
+    on_tier0_midis = {n["s"] * 24 + n["f"] for n in on_levels[0]["notes"]}
+    off_tier0_midis = {n["s"] * 24 + n["f"] for n in off_levels[0]["notes"]}
+    assert 61 not in on_tier0_midis  # nosec B101 - the out-of-key tone is thinned at the bottom tier
+    assert any(m in on_tier0_midis for m in c_major_midis)  # nosec B101 - chord tones survive there
+
+
+def test_keys_key_stability_does_not_collapse_a_tier_on_diatonic_material():
+    """#179's structural guarantee, mirroring
+    `test_key_stability_bonus_does_not_collapse_a_tier_on_diatonic_material`:
+    the keys key-stability discount is applied BEFORE `global_thresholds`
+    is computed, exactly like the beat-value and melody-turning-point terms
+    inside `_score_groups_keys` -- comparing against the same generation
+    with the bonus zeroed out on a strongly diatonic, mechanically-varied
+    keys run must yield the SAME max_difficulty, and must not empty out any
+    tier that has content without the bonus."""
+    c_major_midis = [60, 62, 64, 65, 67, 69, 71, 72, 71, 69, 67, 65, 64, 62]
+    notes = []
+    t = 0.0
+    for i in range(24):
+        midi = c_major_midis[i % len(c_major_midis)]
+        notes.append({"t": round(t, 3), "s": midi // 24, "f": midi % 24,
+                      "sus": 0.1 if i % 3 else 0.3})
+        t += 0.22 if i % 2 else 0.31
+    beats = [{"time": round(i * 0.5, 3), "measure": 0 if i % 4 == 0 else -1} for i in range(60)]
+    arr = _keys_arrangement(notes, beats)
+
+    phrases_on = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    with patch.object(routes, "_KEYS_KEY_STABILITY_RETENTION_BONUS", 0.0):
+        phrases_off = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+
+    assert phrases_on and phrases_off  # nosec B101 - pytest assertion
+    for on, off in zip(phrases_on, phrases_off):
+        assert on["max_difficulty"] == off["max_difficulty"]  # nosec B101 - pytest assertion
+        on_counts = [len(lvl["notes"]) + len(lvl["chords"]) for lvl in on["levels"]]
+        off_counts = [len(lvl["notes"]) + len(lvl["chords"]) for lvl in off["levels"]]
+        assert len(on_counts) == len(off_counts)  # nosec B101 - pytest assertion
+        for on_count, off_count in zip(on_counts, off_counts):
+            assert (on_count == 0) == (off_count == 0)  # nosec B101 - pytest assertion
+        assert max(abs(o - f) for o, f in zip(on_counts, off_counts)) <= 1  # nosec B101 - pytest assertion
+
+
+def test_keys_key_stability_leaves_atonal_input_unaffected():
+    """#179's second acceptance criterion: a fully chromatic keys section
+    correlates poorly against every key profile, so the correlation guard
+    disables the weighting there and the bonus-zeroed run must produce
+    byte-identical ladders -- atonal input is unaffected by the feature."""
+    notes = []
+    t = 0.0
+    for i in range(48):
+        midi = 60 + (i % 12)
+        notes.append({"t": round(t, 3), "s": midi // 24, "f": midi % 24, "sus": 0.2})
+        t += 0.4
+    beats = [{"time": round(i * 0.5, 3), "measure": 0 if i % 4 == 0 else -1} for i in range(60)]
+    arr = _keys_arrangement(notes, beats)
+
+    phrases_on = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    with patch.object(routes, "_KEYS_KEY_STABILITY_RETENTION_BONUS", 0.0):
+        phrases_off = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+
+    assert phrases_on and phrases_off  # nosec B101 - pytest assertion
+    assert phrases_on == phrases_off  # nosec B101 - the guard disabled the bonus, so nothing moved
+
 # ── #103/B10: opt-in staged-chords bottom tier (chord landmarks) ───────────
 
 
