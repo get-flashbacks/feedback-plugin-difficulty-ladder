@@ -132,7 +132,7 @@ next to this repo. If your sandbox lacks the sibling checkout or those
 dependencies, a filtered subset still exercises the pure-scoring/tier-assignment
 code without the FastAPI-route tests:
 `-k "not chord_preview and not generate_library and not generate_route"`
-deselects 27 of 341 (16 chord-preview-route, 9 generate-library-route, 2
+deselects 27 of 356 (16 chord-preview-route, 9 generate-library-route, 2
 generate-route tests) — a fallback, not the real suite; run the unfiltered
 form whenever the prerequisites are available.
 

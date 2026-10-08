@@ -1,0 +1,911 @@
+[
+  {
+    "start_time": 0.0,
+    "end_time": 4.0,
+    "max_difficulty": 0,
+    "difficulty_cost": 0.0,
+    "levels": [
+      {
+        "difficulty": 0,
+        "notes": [],
+        "chords": [],
+        "anchors": [],
+        "handshapes": []
+      }
+    ]
+  },
+  {
+    "start_time": 4.0,
+    "end_time": 12.0,
+    "max_difficulty": 0,
+    "difficulty_cost": 0.025,
+    "levels": [
+      {
+        "difficulty": 0,
+        "notes": [
+          {
+            "t": 4.0,
+            "s": 0,
+            "f": 0,
+            "sus": 2.8,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "hp": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "tr": false,
+            "ac": false,
+            "tp": false
+          },
+          {
+            "t": 8.0,
+            "s": 1,
+            "f": 0,
+            "sus": 2.8,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "hp": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "tr": false,
+            "ac": false,
+            "tp": false
+          }
+        ],
+        "chords": [],
+        "anchors": [],
+        "handshapes": []
+      }
+    ]
+  },
+  {
+    "start_time": 12.0,
+    "end_time": 16.0,
+    "max_difficulty": 0,
+    "difficulty_cost": 0.0688,
+    "levels": [
+      {
+        "difficulty": 0,
+        "notes": [
+          {
+            "t": 12.0,
+            "s": 0,
+            "f": 5,
+            "sus": 2.8,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "hp": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "tr": false,
+            "ac": false,
+            "tp": false
+          }
+        ],
+        "chords": [],
+        "anchors": [
+          {
+            "time": 12.0,
+            "fret": 5,
+            "width": 4
+          }
+        ],
+        "handshapes": []
+      }
+    ]
+  },
+  {
+    "start_time": 16.0,
+    "end_time": 32.0,
+    "max_difficulty": 5,
+    "difficulty_cost": 0.0562,
+    "levels": [
+      {
+        "difficulty": 0,
+        "notes": [
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "hm": false,
+            "ac": false,
+            "t": 16.0
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "hm": false,
+            "ac": false,
+            "t": 20.0
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "hm": false,
+            "ac": false,
+            "t": 24.0
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "hm": false,
+            "ac": false,
+            "t": 28.0
+          }
+        ],
+        "chords": [],
+        "anchors": [],
+        "handshapes": []
+      },
+      {
+        "difficulty": 1,
+        "notes": [
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 16.0
+          },
+          {
+            "s": 1,
+            "f": 2,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 16.0
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 20.0
+          },
+          {
+            "s": 1,
+            "f": 2,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 20.0
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 24.0
+          },
+          {
+            "s": 1,
+            "f": 2,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 24.0
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 28.0
+          },
+          {
+            "s": 1,
+            "f": 2,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 28.0
+          }
+        ],
+        "chords": [],
+        "anchors": [
+          {
+            "time": 16.0,
+            "fret": 2,
+            "width": 4
+          }
+        ],
+        "handshapes": []
+      },
+      {
+        "difficulty": 5,
+        "notes": [],
+        "chords": [
+          {
+            "t": 16.0,
+            "id": 0,
+            "hd": false,
+            "notes": [
+              {
+                "s": 0,
+                "f": 0,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              },
+              {
+                "s": 1,
+                "f": 2,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              }
+            ]
+          },
+          {
+            "t": 20.0,
+            "id": 0,
+            "hd": false,
+            "notes": [
+              {
+                "s": 0,
+                "f": 0,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              },
+              {
+                "s": 1,
+                "f": 2,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              }
+            ]
+          },
+          {
+            "t": 24.0,
+            "id": 0,
+            "hd": false,
+            "notes": [
+              {
+                "s": 0,
+                "f": 0,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              },
+              {
+                "s": 1,
+                "f": 2,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              }
+            ]
+          },
+          {
+            "t": 28.0,
+            "id": 0,
+            "hd": false,
+            "notes": [
+              {
+                "s": 0,
+                "f": 0,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              },
+              {
+                "s": 1,
+                "f": 2,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              }
+            ]
+          }
+        ],
+        "anchors": [
+          {
+            "time": 16.0,
+            "fret": 2,
+            "width": 4
+          }
+        ],
+        "handshapes": []
+      }
+    ]
+  },
+  {
+    "start_time": 32.0,
+    "end_time": 51.0,
+    "max_difficulty": 5,
+    "difficulty_cost": 0.0501,
+    "levels": [
+      {
+        "difficulty": 0,
+        "notes": [
+          {
+            "t": 32.0,
+            "s": 0,
+            "f": 0,
+            "sus": 2.8,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "hm": false,
+            "ac": false
+          },
+          {
+            "t": 36.0,
+            "s": 0,
+            "f": 5,
+            "sus": 2.8,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "hm": false,
+            "ac": false
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "hm": false,
+            "ac": false,
+            "t": 40.0
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "hm": false,
+            "ac": false,
+            "t": 44.0
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "hm": false,
+            "ac": false,
+            "t": 48.0
+          }
+        ],
+        "chords": [],
+        "anchors": [
+          {
+            "time": 36.0,
+            "fret": 5,
+            "width": 4
+          }
+        ],
+        "handshapes": []
+      },
+      {
+        "difficulty": 1,
+        "notes": [
+          {
+            "t": 32.0,
+            "s": 0,
+            "f": 0,
+            "sus": 2.8,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false
+          },
+          {
+            "t": 36.0,
+            "s": 0,
+            "f": 5,
+            "sus": 2.8,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 40.0
+          },
+          {
+            "s": 1,
+            "f": 2,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 40.0
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 44.0
+          },
+          {
+            "s": 1,
+            "f": 2,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 44.0
+          },
+          {
+            "s": 0,
+            "f": 0,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 48.0
+          },
+          {
+            "s": 1,
+            "f": 2,
+            "sus": 3.0,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "ac": false,
+            "t": 48.0
+          }
+        ],
+        "chords": [],
+        "anchors": [
+          {
+            "time": 36.0,
+            "fret": 5,
+            "width": 4
+          },
+          {
+            "time": 40.0,
+            "fret": 2,
+            "width": 4
+          }
+        ],
+        "handshapes": []
+      },
+      {
+        "difficulty": 5,
+        "notes": [
+          {
+            "t": 32.0,
+            "s": 0,
+            "f": 0,
+            "sus": 2.8,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "hp": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "tr": false,
+            "ac": false,
+            "tp": false
+          },
+          {
+            "t": 36.0,
+            "s": 0,
+            "f": 5,
+            "sus": 2.8,
+            "sl": -1,
+            "slu": -1,
+            "bn": 0.0,
+            "ho": false,
+            "po": false,
+            "hm": false,
+            "hp": false,
+            "pm": false,
+            "mt": false,
+            "vb": false,
+            "tr": false,
+            "ac": false,
+            "tp": false
+          }
+        ],
+        "chords": [
+          {
+            "t": 40.0,
+            "id": 0,
+            "hd": false,
+            "notes": [
+              {
+                "s": 0,
+                "f": 0,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              },
+              {
+                "s": 1,
+                "f": 2,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              }
+            ]
+          },
+          {
+            "t": 44.0,
+            "id": 0,
+            "hd": false,
+            "notes": [
+              {
+                "s": 0,
+                "f": 0,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              },
+              {
+                "s": 1,
+                "f": 2,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              }
+            ]
+          },
+          {
+            "t": 48.0,
+            "id": 0,
+            "hd": false,
+            "notes": [
+              {
+                "s": 0,
+                "f": 0,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              },
+              {
+                "s": 1,
+                "f": 2,
+                "sus": 3.0,
+                "sl": -1,
+                "slu": -1,
+                "bn": 0.0,
+                "ho": false,
+                "po": false,
+                "hm": false,
+                "hp": false,
+                "pm": false,
+                "mt": false,
+                "vb": false,
+                "tr": false,
+                "ac": false,
+                "tp": false
+              }
+            ]
+          }
+        ],
+        "anchors": [
+          {
+            "time": 36.0,
+            "fret": 5,
+            "width": 4
+          },
+          {
+            "time": 40.0,
+            "fret": 2,
+            "width": 4
+          }
+        ],
+        "handshapes": []
+      }
+    ]
+  }
+]

@@ -5784,3 +5784,54 @@ def test_keys_unsplit_group_hand_follows_the_melody_register():
     assert [g["hand"] for g in groups] == [
         "upper" if g["melody"] else "lower" for g in groups
     ]  # nosec B101 - one register judgement, so the two agree by construction
+
+
+# --- Fretted validation (issue #185) ---------------------------------------
+# Validates that #182's shared-code changes did not drift the fretted path.
+# Fixtures: 8 real fretted arrangements (guitar/bass) from the content repo.
+# Baseline: recorded output at main (c37ce5c), which matches dbfaeba^ (before #182).
+# See validate_fretted.py for the comparison script used to establish this.
+
+_FRETTED_FIXTURE_DIR = _PLUGIN_DIR / "tests" / "fixtures" / "fretted_validation"
+_FRETTED_BASELINE_DIR = _PLUGIN_DIR / "tests" / "fixtures" / "fretted_validation_baseline"
+
+_FRETTED_FIXTURES = [
+    "adicts_bass.json",
+    "adicts_lead.json",
+    "adicts_rhythm.json",
+    "bass_v1_bass.json",
+    "diagnostic_guitar_lead.json",
+    "lead_v1_lead.json",
+    "lead_v2_lead.json",
+    "star_spangled_lead.json",
+]
+
+
+def _load_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+@pytest.mark.parametrize("fixture_name", _FRETTED_FIXTURES)
+def test_fretted_arrangement_matches_baseline(fixture_name):
+    """Each real fretted arrangement produces the same phrases as the recorded baseline.
+
+    Full-dict equality: any mutation that changes recorded output (note
+    selection/timing, phrase boundaries, difficulty_cost, anchors, chords)
+    must fail. (Issue #185 — no-drift guard for the fretted path across #182.)
+
+    To re-run the original before/after comparison on these fixtures:
+    python3 tools/validate_fretted_185.py tests/fixtures/fretted_validation/*.json
+    To re-record baselines: python3 tests/generate_baseline.py
+    """
+    fixture_path = _FRETTED_FIXTURE_DIR / fixture_name
+    baseline_path = _FRETTED_BASELINE_DIR / f"{fixture_name}.baseline.json"
+
+    arr = _load_json(fixture_path)
+    baseline = _load_json(baseline_path)
+
+    result = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+
+    assert result == baseline, (
+        f"{fixture_name}: generated phrases differ from baseline"
+    )
