@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Test bootstrap preparation for sibling `scoring.py` module extraction (Stage 2b-3, #154). Added PEP 562 `__getattr__` to `routes.py` for lazy module loading and `load_sibling` context key for tests.
+
+### Added
 - Keys/piano ladders now get the same per-section key and chord awareness
   the fretted path already had (#179, item 3 of the keys roadmap #175).
   The per-section Krumhansl-Schmuckler key estimate and stability discount

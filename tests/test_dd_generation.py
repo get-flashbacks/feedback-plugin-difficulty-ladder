@@ -2204,7 +2204,11 @@ def _client_for(tmp_path):
     from fastapi.testclient import TestClient
 
     app = FastAPI()
-    routes.setup(app, {"log": logging.getLogger("dd-test"), "get_dlc_dir": lambda: tmp_path})
+    routes.setup(app, {
+        "log": logging.getLogger("dd-test"),
+        "get_dlc_dir": lambda: tmp_path,
+        "load_sibling": lambda _name: None,  # no-op until scoring.py exists
+    })
     return TestClient(app)
 
 

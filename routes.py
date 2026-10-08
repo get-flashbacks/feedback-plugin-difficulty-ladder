@@ -4046,6 +4046,14 @@ def setup(app, context):
     log = context["log"]
     get_dlc_dir = context["get_dlc_dir"]
 
+    # Store the sibling loader for PEP 562 __getattr__
+    # The host provides load_sibling in context; tests may provide a no-op.
+    global _load_sibling_fn, _scoring_module
+    if "load_sibling" in context:
+        _load_sibling_fn = context["load_sibling"]
+        # Reset cached module so new loader takes effect on next attribute access
+        _scoring_module = None
+
     def _resolve_pack(dlc_root: Path, filename: str) -> Path:
         safe = _resolve_dlc_path(dlc_root, filename)
         if safe is None:
@@ -4243,3 +4251,75 @@ def setup(app, context):
             "skipped": skipped, "unsupported": unsupported, "failed": failed,
             "time_limit_reached": time_limit_reached,
         }
+
+
+# ── PEP 562: lazy sibling module loading ────────────────────────────────────────
+#
+# This allows the pure scoring core to be extracted to a sibling `scoring.py`
+# without changing any call sites in routes.py or the test suite. The sibling
+# module is loaded on first attribute access via `load_sibling` (provided by
+# the host in `setup()`'s context). If no sibling exists yet, attribute access
+# falls through to the normal module namespace.
+#
+# The `load_sibling` callable, when provided by the host, must accept the
+# current module's `__name__` and return the loaded sibling module (or None).
+# The test harness provides a no-op implementation for compatibility.
+
+_scoring_module = None
+_load_sibling_fn = None  # stored by setup() if provided
+
+# Sentinel for "loader called, no sibling available" — distinct from None
+# (not yet loaded) and False (legacy, unused). Prevents repeated loader calls.
+_NO_SIBLING = object()
+
+
+def _load_scoring_sibling() -> None:
+    """Load the scoring sibling module if a loader is available.
+
+    Called lazily on first attribute access that isn't found in this module.
+    The host (or test harness) provides `load_sibling` via `setup()`'s context.
+    """
+    global _scoring_module
+    if _scoring_module is not None:
+        return
+    # Use the stored loader function directly to avoid triggering __getattr__
+    loader = _load_sibling_fn
+    if callable(loader):
+        module_name = __name__
+        # A loader that returns None means "no sibling available" — normalize
+        # it to the sentinel so the next lookup does not call the loader again.
+        loaded = loader(module_name)
+        if loaded is not None:
+            _scoring_module = loaded
+            # Bind the sibling's names into this module's globals so that
+            # bare-global references inside route handlers (which PEP 562's
+            # __getattr__ never sees — it only covers attribute access on the
+            # module object) also resolve once the scoring core has moved out.
+            # Names already defined here are never overwritten, so this can't
+            # shadow anything routes.py owns. No-op while no sibling exists.
+            own = globals()
+            for attr_name in dir(loaded):
+                if attr_name.startswith("_") or attr_name in own:
+                    continue
+                own[attr_name] = getattr(loaded, attr_name)
+        else:
+            _scoring_module = _NO_SIBLING
+    else:
+        _scoring_module = _NO_SIBLING  # sentinel: no sibling available
+
+
+def __getattr__(name: str):
+    """Forward attribute access to the scoring sibling module.
+
+    This implements PEP 562 lazy module loading. When an attribute isn't
+    found in this module's namespace, we attempt to load the `scoring`
+    sibling and delegate to it. If no sibling exists (current layout),
+    AttributeError is raised normally.
+    """
+    _load_scoring_sibling()
+    if _scoring_module is not _NO_SIBLING:
+        try:
+            return getattr(_scoring_module, name)
+        except AttributeError:
+            pass
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
