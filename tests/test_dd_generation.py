@@ -5814,7 +5814,16 @@ def _load_json(path):
 
 @pytest.mark.parametrize("fixture_name", _FRETTED_FIXTURES)
 def test_fretted_arrangement_matches_baseline(fixture_name):
-    """Each real fretted arrangement produces the same phrases as the recorded baseline."""
+    """Each real fretted arrangement produces the same phrases as the recorded baseline.
+
+    Full-dict equality: any mutation that changes recorded output (note
+    selection/timing, phrase boundaries, difficulty_cost, anchors, chords)
+    must fail. (Issue #185 — no-drift guard for the fretted path across #182.)
+
+    To re-run the original before/after comparison on these fixtures:
+    python3 tools/validate_fretted_185.py tests/fixtures/fretted_validation/*.json
+    To re-record baselines: python3 tests/generate_baseline.py
+    """
     fixture_path = _FRETTED_FIXTURE_DIR / fixture_name
     baseline_path = _FRETTED_BASELINE_DIR / f"{fixture_name}.baseline.json"
 
@@ -5823,33 +5832,6 @@ def test_fretted_arrangement_matches_baseline(fixture_name):
 
     result = routes.generate_phrases_for_arrangement(arr, n_levels=6)
 
-    # Compare phrase count
-    assert len(result) == len(baseline), (
-        f"{fixture_name}: phrase count mismatch: got {len(result)}, expected {len(baseline)}"
+    assert result == baseline, (
+        f"{fixture_name}: generated phrases differ from baseline"
     )
-
-    # Compare each phrase
-    for i, (got_phrase, exp_phrase) in enumerate(zip(result, baseline)):
-        # Compare max_difficulty
-        assert got_phrase["max_difficulty"] == exp_phrase["max_difficulty"], (
-            f"{fixture_name} phrase {i}: max_difficulty mismatch: "
-            f"got {got_phrase['max_difficulty']}, expected {exp_phrase['max_difficulty']}"
-        )
-
-        # Compare levels
-        got_levels = got_phrase["levels"]
-        exp_levels = exp_phrase["levels"]
-        assert len(got_levels) == len(exp_levels), (
-            f"{fixture_name} phrase {i}: level count mismatch: "
-            f"got {len(got_levels)}, expected {len(exp_levels)}"
-        )
-
-        for j, (got_lvl, exp_lvl) in enumerate(zip(got_levels, exp_levels)):
-            assert got_lvl["difficulty"] == exp_lvl["difficulty"], (
-                f"{fixture_name} phrase {i} level {j}: difficulty mismatch: "
-                f"got {got_lvl['difficulty']}, expected {exp_lvl['difficulty']}"
-            )
-            assert len(got_lvl["notes"]) == len(exp_lvl["notes"]), (
-                f"{fixture_name} phrase {i} level {j}: notes count mismatch: "
-                f"got {len(got_lvl['notes'])}, expected {len(exp_lvl['notes'])}"
-            )

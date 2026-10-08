@@ -37,15 +37,15 @@ def main():
         fixture_path = FIXTURE_DIR / fixture_file
         with open(fixture_path) as f:
             arr = json.load(f)
-        
+
         result = routes.generate_phrases_for_arrangement(arr, n_levels=6)
-        
+
         output_path = OUTPUT_DIR / f"{fixture_file}.baseline.json"
         with open(output_path, 'w') as f:
             json.dump(result, f, indent=2, default=str)
-        
+
         print(f"Generated baseline for {fixture_file}: {len(result) if result else 0} phrases")
-    
+
     print(f"\nBaselines written to {OUTPUT_DIR}")
 
 if __name__ == "__main__":
