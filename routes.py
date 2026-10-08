@@ -46,7 +46,6 @@ import json
 import math
 import os
 import re
-import sys
 import threading
 import time
 import zipfile
@@ -4049,9 +4048,11 @@ def setup(app, context):
 
     # Store the sibling loader for PEP 562 __getattr__
     # The host provides load_sibling in context; tests may provide a no-op.
-    global _load_sibling_fn
+    global _load_sibling_fn, _scoring_module
     if "load_sibling" in context:
         _load_sibling_fn = context["load_sibling"]
+        # Reset cached module so new loader takes effect on next attribute access
+        _scoring_module = None
 
     def _resolve_pack(dlc_root: Path, filename: str) -> Path:
         safe = _resolve_dlc_path(dlc_root, filename)
@@ -4267,6 +4268,10 @@ def setup(app, context):
 _scoring_module = None
 _load_sibling_fn = None  # stored by setup() if provided
 
+# Sentinel for "loader called, no sibling available" — distinct from None
+# (not yet loaded) and False (legacy, unused). Prevents repeated loader calls.
+_NO_SIBLING = object()
+
 
 def _load_scoring_sibling() -> None:
     """Load the scoring sibling module if a loader is available.
@@ -4280,9 +4285,10 @@ def _load_scoring_sibling() -> None:
     # Use the stored loader function directly to avoid triggering __getattr__
     loader = _load_sibling_fn
     if callable(loader):
-        _scoring_module = loader(__name__)
+        module_name = __name__
+        _scoring_module = loader(module_name)
     else:
-        _scoring_module = False  # sentinel: no sibling available
+        _scoring_module = _NO_SIBLING  # sentinel: no sibling available
 
 
 def __getattr__(name: str):
@@ -4294,7 +4300,7 @@ def __getattr__(name: str):
     AttributeError is raised normally.
     """
     _load_scoring_sibling()
-    if _scoring_module:
+    if _scoring_module is not _NO_SIBLING:
         try:
             return getattr(_scoring_module, name)
         except AttributeError:
