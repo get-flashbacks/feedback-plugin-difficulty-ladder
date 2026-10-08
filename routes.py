@@ -4299,7 +4299,7 @@ def _load_scoring_sibling() -> None:
             # shadow anything routes.py owns. No-op while no sibling exists.
             own = globals()
             for attr_name in dir(loaded):
-                if attr_name.startswith("__") or attr_name in own:
+                if attr_name.startswith("_") or attr_name in own:
                     continue
                 own[attr_name] = getattr(loaded, attr_name)
         else:
