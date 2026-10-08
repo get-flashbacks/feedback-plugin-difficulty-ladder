@@ -2,6 +2,9 @@
 """
 Validate #182's shared-code changes on real fretted charts (before/after).
 Compares generate_phrases_for_arrangement output on commit before #182 vs current main.
+
+This version uses git show to retrieve routes.py at specific commits and executes
+it in isolated namespaces, avoiding dynamic script generation.
 """
 
 import json
@@ -9,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import os
+import importlib.util
 from pathlib import Path
 
 ARRANGEMENT_DIRS = [
@@ -38,20 +42,42 @@ def collect_arrangements():
     return arrangements
 
 
-def run_generate_at_commit(commit, arrangement, n_levels=6):
-    """Run generate_phrases_for_arrangement at a specific commit."""
+def get_routes_at_commit(commit):
+    """Retrieve routes.py content at a specific commit."""
+    result = subprocess.run(
+        ["git", "show", f"{commit}:routes.py"],
+        cwd="/workspace/adbd6f5d-b5f2-42f5-90ca-4985ce7aae60/sessions/workspace_8a940105-04a3-4b3a-8583-d66acbd7c4d6",
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get routes.py at {commit}: {result.stderr}")
+    return result.stdout
+
+
+def run_generate_with_routes(routes_source, arrangement, n_levels=6):
+    """Run generate_phrases_for_arrangement using provided routes.py source."""
+    # Write routes.py to a temp file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+        f.write(routes_source)
+        routes_path = f.name
+    
     # Write arrangement to a temp JSON file
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         json.dump(arrangement, f)
         arr_path = f.name
     
-    # Create a temporary script to run at the commit
-    script = f'''
+    try:
+        # Create a minimal execution script that imports the routes module
+        script = f'''
 import json
 import sys
-sys.path.insert(0, "/workspace/adbd6f5d-b5f2-42f5-90ca-4985ce7aae60/sessions/workspace_8a940105-04a3-4b3a-8583-d66acbd7c4d6")
-sys.path.insert(0, "/workspace/adbd6f5d-b5f2-42f5-90ca-4985ce7aae60/sessions/feedBack/lib")
-import routes
+import importlib.util
+# Load routes from the provided file
+spec = importlib.util.spec_from_file_location("routes", "{routes_path}")
+routes = importlib.util.module_from_spec(spec)
+sys.modules["routes"] = routes
+spec.loader.exec_module(routes)
 
 with open("{arr_path}") as f:
     arr = json.load(f)
@@ -59,32 +85,31 @@ with open("{arr_path}") as f:
 result = routes.generate_phrases_for_arrangement(arr, n_levels={n_levels})
 print(json.dumps(result, default=str))
 '''
-    
-    # Write script to temp file
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-        f.write(script)
-        script_path = f.name
-    
-    try:
-        # Run the script
-        env = dict(**os.environ, PYTHONPATH="/workspace/adbd6f5d-b5f2-42f5-90ca-4985ce7aae60/sessions/workspace_8a940105-04a3-4b3a-8583-d66acbd7c4d6:/workspace/adbd6f5d-b5f2-42f5-90ca-4985ce7aae60/sessions/feedBack/lib")
-        result = subprocess.run(
-            [sys.executable, script_path],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
-        
-        if result.returncode != 0:
-            return {"error": f"Script failed: {result.stderr}"}
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(script)
+            script_path = f.name
         
         try:
-            return json.loads(result.stdout.strip())
-        except json.JSONDecodeError:
-            return {"error": f"Invalid JSON output: {result.stdout}"}
+            env = dict(**os.environ, PYTHONPATH="/workspace/adbd6f5d-b5f2-42f5-90ca-4985ce7aae60/sessions/feedBack/lib")
+            result = subprocess.run(
+                [sys.executable, script_path],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode != 0:
+                return {"error": f"Script failed: {result.stderr}"}
+            
+            try:
+                return json.loads(result.stdout.strip())
+            except json.JSONDecodeError:
+                return {"error": f"Invalid JSON output: {result.stdout}"}
+        finally:
+            Path(script_path).unlink(missing_ok=True)
     finally:
-        Path(script_path).unlink(missing_ok=True)
+        Path(routes_path).unlink(missing_ok=True)
         Path(arr_path).unlink(missing_ok=True)
 
 
@@ -140,16 +165,22 @@ def main():
     arrangements = collect_arrangements()
     print(f"Found {len(arrangements)} fretted arrangements")
     
+    print(f"\nRetrieving routes.py at {COMMIT_CURRENT}...")
+    routes_current = get_routes_at_commit(COMMIT_CURRENT)
+    
+    print(f"Retrieving routes.py at {COMMIT_BEFORE_182}...")
+    routes_before = get_routes_at_commit(COMMIT_BEFORE_182)
+    
     all_diffs = {}
     
     for arr_name, arr in arrangements:
         print(f"\nProcessing {arr_name}...")
         
         print(f"  Running at {COMMIT_CURRENT} (current)...")
-        after = run_generate_at_commit(COMMIT_CURRENT, arr)
+        after = run_generate_with_routes(routes_current, arr)
         
         print(f"  Running at {COMMIT_BEFORE_182} (before #182)...")
-        before = run_generate_at_commit(COMMIT_BEFORE_182, arr)
+        before = run_generate_with_routes(routes_before, arr)
         
         diffs = compare_results(before, after, arr_name)
         if diffs:
