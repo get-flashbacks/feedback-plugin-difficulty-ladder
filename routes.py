@@ -4286,7 +4286,9 @@ def _load_scoring_sibling() -> None:
     loader = _load_sibling_fn
     if callable(loader):
         module_name = __name__
-        _scoring_module = loader(module_name)
+        # A loader that returns None means "no sibling available" — normalize
+        # it to the sentinel so the next lookup does not call the loader again.
+        _scoring_module = loader(module_name) or _NO_SIBLING
     else:
         _scoring_module = _NO_SIBLING  # sentinel: no sibling available
 
