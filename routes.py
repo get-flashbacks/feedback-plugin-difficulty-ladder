@@ -4288,7 +4288,22 @@ def _load_scoring_sibling() -> None:
         module_name = __name__
         # A loader that returns None means "no sibling available" — normalize
         # it to the sentinel so the next lookup does not call the loader again.
-        _scoring_module = loader(module_name) or _NO_SIBLING
+        loaded = loader(module_name)
+        if loaded is not None:
+            _scoring_module = loaded
+            # Bind the sibling's names into this module's globals so that
+            # bare-global references inside route handlers (which PEP 562's
+            # __getattr__ never sees — it only covers attribute access on the
+            # module object) also resolve once the scoring core has moved out.
+            # Names already defined here are never overwritten, so this can't
+            # shadow anything routes.py owns. No-op while no sibling exists.
+            own = globals()
+            for attr_name in dir(loaded):
+                if attr_name.startswith("__") or attr_name in own:
+                    continue
+                own[attr_name] = getattr(loaded, attr_name)
+        else:
+            _scoring_module = _NO_SIBLING
     else:
         _scoring_module = _NO_SIBLING  # sentinel: no sibling available
 
