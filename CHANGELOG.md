@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Test bootstrap preparation for sibling `scoring.py` module extraction (Stage 2b-3, #154). Added PEP 562 `__getattr__` to `routes.py` for lazy module loading and `load_sibling` context key for tests.
+- Fretted validation regression tests for issue #185: 8 real fretted arrangements (guitar/bass) with recorded baselines. Verified identical output between commit before #182 (dbfaeba^) and current main (c37ce5c), confirming no shared-code drift from the keys melody fix.
 
 ### Added
 - Keys/piano ladders now get the same per-section key and chord awareness
