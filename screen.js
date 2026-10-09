@@ -2733,7 +2733,7 @@
     // to commit. Returns `{ idx, completed }` where `completed` is null
     // when nothing should commit (rewound/jumped-forward frame, first
     // sighting, gap between phrases, or an empty phrase) and otherwise a
-    // snapshot `{ ratio, phraseIdx, phraseTotal, phraseHits, phraseJudgments }`
+    // snapshot `{ ratio, curPhraseIdx, phraseTotal, phraseHits, phraseJudgments }`
     // taken BEFORE the state resets for the incoming phrase -- the commit
     // (attempt record included) must observe the completed phrase's ledger,
     // not the reset one. The state is always left reset for the incoming
@@ -2854,7 +2854,7 @@
     // difference is whose state advances and which commit side channels run.
     function _tickScoreHighway(hw, state, commit) {
         var provider = _scoreProvider(hw);
-        if (provider === null) return; // no active scorer — nothing to react to yet
+        if (!provider) return; // no active scorer — nothing to react to yet
         var phrases = hw.getPhrases();
         if (!phrases || phrases.length === 0) return;
         var t = hw.getTime();
@@ -2891,8 +2891,9 @@
         _pollScorePending(state, provider, t, false);
     }
 
-    // The note-state provider for one highway, or null when no scorer is
-    // active yet. Read fresh per call -- the provider can appear mid-song.
+    // The note-state provider for one highway, or a falsy value (the getter's
+    // own null/undefined) when no scorer is active yet. Read fresh per call --
+    // the provider can appear mid-song.
     function _scoreProvider(hw) {
         return typeof hw.getNoteStateProvider === 'function' ? hw.getNoteStateProvider() : null;
     }
@@ -3126,24 +3127,8 @@
         _commitScoreRatio(state, ratio, hw, _splitCommitHooks(state));
     }
 
-    // Thin wrappers over the shared steps with the panel state bound first
-    // (#165 keeps the hook names stable for the test/export surface; the
-    // bodies are the shared implementation, not a second copy).
-    function _enqueueSplitPhraseEvents(hw, state, phrase, cutoff) {
-        _enqueueScoreEvents(hw, state, phrase, cutoff);
-    }
-
-    function _advanceSplitCursorsToTime(hw, state, playbackTime) {
-        _advanceCursorsToTime(hw, state, playbackTime);
-    }
-
-    function _pollSplitPending(state, provider, playbackTime, force) {
-        _pollScorePending(state, provider, playbackTime, force);
-    }
-
     function tickOneSplitHighway(hw, state) {
         if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return;
-        if (_scoreProvider(hw) === null) return;
         // One parameterized pass over this panel's highway (#165): the same
         // `_tickScoreHighway` the main player runs, with the panel's state
         // and a commit bound to it. State stays isolated per panel -- the

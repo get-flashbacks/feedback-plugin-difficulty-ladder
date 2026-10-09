@@ -4,11 +4,10 @@
 // here fixes or judges a behavior; it pins what the code does today so the
 // unification in Stage 4-2 can be checked against it.
 //
-// The two pipelines under test:
-//   MAIN   tickScoring -> _enqueueMainPhraseEvents / _pollMainPending
-//          -> commitPhraseResult                      (the main player)
-//   SPLIT  tickOneSplitHighway -> _enqueueSplitPhraseEvents /
-//          _pollSplitPending -> commitSplitPhraseResult   (one per panel)
+// The two pipelines under test, both now driven by the shared tick:
+//   MAIN   tickScoring -> _tickScoreHighway -> commitPhraseResult
+//   SPLIT  tickOneSplitHighway -> _tickScoreHighway -> commitSplitPhraseResult
+//          (one per panel)
 //
 // HOW EACH ONE IS DRIVEN
 //   * SPLIT is reached through the Node test hook: newSplitScoreState +
