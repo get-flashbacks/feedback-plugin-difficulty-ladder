@@ -3,79 +3,10 @@
   "name": "Difficulty Ladder",
   "version": "0.30.3",
   "private": false,
-  "main": "screen.js",
+  "description": "Live accuracy-driven difficulty auto-adjustment with a per-section difficulty guide.",
+  "category": "practice",
+  "script": "screen.js",
   "routes": "routes.py",
-  "description": "Live difficulty that adapts to how well you play, plus the generator that builds the ladders it uses.",
-  "author": "carochacs",
-  "license": "MIT",
-  "feedBackVersion": "v3",
-  "minFeedBackVersion": "1.13.0",
-  "settings": {
-    "autoAdjust": {
-      "type": "boolean",
-      "default": true,
-      "label": "Auto-adjust difficulty"
-    },
-    "reactionSpeed": {
-      "type": "integer",
-      "default": 2,
-      "min": 1,
-      "max": 3,
-      "label": "Reaction speed (EMA smoothing)"
-    },
-    "sensitivity": {
-      "type": "integer",
-      "default": 2,
-      "min": 1,
-      "max": 3,
-      "label": "Sensitivity (up/down thresholds)"
-    },
-    "dropResistance": {
-      "type": "boolean",
-      "default": true,
-      "label": "Drop resistance (confirm down steps)"
-    },
-    "levelUpOnly": {
-      "type": "boolean",
-      "default": false,
-      "label": "Level up only (disable down steps)"
-    },
-    "minMastery": {
-      "type": "integer",
-      "default": 0,
-      "min": 0,
-      "max": 100,
-      "label": "Minimum mastery floor"
-    },
-    "maxMastery": {
-      "type": "integer",
-      "default": 100,
-      "min": 0,
-      "max": 100,
-      "label": "Maximum mastery ceiling"
-    },
-    "generateLevels": {
-      "type": "integer",
-      "default": 4,
-      "min": 2,
-      "max": 8,
-      "label": "Difficulty tiers to generate"
-    },
-    "showDifficultyGuide": {
-      "type": "boolean",
-      "default": true,
-      "label": "Show difficulty guide (glass)"
-    },
-    "downStepRatio": {
-      "type": "number",
-      "default": 1.0,
-      "min": 1.0,
-      "max": 2.0,
-      "label": "Down-step ratio vs up-step"
-    }
-  },
-  "peerDependencies": {
-    "feedback-plugin-notedetect": "^1.15.2",
-    "feedback-plugin-splitscreen": "^1.14.5"
-  }
+  "settings": { "html": "settings.html" },
+  "standards": ["plugin-runtime-idempotent.v1"]
 }

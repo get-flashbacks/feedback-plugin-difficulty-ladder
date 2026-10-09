@@ -57,13 +57,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   context), mastery streak (main only), manual-override scope (global vs
   panel), write channel (`window.setMastery` + `lastAutoAction` vs panel
   highway), and diagnostics (main only). Split still runs its own tick path
-  -- migrating it is Stage 4-3 (#165), explicitly out of scope. No behavior
-  change: all 21 Stage 4-1 characterization tests pass unchanged (one
-  assertion updated to the new field-presence shape: split states carry a
-  null `lastAutoAction` that stays null). New structural tests pin the
-  unification itself (default-state field parity, in-place reset, shared-step
-  commit/discontinuity/transition behavior, override scoping). Version
-  0.30.0 -> 0.30.1 (internal refactor, no scoring change).
+  -- migrating it onto the shared machine is Stage 4-3 (#165), explicitly
+  out of scope. No behavior change: all 21 Stage 4-1 characterization tests
+  pass unchanged (one assertion updated to the new field-presence shape:
+  split states carry a null `lastAutoAction` that stays null). New structural
+  tests pin the unification itself (default-state field parity, in-place
+  reset, shared-step commit/discontinuity/transition behavior, override
+  scoping). Version 0.30.0 -> 0.30.1 (internal refactor, no scoring change).
+
+### Added
 - Keys/piano ladders now charge for black-key / awkward-fingering content
   (#178, item 2 of the keys roadmap #175). `_score_groups_keys` previously
   ignored which keys are played, so a passage dense in accidentals cost
@@ -87,12 +89,1217 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   twice for one move. The two #179/#178 terms compound on chromatic
   material but model different things (tonal expectation vs the key under
   the finger): a black key that IS stable in the estimated key still pays
-  this mechanical cost while earning that stability discount; neither term
-  disables the other. Evidence 🔴 weak per #103's convention (beginner-method
-  precedent, not a cited finding -- same tier as #103/B10 and C7). Four
-  existing keys tests isolate the term (zeroed) so their fixtures' incidental
-  black/white content can't move them; the term itself is pinned by a
-  formula test, a constant guard, transposition unit + end-to-end tests, a
+  this mechanical cost while earning that stability discount. Evidence
+  🔴 weak per #103's convention (beginner-method precedent, not a cited
+  finding -- same tier as #103/B10 and C7). Four existing keys tests
+  isolate the term (zeroed) so their fixtures' incidental black/white
+  content can't move them; the term itself is pinned by a formula test, a
+  constant guard, transposition unit + end-to-end tests, a
   cost-vs-retention test, and a chord-share test, each verified to fail
   with the term zeroed.
 - Test bootstrap preparation for sibling `scoring.py` module extraction (Stage 2b-3, #154). Added PEP 562 `__getattr__` to `routes.py` for lazy module loading and `load_sibling` context key for tests.
+- Fretted validation regression tests for issue #185: 8 real fretted arrangements (guitar/bass) with recorded baselines. Verified identical output between commit before #182 (dbfaeba^) and current main (c37ce5c), confirming no shared-code drift from the keys melody fix.
+
+### Added
+- Keys/piano ladders now get the same per-section key and chord awareness
+  the fretted path already had (#179, item 3 of the keys roadmap #175).
+  The per-section Krumhansl-Schmuckler key estimate and stability discount
+  (`_group_key_stability_bonus`) previously ran only for fretted
+  arrangements; on keys they now read the notes' real MIDI pitch directly
+  instead of the fretted path's string/fret-plus-tuning approximation.
+  The discount uses a keys-specific coefficient
+  (`_KEYS_KEY_STABILITY_RETENTION_BONUS`, 0.018) rather than the fretted
+  0.08 -- a keys group's `cost` scale is far narrower than the fretted
+  one's, so the fretted bonus would overwhelm it -- and stays under the
+  keys beat coefficient (`_KEYS_BEAT_VALUE_COEF`), the same guard the
+  fretted bonus obeys. Like the fretted term it applies per section BEFORE
+  the shared tier scale is frozen, and the correlation guard disables it on
+   near-uniform/atonal sections, so atonal input is unaffected.
+
+### Changed
+- The `showGlasses` setting is renamed to **Show difficulty guide**
+  (#158, item 3 of the tier rail in #131) and its stored key becomes
+  `showDifficultyGuide`. An existing user's on/off choice is migrated to
+  the new key on first read — off stays off, on stays on — and the
+  migration is idempotent. The setting's help text and the README now
+  state where the guide appears when Section Map is installed (the
+  standalone overlay is suppressed and the guide renders in Section
+  Map's section bar instead; the setting gates only this plugin's
+  overlay, not that surface). The README and `plugin.json` description
+  no longer describe the setting in glass terms.
+
+### Fixed
+- Keys/piano ladders no longer generate a degenerate, near-empty
+  bottom tier (#181, item 6 of the keys roadmap #175). The
+  proportional tier floor in `_assign_tiers` guarantees tier 0 a
+  share of the phrase's GROUPS (~15%), but a keys group is one
+  onset -- often a whole chord -- so on a dense chordal passage that
+  share materialized as only 1-2 NOTES against 20+ at the top tier:
+  a learner at the easiest setting had almost nothing to play
+  (measured on a 2-bar phrase of quarter-note 4-voice chords: tier
+  0 held 2-3 notes while the top tier held 32). The keys path now
+  applies a minimum musical floor per phrase, after tier assignment:
+  (1) a strong-beat skeleton -- one group at tier 0 covering every
+  grid position graded at least `_STRENGTH_STRONG_BEAT` (a
+  downbeat, or the mid-bar strong beat of a 4/4 measure), so the
+  easiest tier always carries the phrase's metrical landmarks; and
+  (2) a note-density backstop -- tier 0 materializes at least the
+  bottom tier's equal share of the phrase's notes (1/n_levels,
+  capped at what a full demotion of the phrase could emit at tier
+  0 -- a voicing whose outer voices are an octave apart collapses
+  to one note at tier 0 however many voices it has, so the raw
+  share can be unreachable even with every group at tier 0),
+  topping up with the cheapest remaining groups when the skeleton
+  alone (thin in 3/4 or 6/8, or absent entirely when no graded beat
+  grid exists) leaves it sparser. The backstop tracks the emitted
+  tier-0 note count incrementally (a group's tier-0 materialization
+  is independent of every group's level, so the per-group sizes are
+  computed once and each demotion adds its group's size) instead of
+  rematerializing and re-sorting the whole phrase after every
+  demotion, which is quadratic in the phrase's group count on dense
+  passages. Measured on the same fixture: tier
+  0 now holds 7 notes (the bass voice of nearly every chord); on 2
+  bars of sixteenth notes, 9 of 32 notes with every strong beat
+  covered. Interaction with the tier machinery (#181's second work
+  item): the floor runs after `_assign_tiers`, so the
+  arrangement-wide thresholds are untouched -- it only relabels
+  levels downwards within a phrase, and every tier's group set only
+  grows, never shrinks. A demotion can therefore make an ADJACENT
+  pair of tiers byte-identical: demoting every group that sat at
+  level k+1 equalizes the pair's group sets, and when their per-tier
+  voice budgets then agree (always for two-voice groups, and for
+  octave voicings whose extra voices are duplicates of exposed outer
+  voices) their materialized notes collide and
+  `_collapse_identical_levels` would silently merge the pair, costing
+  the ladder a tier. The anti-collapse guard keeps the floor from
+  ever creating a new identical pair: a pair already identical
+  before the floor is a pre-existing collapse (issue #70's own
+  territory), and the surgical fix restores the most recently
+  demoted group of the level the boundary lost -- one restoration per
+  threatened boundary, every other demotion intact, sacrificing
+  backstop additions before strong-beat skeleton positions. Where
+  the guard and the floor conflict, the ladder without the collapsed
+  tier wins: on a passage of nothing but two-voice chords, every
+  demotion would create a new identical pair, so the floor leaves
+  the assignment untouched rather than collapse the ladder. Covered
+  by `test_keys_tier0_floor_denses_the_measured_degenerate_fixture`,
+  `test_keys_tier0_floor_covers_every_strong_beat_position`,
+  `test_keys_tier0_floor_never_creates_an_identical_tier_pair`,
+  `test_keys_tier0_floor_guard_keeps_the_ladder_over_density`,
+  `test_keys_tier0_floor_backstops_density_without_a_graded_grid`,
+  `test_keys_tier0_floor_caps_the_backstop_at_the_emittable_count`,
+  and `test_keys_tier0_floor_leaves_an_already_dense_bottom_tier_alone`.
+- A generated (non-authored) last phrase window holding a single onset got
+  no phrase-boundary ending discount at all (#184). The discount's guard
+  `phrase_groups[-1] is not phrase_groups[0]` skipped it outright, so the
+  closing material kept its raw retention score -- measured: a keys final
+  window holding one two-hand onset kept retention 0.41, equal to its raw
+  cost. The last window's end is the song's real end, so the closing note is
+  meant to be kept when the rest of the tier allows it, same as any other
+  last window. The ending discount now applies to every group sharing the
+  last onset (a fretted double stop's two halves, or a keys two-hand onset's
+  split halves), except for groups that already received the first-onset
+  discount in the same pass -- a single onset that is its own opening and
+  closing gets the boundary discount exactly once, preserving the
+  pre-existing behaviour for an authored window that is both first and last
+  (first-onset discount only). Applies to the shared fretted and keys path.
+  Separately, the fretted path's reverse loop used to break as soon as it
+  left `phrase_groups[-1]`, so a final window holding a double stop
+  (two groups at one onset) discounted only the LAST of them and left the
+  other closing material at its raw retention score -- while the keys path,
+  which keys on time rather than identity, discounted both. Both paths now
+  discount every group sharing the final onset (measured: a fretted final
+  window with fret-8 and fret-17 groups at t=31.5 kept retention 0.0793 /
+  0.2237 raw and applied the ending discount to 0.1237 only). The fix is
+  covered by `test_fretted_double_stop_last_window_discounts_both_groups`
+  and `test_keys_authored_first_and_last_single_onset_keeps_first_onset_discount_only`.
+  The keys authored first-and-last test now makes its onset the window's ONLY
+  onset (filler moved to a later window), so the first-onset block actually
+  runs on it and a regression that double-discounts an onset shared by the
+  window boundaries would fail there.
+- Keys/piano ladders no longer charge a hand for a jump it did not make
+  (#177 review). Three ways the new per-hand leap term could charge movement
+  that never happened, now closed. A group whose nearest predecessor of the
+  same hand sat OUTSIDE the tempo-relative movement window used to waive the
+  charge outright and then keep that distant group as its predecessor for good,
+  so one stale entry decided every later lookup for that hand: on
+  `[60, 62, 64, 66, 68, 25, 27, 29, 84, 86]` at eighths, with a 0.5 s window,
+  the two-semitone step paid 0.0072 while the 43-semitone `68 → 25` dive and the
+  55-semitone `29 → 84` jump paid nothing at all, because their nearest
+  same-hand notes were a bar back while the group immediately before them sat
+  well inside the window. An out-of-window predecessor no longer counts as a
+  predecessor, so the nearest group actually inside the window is the one
+  measured; both now charge, at 0.0481 and 0.0500 on that fixture. Separately,
+  the predecessor FALLBACK — used when a group has no same-hand predecessor at
+  all — could inherit from a group created by a hand split, which is exactly the
+  `upper`/`upper` collision that pairing the chain key on
+  `(hand, hand_split)` exists to prevent: an authored left-hand chord that
+  splits, followed by a right-hand melody note half a second later, was charged
+  a full-hand-span leap off the chord's own upper half (0.0315) for a hand that
+  never moved. The fallback now skips split-created candidates as well as
+  notes-less ones. Groups sharing a timestamp were already excluded by the
+  `available > 0.0` gate. The pass itself moves into `_keys_leap_charges`,
+  split out of `_score_groups_keys` so that the scoring loop holds only the cost
+  model.
+- Keys/piano ladders no longer drop the tune at the bottom tier. A left-hand
+  note and a right-hand note sounding together were fused into one "chord"
+  cluster that scored as hard, so the lowest tiers kept cheap left-hand filler
+  and omitted the melody entirely. A cluster spanning both hands (internal gap
+  of a minor 7th or wider) now splits into one group per hand, and the melody (top)
+  voice earns a retention bonus, so tier 0 always includes the tune. Turning-point detection skips split
+  onsets (so the other hand isn't compared at the same instant), the melody
+  register is read off the skyline, and the phrase-boundary bonus covers every
+  group at the boundary onset (keys only). The melody discount is capped at
+  half of the remaining score so cheap, slow melodies don't all clamp to 0.0.
+  A melody voicing is costed as its top note (what the bottom tier plays), so a
+  chordal right hand no longer pushes the melody out of tier 0; density and
+  speed read distinct onsets, so the two hand-parts of one onset don't inflate
+  density or zero the first part's speed; and only groups created by a hand
+  split are excluded from turning points.
+
+### Added
+- A render-neutral section payload, `difficulty_ladder.sections.v3` (#156, first
+  tier-rail sub-issue of #131). The existing `difficulty:sections-updated` event
+  states `fillPercentage` and `glassSize`, i.e. presentation decisions made in
+  the producer on Section Map's behalf, so any second consumer inherited the
+  glass metaphor. v3 reports the facts behind them instead, per section and per
+  overlapping phrase: a stable id and index, the half-open time range,
+  `current_tier` (the tier this pane's mastery maps to, from the same discrete
+  ladder `drawHud()` uses, clamped to the tier the entry plays in full from),
+  `top_tier`, `max_tier`, `avg_top_tier` for sections, `is_current`, and
+  `has_chart_content` — plus the phrase entries themselves, keyed by the same
+  stable id `phrase_attempt.v2` records use. No presentation field appears
+  anywhere in it; a renderer picks its own shape, or none. Missing data stays
+  missing: a section with no overlapping phrase produces no entry rather than a
+  zero tier, and `current_tier` is `null` (not `0`) when the host reports no
+  usable mastery or the entry reports no tier ladder at all — a `0` there would
+  be indistinguishable from "measured at the bottom tier", which is exactly what
+  `top_tier: 0` denies. Each payload is built per player context, so Split
+  Screen panes stay isolated as before. Emitted from the same
+  `calculateAndEmitSectionDifficulties()` call and the same ~150 ms throttle as
+  v2, adding no reads beyond the current time and song identity the new
+  `is_current` / `current_phrase_index` / joinable id fields are for. That
+  throttle is event-driven, not time-driven, so `is_current` and
+  `current_phrase_index` are snapshots of the playback position as of the last
+  emit (playback progress never schedules one) and go stale between emits;
+  `start_time` / `end_time` stay exact, so `INTEGRATION.md` states that a
+  renderer following the playhead should read `highway.getTime()` itself. Both
+  events are emitted: v2
+  is frozen byte-for-byte for the released Section Map integration — its
+  `0.5` stand-in on a highway that reports no mastery included, where v3
+  reports `null` — and v3 sits on
+  its own event name so a subscriber is never handed the other version's
+  payload, and `window._ddCapabilities.sectionsSchema` advertises which
+  contract the installed build speaks — set at this plugin's top-level script
+  execution, which (plugins load alphabetically,
+  `difficulty_ladder` < `section_map`) always precedes Section Map's
+  availability check. v2 removal follows the v3 consumer landing in Section Map.
+  Contract, field table and transition policy documented in `INTEGRATION.md`.
+- A session's first start on a song now begins slightly below the difficulty
+  the player last settled on, and lets the existing ramp walk the gap back
+  (#112, roadmap C4). Resuming straight at a remembered peak makes the
+  player's first sections — which dip below their settled level — likely to
+  miss, and a rough patch that early can trigger a step-down nobody needed.
+  The concession is `RESUME_OFFSET_FRACTION` (0.5) of the ramp step
+  `thresholds().step` already moves in one full step, so it is at most one
+  step and usually half: 5 / 8 / 10 points at Sensitivity 1 / 2 / 3, floored
+  at `minMastery` (and skipped outright when the remembered value already sits
+  at or below it, so the concession is never a step *up*). It composes with
+  `WARMUP_PHRASES` rather than replacing
+  it — the ramp still stays quiet for a song's first section, and once the
+  rolling average clears its up-adjustment threshold it climbs back over the
+  gap (a session that settles mid-band plays out at the lower start). Scoped
+  per progress record for the life of the page session, so a re-restore of
+  the record already in play (`song:ready` re-firing on a reconnect, a
+  player-context relink, a split panel re-registering under a changed identity)
+  puts the player back where the start left them, while a *different* song
+  mid-session still gets its own warm-up start. Adaptive-mode only:
+  nothing climbs the gap back in Standard mode. The applied start is
+  live-only — every apply path skips its `currentDifficulty` write for it (and
+  the wrapped `window.setMastery` hook does too, which is the path the
+  compatibility adapter restores through), so the remembered peak survives a
+  session abandoned inside the warm-up window. Re-recording it there would
+  have replaced a peak the player earned with a value they saw for a couple of
+  sections, and — since the ramp can sit inside the dead band without moving —
+  walked the remembered value down by one offset per such session. The ramp's
+  first adjustment, or a manual slider move, re-persists from wherever it
+  leaves the slider.
+- Keys/piano ladders now charge for large hand-position shifts (#177, first
+  tier-ladder sub-issue of the #175 difficulty-ladder roadmap; #103's evidence
+  convention applies as documented in the neighbouring #182 keys entry). The
+  fretted path has penalised a big fret jump since #19
+  (`_fitts_shift_bonus`), and `_score_groups_keys` had no equivalent, so a
+  passage leaping two octaves every beat cost exactly as much as a stepwise
+  one — on a keyboard the reach of the hand, which is the movement a beginner
+  is most likely to miss or fumble, was invisible to the model. `_group_notes_keys`
+  now tags each notes-bearing group with the `"hand"` that plays it: a split
+  onset's halves are exactly the lower/upper parts `_split_keys_hands`
+  returned, and an unsplit onset — one hand by definition of the
+  10-semitone threshold — is assigned by register in the same pass, off the
+  same skyline median, that decides which voice is the melody. That label is a
+  register GUESS, not an observed fingering: on a single melodic line whose
+  contour straddles the median it alternates lower/upper with every pitch, so
+  taken alone no group would ever have a same-hand predecessor and the term
+  would silently evaluate to zero. `_score_groups_keys` therefore measures each
+  group against the previous group of the SAME hand, falling back to the group
+  immediately before it when the same-hand lookup comes up empty — conservative,
+  since a real hand must get from the last thing it played to this one, and
+  monotone in real travel. The fallback is gated OFF for a group created by a
+  hand split: there, having no same-hand predecessor genuinely means the hand
+  has not played yet, and the group before it is the other half of the SAME
+  onset — same timestamp, full hand span — which the upper part of a first
+  two-hand onset must not be charged. Groups are anchored at the mean of their
+  MIDI pitches (keys notes carry exact pitch, so a hand's position is best read
+  as the centre of the pitches it is holding rather than its top or bottom note),
+  and the charge is `_keys_leap_bonus` — the same bounded
+  `log2(distance / target + 1)` index under the same time-pressure discount as
+  the fretted shift bonus, reusing `tempo.fret_jump_window_seconds` rather than
+  adding a new tempo constant, and zeroed outright past that window (a
+  deliberate keys-only addition: the fretted term treats its window as a pure
+  pressure scale with no cutoff, and dropping the keys charge there costs a
+  visible step in `cost`). Per-hand scoping matters: scoring the two halves of
+  one split onset against each other would charge a phantom leap to both halves
+  of every single onset. Constants: a 5-semitone target width (a hand shifts
+  for free within about a fourth), a 19-semitone reference (a twelfth, where
+  the term saturates), and a 0.05 cap — about half the fretted 0.10, because
+  the keys `cost` scale has a much narrower range than the fretted one (a
+  melodic single-note keys passage spread ~0.10 across an entire phrase,
+  measured in PR #126 review, versus the fretted path's typical 0.3–0.6), but
+  still twice `_KEYS_BEAT_VALUE_COEF` because for a beginner the span the hand
+  must cross is a bigger obstacle than the metrical position the note sits on.
+  Measured on fixtures that hold onsets, note counts and sustain fixed, so
+  poly/span/density/speed are equal by construction. Two hand chains, the
+  leaping one moving a full two octaves per move: mean cost 0.2228 against
+  0.2039 stepwise (mean `retention_score` 0.1448 against 0.1259), charging
+  +0.0280 per two-octave move against +0.0054 per whole tone. A SINGLE melodic
+  line — the case the register tag alone got wrong — zig-zagging two octaves
+  per note charges 0.1868 against 0.0501 for the same line walking in whole
+  tones, with 41 semitones of dive inside a single line charged 0.0260 where
+  the whole term used to read 0.0000. End to end through the generator, the
+  property that actually holds at every interval size is that the reported
+  difficulty cost rises: over a sweep of uniform-interval fixtures from k = 0
+  to k = 19 semitones, `difficulty_cost` increases strictly at every step
+  (0.1987 → 0.2154 and 0.1925 → 0.2175 across the two phrases) with all 12
+  notes surviving at the top tier throughout and the tier ladder nested at every
+  size, while the same sweep with the term disabled is flat at 0.1925 / 0.1925.
+  The bottom tier itself is NOT what moves — a uniform per-group shift barely
+  reorders a passage — so no absolute tier count is claimed or pinned. The term
+  is folded in exactly where the fretted path folds its shift bonus — added to
+  both `cost` and `retention_score`, after the beat-value discount and the
+  melody bonuses and before the final clamp, with `cost` left unclamped to
+  mirror `_score_groups` (on this path that clamp is not reached in practice:
+  the base formula's weights sum to exactly 1.00 and its terms can all saturate
+  together, so the analytic base ceiling is 1.00 and the leap term can take it
+  to 1.05, though the highest value measured over ~60k dense clusters was
+  0.1750) — so the cost/retention
+  separation #72/B1 established is untouched. Keys only: the
+  fretted path's own `fret_jump` term is unchanged.
+- Opt-in "Level up only" setting (#111). While on, Adaptive mode raises the
+  master-difficulty slider as usual but never lowers it: a below-threshold
+  phrase yields no ramp direction at all rather than a step-down, so
+  auto-adjust produces no automatic decrease at any accuracy. Off by default.
+  The manual slider is untouched, including its existing stand-down of
+  auto-adjust on originless drift, and turning the setting back off resumes
+  normal step-downs from the current position. Step-ups, warm-up accounting,
+  and mastery bounds are all unchanged. The direction decision is extracted
+  into a shared `rampDirection()` helper (alongside the existing shared
+  `rampStep`) so the main and split-highway ramps stay in lockstep. Ships as
+  a **comfort option, not a learning feature** — a 2022 meta-analysis
+  (McKay et al.) found the self-controlled-practice benefit close to zero
+  after bias correction. Persisted as `difficulty_ladder.levelUpOnly`
+  (boolean, default `false`) — the Song Mastery settings mapping that #85
+  defines should read it as a user-comfort preference, defaulting to off,
+  and must not derive it from a migrated value.
+
+### Changed
+- Internal-only: the `difficulty_ladder.sections.v3` payload builder in
+  `screen.js` splits into per-concept helpers — `_v3SectionEntries`,
+  `_v3SectionEntry`, `_v3Overlapping`, `_v3PhraseEntry`,
+  `_v3CurrentPhraseIndex`, `_v3Covers` and `_v3NumberOrNull` — with the host
+  readings (`mastery`, playback time, song key) hoisted into one `state` object
+  read once per emit. No payload changes: both events emit byte-for-byte what
+  they emitted before. The seam moved because one 110-line body doing six jobs
+  scored as a complex method, which CodeFactor reports as a new finding and
+  every future edit here would re-trip.
+- Internal-only: the three hand-written localStorage persistence stores in
+  `screen.js` — `progress.v2`, `phraseAttempts.v2`, and the legacy read-only
+  `songMastery` map — collapse into one `makePersistenceStore(config)`
+  factory (#138). Each was its own independently-shaped copy of the same
+  load/save/flush/schedule/invalidate quintet with its own module-level
+  cache/dirty/timer triple; they now share one implementation parameterized
+  by key, empty shape, and schema gate. The per-store entry points
+  (`loadProgressStore`, `saveProgressStore`, `flushProgressStore`,
+  `loadSongMasteryMap`, `saveSongMasteryMap`, `loadPhraseAttemptStore`,
+  `savePhraseAttempts`, `flushPhraseAttempts`) keep their names, signatures,
+  and timing, so this is invisible at runtime: the 150ms write debounce, the
+  schema rejection of malformed on-disk payloads, the legacy map's immediate
+  (never-debounced) save, and the cross-tab `storage` race — flush our own
+  pending write before dropping the cache — are all unchanged. Cross-tab
+  behavior for all three stores is now covered by tests, which the three
+  separate copies were not. Two review findings are folded in: a cross-tab
+  `storage` event whose own recovery write fails now keeps the dirty cache
+  and retries on the next lifecycle flush instead of dropping the record
+  (the old code dropped it too), and `saveSongMasteryMap()` still returns
+  nothing rather than inheriting the store's boolean.
+- Internal-only: the per-setting reaction to a settings change moves in
+  `screen.js` into one `_applySettingsChange()` helper shared by the
+  cross-tab `storage` listener and the same-tab
+  `difficulty_ladder:settings-changed` listener, which were repeating
+  the same four reactions. Both paths still apply exactly what they
+  applied before; a new setting now has one place to hook, and the
+  `storage` listener no longer grows a branch per setting (adding
+  `levelUpOnly` had pushed it past CodeFactor's complexity threshold).
+- Internal-only: `routes.py` is reorganized into two clearly marked halves —
+  a pure chart-scoring core and the pack-I/O/HTTP half — with section
+  banners naming each region's concern, the HTTP-only constants
+  (`PLUGIN_ID`, `MAX_PROCESSING_SECONDS`) and the pure skip-reason
+  predicate `_is_unsupported_skip` moved to the halves that own them, and a
+  module map in the docstring (#137). No behavior change: generated ladders
+  are identical, which CI confirms by running the full suite on this change.
+- New `pure-core-has-no-io` CI job (#137). It locates the pure scoring core
+  in whichever plugin module declares the banner, then fails if that region
+  takes on any external module outside {`re`, `bisect`, `math`,
+  `dataclasses`, `itertools`} or uses a symbol defined outside the region. It is
+  an allowlist rather than a denylist, so a new I/O or framework dependency
+  has to be added to the allowlist deliberately rather than slipping through
+  an unmaintained list — whether it is imported at the top of the file or
+  inside the region, and whether or not some other binding in the region
+  happens to share that name (bindings are resolved per scope, so a
+  parameter cannot whitelist a sibling function). Capability builtins
+  (`open`, `eval`, `exec`, `__import__`, …) are rejected too, so the gate
+  also survives names that reach a capability without an import. A banner
+  that appears more than once, or a pure region with no statements, fails
+  the job rather than passing silently. If the pure core is later moved
+  into its own module, the banner moves with it and this job keeps gating
+  it.
+
+### Fixed
+- A cross-tab `storage` event whose recovery write fails now re-arms the
+  persistence debounce, so the kept record is retried even in an idle tab
+  instead of waiting for a later write or lifecycle flush (follow-up to #149).
+- A debounced persistence write that fails (storage quota, storage
+  unavailable) now retries on its own — up to three times at 300/600/1200 ms —
+  until the next flush, instead of waiting for the next write. An explicit
+  flush (song change, screen hidden) cancels a pending retry and does not
+  re-arm it by design. Bounded, so a quota that stays full costs a few
+  attempts, not a retry loop; fresh data restarts the retry budget
+  (follow-up to #149).
+- Instrument labels stored under the pre-#136 `_instrumentKind()` verdict
+  are now cleared instead of persisting forever (#141). That fix is
+  prevent-only: a record already written as `fretted`/`keys` for an
+  arrangement the backend refuses to ladder (a blank-`type` "Vocals" or
+  "Drums", or a `vocals` type whose name merely started with a keys word)
+  was never rewritten, because the only writer fires solely for
+  `fretted`/`keys`, and the one-shot `songMasteryV1` migration had already
+  copied such a label into a durable v2 `guitar` node that kept it in the
+  Profile baseline's Fretted/Keys aggregate. Both the v1 record and the
+  migration-owned v2 node are now dropped as soon as the loaded song's
+  metadata or a generation response reports the arrangement as
+  `drums`/`unsupported`. Only `guitar`/`keys` nodes carrying the
+  migration's own `legacy_claim_player_id` marker are touched — the
+  same gate the v1 side applies, so an unlabelled `legacy-unknown`
+  value is left alone — and one that also holds a live `bestMastery`
+  keeps it, so played progress is never deleted.
+- `screen.js`'s `_instrumentKind()` had silently drifted from `routes.py`'s
+  `_instrument_kind()`: it ran the keys-name regex unconditionally instead
+  of only when `type` is blank, and never checked the drums/unsupported
+  name patterns at all. A blank-`type` arrangement named e.g. "Vocals" was
+  misclassified as `fretted` client-side (and remembered/mastery-tracked
+  as such) while the backend correctly refused to generate a ladder for
+  it. `_instrumentKind()` is now a faithful port of the Python logic, and
+  both implementations are driven by a shared fixture
+  (`tests/fixtures/instrument_kind_cases.json`) so they can't silently
+  diverge again.
+
+### Added
+- README: new "Host and peer compatibility" section (#129, #130) —
+  documents the known source-level core-commit floors for
+  generation/loading vs. full concurrent-player/tier-semantics behavior
+  (no tested `minHost` exists yet), and a peer compatibility matrix
+  (Chordr, Note Detect, Split Screen, Section Map) distinguishing
+  required-for-one-feature from optional peers, their lowest auditable
+  versions, and degraded behavior when absent/older. Documentation only —
+  no runtime behavior change; integration tests and capability probing
+  against missing/minimum/current peer versions remain open follow-up
+  work under #130.
+- README: fixed three factual errors caught by review — the Chordr row
+  named a nonexistent route (`POST /group-chords`, actually
+  `POST /api/plugins/difficulty_ladder/analyze-chords`) and a symbol not
+  in this repo (`_registerChartTransform`), and wrongly listed
+  `staged_chords` as Chordr-gated when it's a Chordr-independent local
+  option; the Section Map row cited a Difficulty Ladder version
+  (`v0.9.13`) that was never released (the real floor for the
+  `sections.v2` contract is `v0.12.0`, per `CHANGELOG.md`) and implied
+  Section Map inspects a `schema` field it never reads; the core table
+  cited a `v0.3.0-alpha.1` tag that doesn't exist (feedBack core has no
+  tags/releases, only a `VERSION` file, currently `0.3.0-alpha.2`).
+- README: document where auto-adjust actually settles for each Sensitivity
+  setting (roadmap C2, #55) — a settle-point table, the "strict has the
+  tightest settle point but moves the slider most often" finding, and the
+  confidence/limits of the simulation. No behaviour change; covers the
+  Sensitivity half of C2's stated deliverable (`tools/settle_points.js`
+  itself landed in #128) — the Reaction-speed half stays open under #55,
+  per review on #132.
+- README: corrected the Reaction-speed note (sensitivity 2's settle range
+  was quoted for all three reaction speeds; sensitivity 1 actually shifts
+  with reaction speed), the Wilson et al. citation (the "85% rule" is a
+  training-accuracy prescription for gradient-descent learning rate, not
+  a settle-point target, and the figure varies 85/82/75% by noise model —
+  not a flat "80-85% band"), and the burn-in claim (start-independence is
+  exact for sensitivities 2-3 but only partial for sensitivity 1, whose
+  post-burn-in window rarely re-equilibrates) — per a second review round
+  on #132.
+- README: corrected two more figures from a third review round on #132 —
+  sensitivity 1's reaction-1 mean (stated as a single-slope 0.83; the
+  section's own union convention gives 0.79–0.83) and the burn-in
+  paragraph's "narrow vs. wide" example (was quoting the pooled per-phrase
+  p10/p90 column, not the per-run settle range the paragraph is about,
+  and didn't reproduce as stated).
+- Developer tool `tools/settle_points.js` (not loaded by the plugin):
+  simulates synthetic players against the real auto-adjust controller
+  (`commitPhraseResult`) and reports where accuracy settles for each
+  sensitivity / reaction-speed / drop-resistance setting. No behaviour
+  change; results are posted to #55.
+- Opt-in "staged chords" bottom tier (off by default; `generate`/
+  `generate-library`'s new `staged_chords` request field, plumbed through
+  `generate_phrases_for_arrangement`): a repeated occurrence of a
+  Chordr-identified chord is dropped entirely at the bottom tier, keeping
+  only the longest-sustained occurrence among the other bottom-tier
+  occurrences of that identity ("landmark", scoped to `level == 0` so a
+  higher-tier occurrence can never be picked as the landmark and empty the
+  identity out of the bottom tier; a `notes: []` chord group is also
+  excluded from landmark/resolution candidacy, so it can't silently hold
+  an identity's slot while contributing nothing), plus the phrase's own
+  final, note-bearing bottom-tier chord group (protected as a likely
+  resolution regardless of how briefly it's struck). Only chords the chart positively
+  identifies via a matched `ChordTemplate` name are ever collapsed —
+  unnamed/unmatched voicings are never touched. Every tier above the
+  bottom one, and every existing caller that doesn't pass `staged_chords`,
+  is completely unaffected — this is additive to the existing per-group
+  voicing/technique reduction, not a replacement for it.
+- Keys/piano generator improvements: graded beat-strength retention (same
+  `_beat_value` term the fretted path uses) and melody-turning-point
+  retention (using keys' real MIDI pitch directly, no fret/tuning
+  approximation needed) now apply to `_score_groups_keys`, matching the
+  fretted path. Chord-voicing reduction (`_notes_for_level_keys`) now
+  grows by a smooth per-tier budget for chords wider than 3 notes, instead
+  of jumping straight from "outer voices" to "outer + one middle voice" to
+  "everything" regardless of how many tiers the ladder has; a fixed
+  voice-add order (outer first, then alternately inward) guarantees each
+  tier's kept notes are a superset of the tier below (octave-duplicate
+  collapsing can make two adjacent tiers byte-identical, so not always a
+  strict superset) — the collapse itself runs in that same voice-add
+  order rather than pitch-sorted order, so a harder tier's newly-added
+  voice can never win an octave collision against, and drop, a voice an
+  easier tier already exposed — and beat/turning coefficients are scaled
+  to keys' own, much narrower `cost` range rather than reused verbatim
+  from the fretted path.
+- Key- and chord-aware note retention: estimate each phrase's key
+  (Krumhansl-Schmuckler correlation against the 24 major/minor rotations
+  of the Krumhansl & Kessler 1982 profiles, from a duration-weighted
+  pitch-class histogram), then rank notes tonic > chord/triad tone > other
+  scale tone > chromatic (chord tones ranked above passing tones of the
+  same category) and give the most tonally-stable note in a group a modest
+  retention push — deliberately weighted below beat/metrical strength and
+  melody-turning-point retention, per the guard that a heuristic key
+  estimate shouldn't outweigh measured beat position. Applied per-window
+  before the tier scale is frozen, so it participates in tier-cutoff
+  construction rather than re-labeling an already-frozen scale. Disabled
+  per-window when the key estimate correlates poorly (near-uniform/atonal
+  pitch-class content — ordinary diatonic, modal, and blues material all
+  clear the threshold and get the weighting). Also: chord and arpeggio reduction now try a real harmonic
+  root parsed from the matched `ChordTemplate`'s authored name (e.g.
+  "Am7", "G/B") before falling back to the lowest-string-index heuristic
+  (#108).
+- Grade beat strength (downbeat > strong beat > other beat > eighth >
+  sixteenth > off-grid) instead of an on/off check, and replace the
+  nearest-beat-distance syncopation measure with a Longuet-Higgins & Lee
+  style one (a weak-position note followed by a silent stronger position).
+  Feeds the retention `value` term, the tier-assignment tie-break, and
+  bridge-note selection. Falls back to the exact pre-#103 on/off behavior
+  when there's no usable downbeat grid (#104).
+- Give a modest retention push to the first and last note group of each
+  authored phrase, so a thinned tier is more likely to keep a phrase's
+  opening and closing material. Generated (non-authored) windows only get
+  this at the very start and very end of the song (both are genuine
+  boundaries even when the windows aren't authored phrases), not at
+  internal window edges (#105).
+- Give a modest retention push to each local pitch high or low in a
+  single-note line, no further than `tempo.fret_jump_window_seconds` from
+  its nearest single-note neighbor, so a thinned tier still traces the
+  melody's shape instead of just its hardest notes — and so a note at the
+  end of one phrase isn't compared against the start of an unrelated one
+  across an intervening chord section or long rest. Chord/cluster groups
+  never qualify, so chord-heavy passages are unaffected. A 5-string
+  arrangement's pitch approximation now distinguishes bass (all perfect
+  fourths) from non-bass (borrows the 6-string guitar's low strings,
+  matching feedBack core's own `base_open_string_midis` contract) via a
+  name/type sniff (#106).
+- Score technique coordination demand: a group using more than one distinct
+  technique at once, or switching technique from the last technique-bearing
+  group before it, now scores above `_tech_score`'s previous
+  max-single-technique-only term. Deliberately not re-clamped against
+  `_tech_score`'s own per-note 0-1 range, so the bonus isn't silently
+  swallowed on an already-saturated technique (e.g. a tapped, round-trip
+  bend). 0 for the common single-technique, unchanged-from-before case, so
+  existing single-technique passages are unaffected (#72).
+- Report a per-phrase `difficulty_cost` (mean of the internal mechanical
+  `cost` score across a phrase's full, untiered content), independent of
+  `max_difficulty`/ladder depth. Additive wire field — consumers that don't
+  read it are unaffected (#72).
+- Score wide low-position fretted shapes as an extra hand-posture cost.
+- Prioritize phrase-boundary, then bar-boundary bridges in the lower-tier
+  path-refinement helper (not yet enabled in production generation).
+
+### Changed
+- Replace the fixed-window linear fret-jump charge with a bounded Fitts-law
+  movement cost that decreases as time available for the same shift grows.
+- Read-only Chordr chord-grouping preview for fretted arrangements. Reports
+  identified chord names and continuation/parent indices without changing
+  existing generation behavior or song packs.
+
+### Fixed
+- Kept generated Keys tiers monotonic by preserving an easier tier's octave
+  representative when harder tiers add octave-equivalent middle voices.
+- A manifest entry's own `tuning`, when a pack's manifest declares one,
+  now takes precedence over the embedded arrangement JSON's for scoring
+  (matching `lib/sloppak.py`'s `load_song()`), instead of always reading
+  the embedded value. Resolved on a copy for the generation run only —
+  never written back into the arrangement file, so authored data isn't
+  silently normalized to the manifest's value. The read-only
+  `analyze-chords` preview resolves the same effective tuning for its
+  Chordr context. A malformed manifest `tuning` (not a list) is now
+  ignored rather than crashing the request.
+- The melody-shape bass/non-bass sniff (#106) now resolves the
+  EFFECTIVE name/type (a manifest entry's own `name`/`type` override,
+  same precedence as `tuning`), not just the embedded arrangement's —
+  a manifest entry authored as a bass part over a differently-labeled
+  embedded arrangement was reading the wrong 5-string interval row. The
+  `analyze-chords` preview's own `isBass` Chordr-context field resolves
+  the same effective name/type, now also matching feedBack core's exact
+  bass-detection substring semantics (a bare case-insensitive "bass" in
+  the name, not a narrower word-boundary match) for consistency with
+  generation's own `is_bass`. A manifest entry's `name`/`type` is
+  unschema'd YAML and can be a non-string (a list, number, ...); the
+  shared bass classifier now coerces it with `str()` first (matching
+  `lib/sloppak.py`'s own coercion) instead of raising.
+
+### Changed
+- Split generated-note mechanical cost from rhythmic retention value internally,
+  while preserving the existing ladder output and ranking behavior.
+- **Generated ladders use one difficulty scale per song.** Levels used to be
+  per-phrase percentiles, with each phrase's depth taken from its score
+  spread — so an easy verse was thinned at the bottom exactly as hard as the
+  solo, and a solo that was hard all the way through got the *shortest*
+  ladder. Every phrase is now built on the same `levels`-tier scale: a note
+  group enters a tier when it is easy for this song (arrangement-wide
+  retention curve, capped by a fixed score scale) or among its own phrase's
+  easiest (a per-phrase floor that keeps a playable skeleton in hard
+  phrases). Easy phrases become complete early; hard phrases differ at every
+  tier. Duplicate tiers are still dropped, but the remaining levels now keep
+  their tier numbers (sparse `difficulty`, shared `max_difficulty`) so the
+  slider maps the same way in every phrase — this needs the matching feedBack
+  core change; an older core still plays the ladder, scaled per phrase.
+- **Technique gates follow the song-wide tier**, so a technique appears at
+  the same slider position in every phrase (in a 2-level phrase, bends
+  previously survived even at the bottom).
+- **Pitch-preserving simplification.** A pre-bend, pre-bend-and-release or
+  release (all struck already bent) now becomes a fretted note at the bent
+  pitch instead of an unbent note a step or so flat of the recording; a
+  bend with no fretted equivalent (quarter-tone, past fret 24) is kept as
+  authored. Natural harmonics are only stripped at frets 12/19/24, where the
+  fretted note sounds the same pitch.
+- The HUD glasses and the `difficulty:sections-updated` payload size and fill
+  by the tier a phrase is complete at (core `getPhrases().top_difficulty`,
+  falling back to `max_difficulty`), so an easy phrase shows full once the
+  slider reaches that tier. A section whose phrases are all single-level now reports
+  100% when it has notes (a generated easy phrase, complete at the bottom
+  tier) and 0% only when it is silent, matching the HUD glasses.
+- Implicit arpeggio grouping in the fretted ladder generator (`_group_notes`)
+  now requires real evidence before treating a time/fret-proximity cluster of
+  different-string notes as a broken chord (#73): an authored hand-shape
+  window covering the cluster, overlapping sustain windows, or a fret pattern
+  matching a known chord template. Absent all three, the cluster is
+  classified `"run"` (a melodic sequence, e.g. a fast cross-string scale)
+  instead of `"arpeggio"`. Previously ANY different-string notes inside the
+  grouping window became an "arpeggio" with no further evidence, so a scale
+  run could be reduced to a single note at the bottom difficulty tier the
+  same way a genuine broken chord is.
+- `_notes_for_level` no longer collapses a `"run"` group toward one
+  presumed-root note at the bottom tier — it thins proportionally to the
+  level (same ratio as a real arpeggio) and samples evenly across the run
+  (new `_evenly_sample` helper) so the surviving notes trace the run's
+  melodic contour once it's long enough for the ratio to keep more than
+  one note; a short run still keeps one note at the bottom tier, same as
+  before, just no longer forced to for every run length.
+- Corrected "root"/"harmonic root" language in the fretted grouping and
+  chord-reduction docstrings and comments (`_group_anchor_note`,
+  `_notes_for_level`, `_pick_partial_voicing`) to describe what these
+  functions actually pick: the note on the numerically **highest string
+  index** (`max(s)`) in a group. This is a position anchor, not a proven
+  harmonic root — an inversion's/slash-chord's bass note can be on any
+  string, and no authored chord identity is threaded through to tell the
+  difference. A first pass at this fix mislabeled it "bass"; per feedpak's
+  own wire convention (§6.2/§6.6: string index 0 = lowest-pitched string,
+  mirrored in `song.py`'s `_TUNING_BASE_MIDI`), `max(s)` actually lands on
+  the highest-*pitched* string (treble-most, e.g. high e on a standard
+  6-string tuning) — the reverse of "bass." No runtime behavior changed;
+  only the documentation's claim about note direction did (PR #100 review).
+  PR #101 then did change the behavior, to the lowest string index — see
+  Fixed below.
+- Tightened `_cluster_matches_chord_shape`'s chord-template evidence
+  (PR #100 review): a match now also requires the cluster to cover a
+  meaningful share of the template's own used strings (at least 3, or at
+  least half — whichever is fewer), not any coincidental subset. Without
+  this, a 2-note passing interval that happened to land on 2 of a 6-string
+  open chord's 5 used strings would read as chord-identity evidence — the
+  exact false-arpeggio class issue #73 set out to eliminate. A cluster
+  that fully matches a small template (e.g. a 2-string power-chord shape)
+  still counts, since a complete match of a small shape is real evidence
+  regardless of the shape's size.
+
+### Fixed
+- **Chord reduction kept the top string's note.** String 0 is the lowest
+  string (feedpak-v1 §6.2, gp2rs), and chord reduction and the hand-position
+  anchor took the highest index, so a reduced chord kept its treble-most
+  (melody-side) note. They now take the lowest string — the bass note, which
+  in standard open and barre shapes is usually the root. Still a positional
+  heuristic, not a proven root (inversions and slash chords differ).
+- **Root-only chords never happened at the default 4 levels.** The threshold
+  (`< 0.20`) was below the bottom tier's 0.25, so it needed 6+ levels; the
+  bottom tier now reduces chords to their root at 4+ levels.
+- A middle tier of an arpeggio could drop the root the bottom tier kept, so
+  tiers weren't nested; middle tiers now always include it.
+- Duplicate-tier detection treated an explicit `false` technique flag (as
+  importers write them) as different from the absent key left after gating,
+  so identical tiers were written to the pack; `false` now equals absent.
+
+### Added
+- Test coverage for the new evidence-gated arpeggio classification: no
+  evidence, sustain overlap, authored hand-shape linkage, chord-template
+  shape match (with a realistic open-C fixture), a mismatched near-miss
+  shape, a regression test for the coincidental-partial-match false
+  positive above, unusual (7-string) tunings (including the same
+  partial-match rejection at that string count), melodic-run preservation
+  at the bottom tier vs. prefix-vs-contour thinning, and confirmation that
+  a genuinely authored arpeggio still gets the existing lowest-string-
+  index reduction (#73).
+- Test coverage for the acceptance-criteria edge cases named in #82/#83:
+  0%/100% accuracy at phrase finalization, an out-of-range ratio/difficulty
+  clamp, a non-finite (missing) accuracy ratio, an exact-duplicate
+  finalization event, a malformed legacy mastery value during migration,
+  a legacy key containing a Windows-style backslash path, two arrangements
+  of the same song migrating independently, and a live phrase finalization
+  not leaking across arrangements. No behavior changed — the underlying
+  formula (`_phraseMasteryPct`) and migration logic (`migrateLegacyData`)
+  were already correct on inspection; this closes out the two issues'
+  stated test-coverage gaps rather than fixing a bug.
+
+## [0.14.2] - 2026-09-24
+
+### Fixed
+- Retained pending note judgments through phrase finalization so delayed
+  verdicts and sustains that resolve inside their own phrase no longer age
+  out of the rolling scoring window. A sustain still ringing when playback
+  crosses the phrase boundary is re-polled once and then deliberately
+  discarded rather than guessed or leaked into the next phrase.
+- Documented the terminal judgment deadline and the legacy conservative
+  mastery-origin heuristic instead of presenting every unexpected change as a
+  confirmed manual action.
+
+## [0.12.0] - 2026-09-16
+
+### Added
+- Documented the v1 player-context contract in [`PLAYER_CONTEXT.md`](PLAYER_CONTEXT.md)
+  and linked it from `INTEGRATION.md` and `README.md`.
+- Added profile-aware progress and phrase-attempt documentation covering at
+  least four concurrent Split Screen players, independent instrument/role and
+  future skill records, karaoke/vocal contexts, note-detection finalization,
+  player-scoped difficulty commands, readiness gating, and lifecycle ownership.
+- Added focused test coverage for context-carrying section events, capability
+  dispatch, and player-scoped phrase finalization.
+
+### Changed
+- Promoted the player-context persistence foundation to a minor feature release.
+- Normalized legacy fretted records to guitar and documented the
+  `difficulty_ladder.sections.v2` Section Map payload contract.
+- Merged the player-context persistence foundation with the mastery streak
+  indicator (0.10.1) and instrument baseline profile card (0.11.0) work
+  below, consolidating onto `0.12.0`.
+
+## [0.11.0] - 2026-09-15
+
+### Added
+- Added a read-only v3 Profile card showing average and median remembered
+  difficulty for fretted and keys arrangements (#23).
+
+## [0.10.1] - 2026-09-15
+
+### Added
+- Added a passive gold Mastery streak badge to the glass HUD after three
+  consecutive phrases at the configured maximum mastery and at least 95%
+  accuracy. Pausing, transitioning through Split Screen, or missing the
+  threshold resets the streak (#25).
+
+### Fixed
+- Mastery-streak lifecycle subscriptions now detach while the player is hidden,
+  preventing inactive instances from retaining pause/stop/end handlers (#25).
+
+## [0.10.0] - 2026-09-15
+
+### Added
+- Added an opt-in Difficulty drop speed setting (1×-2×). It scales only the
+  total downward auto-adjust step while retaining the existing symmetric
+  three-phrase ramp shape and leaving upward adjustments unchanged (#24).
+
+## [0.9.12] - 2026-09-04
+
+### Fixed
+- Bound `/generate-library` to a processing-time budget (`MAX_PROCESSING_SECONDS`,
+  default 120s, caller-adjustable up to 600s via `max_processing_seconds`) to
+  prevent runaway CPU use on large libraries (issue #40). The budget is now also
+  checked per-arrangement (not just per-pack), so a single large multi-arrangement
+  pack can't blow past it. The response now includes `time_limit_reached` so the
+  frontend can surface when the sweep was truncated.
+- Replaced the O(groups) scan in `_best_bridge_candidate` with a bisect-based
+  time-window slice, and pre-sort groups once in `_refine_lower_tier_path` instead
+  of re-sorting on every iteration, reducing the super-linear cost on large charts.
+
+## [0.9.11] - 2026-08-31
+
+### Fixed
+- The per-section difficulty "glass fill" emitted for feedBack-plugin-sectionmap
+  (`difficulty:sections-updated`) now uses the same discrete difficulty-tier
+  formula this plugin's own player HUD uses, instead of a different continuous
+  formula that could disagree materially for a lower-depth section (e.g. 50%
+  vs. the old 30% for the same mastery/difficulty pair). `INTEGRATION.md` is
+  rewritten to describe the real, current contract (an event `section_map`
+  consumes — not the Host-getters-only architecture both plugins' docs still
+  described after `section_map` moved off it) (#63).
+
+## [0.9.10] - 2026-08-28
+
+### Fixed
+- Generation now uses an explicit allowlist for the arrangement types it
+  supports (fretted: lead/rhythm/bass/combo/chord/humstrum; keys:
+  piano/keys, or name-sniffed) instead of treating "non-drum" as
+  equivalent to "supported" — a specific but unrecognized instrument type
+  (vocals, harmony, notation-only, ...) is now explicitly rejected
+  (`unsupported-instrument-type`) rather than silently mis-scored with the
+  fretted heuristic. An absent/blank `type` is unaffected and still
+  defaults to fretted, since the GP importer never sets it. Both
+  `/generate` and `/generate-library` now report an `unsupported` count
+  alongside `generated`/`skipped`/`failed` (#66).
+- Corrected README claims that had drifted from actual behavior: the
+  hardcoded plugin version (now points at `plugin.json` instead), and
+  `/generate-library`'s "every sloppak" description (it actually stops at
+  a `max_songs` cap, default 500/max 2000) (#66).
+- An inverted Min/Max difficulty-bounds pair (min % > max %) no longer
+  breaks the "auto-adjust never crosses these bounds" guarantee. The pair
+  is now normalized (swapped back into a valid interval) whenever it's
+  read, changed via the settings panel, or synced across tabs, and the two
+  settings-panel inputs now constrain each other in real time so an
+  inverted pair can no longer be saved in the first place (#64).
+
+## [0.9.8] - 2026-08-18
+
+### Fixed
+- `/generate-library` now computes canonical song-level section boundaries
+  the same way `/generate` does, so a song's phrase boundaries no longer
+  depend on which entry point generated it (#67).
+- `_generate_song` now records a JSON/filesystem/Unicode/scoring failure on
+  one arrangement instead of letting it abort the rest of the song (#67).
+- A note's `ln` (link-next) flag is now cleared when the slide it announced
+  was gated out at a lower tier, or when its linked target note didn't
+  survive tier reduction — previously it could survive and suppress a
+  target note's gem for a slide or note that no longer exists at that
+  tier (#68).
+- Fret anchors are now generated from chord constituents as well as
+  standalone notes, so a top tier made entirely of intact chords gets
+  anchors instead of none (#68).
+- Section/phrase boundaries (both the canonical song-level timeline and an
+  arrangement's own `sections`) are now validated as finite, nonnegative,
+  and strictly ordered before use, with duplicates collapsed — malformed
+  input could previously produce a zero-length or reversed phrase window,
+  or (for `nan`) silently corrupt sort order (#69).
+- Fret anchors can no longer be emitted at a time before their own phrase
+  starts (#69).
+- Arrangement duration now accounts for a chord's longest constituent note
+  sustain instead of a flat +0.1s, so a long final chord's sustain tail is
+  no longer truncated out of the last generated phrase (#69).
+- `/generate`'s response now reports the actual maximum difficulty reached
+  across an arrangement's phrases, separately from the requested cap
+  (`requested_levels`) — previously it always reported `levels - 1`
+  regardless of what was actually generated (#70).
+- Adjacent phrase tiers whose generated content is identical are now
+  collapsed into one, with `max_difficulty` recomputed — an equal-score
+  phrase or a fixed-depth keys phrase could previously ship two or more
+  tiers that played identically (#70).
+- Difficulty scoring now measures sequential note density relative to
+  tempo (onsets per beat/time window) instead of a fixed number of
+  neighboring groups — a passage's density no longer depends on how many
+  notes happen to be nearby in the note LIST rather than in TIME, so e.g.
+  eleven notes in one second no longer scores the same as eleven notes
+  over twenty seconds. Applies to both the fretted and keys scoring paths;
+  simultaneous polyphony (a wide chord) no longer inflates density, and
+  the same rhythmic pattern now scores equivalently across different
+  tempos (#71).
+
+## [0.9.7] - 2026-08-18
+
+### Security
+- `/generate` and `/generate-library` now validate their request bodies with
+  typed, bounds-checked models instead of ad-hoc dict parsing. `force` was
+  previously `bool(value)`, so any nonempty string — including the literal
+  string `"false"` — was treated as `true` and could silently overwrite an
+  authored ladder; it now only accepts a real JSON boolean. `levels` and
+  `max_songs` were parsed with a bare `int(...)` that either silently
+  clamped out-of-range values or raised an unhandled `ValueError` (500) on
+  non-numeric input; malformed or out-of-range values are now rejected with
+  422 before any generation code runs.
+
+## [0.9.6] - 2026-08-18
+
+### Fixed
+- Remove duplicate test-helper exports from the module export object.
+
+## [0.9.5] - 2026-08-18
+
+### Fixed
+- Cache phrase-attempt records and debounce persistence so scoring does not
+  synchronously parse and stringify localStorage on every phrase completion.
+
+## [0.8.3] - 2026-08-16
+
+### Added
+- Persist per-phrase attempt logs for adaptive-difficulty analysis under
+  `difficulty_ladder.phraseAttempts.v1`. Each record includes a stable phrase
+  identifier, presented difficulty level, phrase-level hit/miss result, per-note
+  hit/miss details, note count, hit rate, session id, timestamp, and song
+  arrangement key. The log is bounded to the latest 5000 attempts and advertised
+  through diagnostics so Phase 3 player sessions have a queryable local source.
+### Changed
+- The mastery slider's `oninput` (fires per pixel dragged) no longer runs the
+  O(sections*phrases) section-difficulty recompute and event-bus emit on every
+  tick; it's now coalesced into an at-most-once-per-150ms trailing throttle,
+  so Section Map's display still updates live during a drag instead of only
+  once the user lets go.
+- The HUD's per-frame draw loop no longer rescans the full phrase list with
+  `findIndex()` every frame to find the current phrase; it now caches the
+  index the same way the scoring loop already does.
+
+### Fixed
+- Difficulty Ladder now follows Split Screen's per-panel note detectors and
+  applies adaptive difficulty independently to the panel being scored. Its
+  standalone glasses HUD also yields to Section Map's section-bar glasses,
+  preventing the duplicate display.
+- `_measure_aligned_windows` dropped a song's first downbeat whenever its measure
+  numbering started at 0 instead of 1 — the filter required `measure > 0`, but feedBack's
+  own runtime convention (`static/highway.js`'s `isMeasure = beat.measure >= 0`,
+  `static/js/count-in.js`, `plugins/highway_3d/screen.js`) treats any non-negative
+  measure as a real downbeat; only `-1` means "not a downbeat." A 0-based song had every
+  later phrase boundary shifted by one measure, or fell below `min_downbeats` and
+  reverted to the blind 30-second chunker this whole fallback exists to avoid. Now
+  `>= 0`, matching core's actual convention — behaviorally identical to `> 0` on
+  spec-conformant data (feedpak-spec's `song_timeline.json` prose says this field is
+  1-based and should never contain 0), so the fix only matters for defensiveness and
+  ecosystem consistency. (Found in code review.)
+- `_best_bridge_candidate`'s acceptance check was fret-only (`worst_jump < original_jump`),
+  so the string-jump bridging trigger added above could fire and then find nothing to
+  promote: when the fret jump was already 0 (identical fret, only the string differs —
+  exactly the case that trigger exists for), no candidate could ever satisfy
+  `worst_jump < 0`. Acceptance now also succeeds when a candidate improves the *string*
+  distance, mirroring the OR-shaped trigger condition that decided bridging was needed in
+  the first place. (Found in code review; the existing string-skip regression test used a
+  small-but-nonzero fret jump specifically to route around this exact gap rather than
+  exercise it — added a true zero-fret-jump case.)
+- A stripped bend (`bn` zeroed below its own gate) could still leave a stale `bt=1`
+  (release) behind on the note — `bt`'s own gate deliberately spares release since it
+  isn't meaningfully harder than a plain bend, but that carve-out shouldn't apply once
+  the bend itself is gone entirely. `bn`'s gate now clears `bt` unconditionally instead
+  of only when the harder intents (2/3/4) are present. (Found in code review; the
+  existing stale-bend regression test only exercised `bt=3`, so it didn't catch the
+  `bt=1` case — extended.)
+
+### Changed
+- Bundled the tempo-relative thresholds (`time_window_ms`, `beat_tolerance`,
+  `fret_jump_window_seconds`, `sustain_ease_norm_seconds`, `beat_interval`) into a single
+  `_TempoParams` dataclass, resolved once per arrangement via `_TempoParams.from_beats()`
+  and threaded through `_score_groups`/`_best_bridge_candidate`/`_refine_lower_tier_path`
+  as one `tempo=` argument instead of four-to-five separate keyword arguments. No behavior
+  change — a bare `_TempoParams()` reproduces the prior no-tempo-signal fallback exactly.
+- Extracted the fret-span arithmetic (open strings excluded, `max - min` across fretted
+  notes, 0 below two fretted notes) that `_span_score` and `_pick_partial_voicing`'s
+  greedy candidate search had each implemented separately into one shared `_fret_span()`
+  helper, so the two can't quietly diverge on what "span" means if either is tuned later.
+- Fretted-instrument ladder generation given a second pass, this time grounded in tempo,
+  rhythm, and hand-shape signals the previous heuristic pass didn't model at all:
+  - **Tempo-relative thresholds**: the note-clustering window, beat-alignment tolerance,
+    fret-jump window, and sustain-ease normalizer were all fixed wall-clock constants
+    (150ms, 0.06s, 1.0s, 2.0s) regardless of song tempo — the same 150ms window is
+    roughly a 16th note at 100bpm but nearly a full beat at 200bpm. `_median_beat_interval`
+    now derives the song's own tactus (median inter-beat gap, robust to a stray
+    double-tap) from `arr["beats"]` and re-expresses all four constants as beat-relative
+    fractions, falling back to the original absolute values whenever there's under 8
+    usable beats or the derived tempo falls outside a ~24-400bpm sanity band.
+  - **Measure-aligned fallback phrase windows**: when a song has neither `section_times`
+    nor its own `sections`, generation previously chopped into blind, musically-arbitrary
+    30-second windows. `_measure_aligned_windows` now groups the arrangement's own
+    downbeats (`beats[].measure`, feedpak-spec §6.8) into 8-measure windows instead —
+    roughly two 4-bar phrases, a common phrase length in popular/rock music — falling
+    back to the legacy 30s chunker only when there isn't enough real downbeat data to
+    trust.
+  - **Syncopation-aware density**: the density sub-score was a raw neighbor-note count,
+    so a straight run of eighth notes and an equally dense syncopated off-beat pattern
+    scored identically, even though off-the-grid rhythm is independently harder to read.
+    `_syncopation_score` now blends in how far a group's onset sits from the nearest beat.
+  - **String-skip / hand-shape difficulty**: the fretting score's hand-shape term only
+    counted how many strings a group touched, not how far apart they were — playing
+    strings 1 and 6 together scored the same as adjacent strings 1 and 2. Added a
+    string-spread component to the fretting score, a parallel string-jump score bonus
+    alongside the existing fret-jump bonus, and a string-distance trigger on the
+    lower-tier continuity bridging pass (`_refine_lower_tier_path`) so a hand-shape-
+    changing string skip gets bridged even when the fret distance alone is small.
+  - **Gradual fretted chord voicing**: below the top tier, chords used to jump straight
+    from a root-only voicing to a flat 2-note cut with nothing in between, and partial
+    voicings were picked by string-index rank alone. Fretted chord thinning now widens
+    through a real middle rung (root -> 2 notes -> 3 notes -> full) for 4+-note chords,
+    matching the shape the keys/piano path already had, and `_pick_partial_voicing`
+    chooses which notes survive a partial voicing by fret proximity (preferring open
+    strings and small stretches) instead of raw string-index order — so a "simplified"
+    chord isn't still a hard stretch.
+  - **Technique weighting gaps closed**: bass slap (`slp`) and pop/pluck (`plk`) notes
+    previously contributed nothing to `_tech_score`/`_TECH_GATE_FRAC` at all — a slap-bass
+    note scored (and was gated) identically to a plain picked note, even though slap/pop is
+    a genuinely harder right-hand technique. Both are now scored and gated, with slap
+    (the percussive thumb-strike half of "slap and pop") weighted and gated later than pop.
+    Separately, pinch harmonics (`hp`) and natural harmonics (`hm`) were scored as one
+    shared term despite pinch harmonics needing markedly less forgiving thumb-touch
+    timing after the pick strike — they're now scored independently, with `hp` weighted
+    higher than `hm` (their existing gate fractions, 0.95 vs 0.75, already reflected the
+    later-introduction intent; only the scoring side was unified).
+  - **Two more technique gaps found while auditing the rest of the note wire format
+    (feedpak-spec §6.2) against `_tech_score`/`_TECH_GATE_FRAC`**: palm mute (`pm`),
+    string mute (`mt`), and vibrato (`vb`) were present in `_TECH_GATE_FRAC` (gated/
+    stripped correctly once a tier was assigned) but absent from `_tech_score` — the
+    same class of bug as slap/pop above, just not caught in that pass — so they
+    contributed nothing to the score that decides which tier a note lands in to begin
+    with. Fret-hand mute (`fhm`, often paired with slap/pop for percussive muted
+    "ghost notes") was in neither: unscored *and* ungated, so it survived at every
+    difficulty tier regardless of how hard the passage was. All four are now scored
+    and `fhm` is now gated (alongside natural harmonics, 0.75).
+  - **Bend shape (`bt`, `bnv`) is no longer invisible to scoring.** Every bend previously
+    scored identically regardless of shape, even though a pre-bend (`bt` 2/3 — bending to
+    the target pitch *before* picking, with no real-time auditory feedback to correct
+    against) is materially harder than hearing the pitch rise as you bend, and a round-trip
+    (`bt` 4) demands bidirectional control within one note's sustain. Release (`bt` 1) isn't
+    penalized — a controlled descent from an already-established pitch isn't meaningfully
+    harder than a plain bend-up. A `bnv` curve with more than the trivial two points a plain
+    `bn` ramp already implies now also nudges the score up (deliberate mid-bend shaping).
+    Gating mirrors this: `bt` and `bnv` gate *above* `bn`'s own gate (0.65 and 0.80 vs 0.50)
+    since they only mean anything in the context of an active bend — this also fixes a
+    latent bug where a fully-stripped bend (`bn` zeroed below its gate) could leave a stale
+    `bt`/`bnv` behind describing a bend that no longer existed; both are now cleared
+    whenever `bn` is.
+  - Regenerating a previously-generated ladder (`force=true`) on a song with usable beat
+    data will now produce different exact scores than before, even though the qualitative
+    behavior (harder passages still rank harder) is unchanged — worth knowing before a
+    library-wide `force` sweep.
+  - Keys/piano generation is unchanged by this pass — none of the above targets its
+    scoring path.
+
+## [0.8.2] - 2026-08-15
+
+### Fixed
+- Prevent prototype chain pollution attacks in storage event listener by using `Object.prototype.hasOwnProperty.call()` instead of the `in` operator when checking settings keys (issue #39). While exploitation requires pre-existing XSS, this closes an unnecessary attack surface.
+
+## [0.1.0] – [0.8.1] - 2026-07-22 – 2026-08-14
+
+_Consolidated range, corrected: an earlier draft of this note dated the start
+of this span 2026-07-29 and described the content as written in one batch —
+both wrong. `plugin.json`'s `version` field was already `0.1.0` at the
+project's actual first commit, `06c2fe2` (2026-07-22), and `git blame` shows
+this range was built up incrementally across a dozen-plus commits from that
+date through 0.8.1 (2026-08-14), each adding a few bullets under a
+perpetually-reopened `[Unreleased]` header without ever giving its own work
+a version number — the same pattern documented elsewhere in this file, just
+further back than an earlier (shallow-clone) pass into this repository's
+history could see. Left as a single range rather than split by exact commit
+to avoid re-attributing content with false precision._
+
+### Added
+- Whole-song generation now covers **every** arrangement in a pack rather than the first
+  eligible one. Each arrangement is classified independently by `_generate_one`, so mixed
+  guitar/bass/keys packs generate correctly, and a malformed or unsupported arrangement
+  (drums) is reported as skipped in the per-arrangement result instead of aborting the run —
+  one bad arrangement no longer denies the rest of the song its ladder.
+- `section_times` parameter on `generate_phrases_for_arrangement`, so generated phrase
+  intervals line up exactly with the boundaries Section Map reads from
+  `highway.getSections()`. `_canonical_section_times` mirrors feedBack's own source
+  selection — a valid `song_timeline` wins, otherwise the first arrangement carrying
+  sections. The list holds one start time per section (not n+1 boundaries), and a section
+  with no notes in a given arrangement still produces its phrase, preserving the
+  one-phrase-per-section indexing Section Map depends on.
+- Explicit **Standard ⇄ Adaptive** difficulty mode selector in Settings (#21), replacing the
+  bare "Auto-adjust difficulty" toggle. Standard (fixed %, no automatic movement) is the default
+  for new installs; existing users on the `difficulty_ladder` key who already had auto-adjust
+  enabled land in Adaptive so their behavior doesn't change. Backed by the same `autoAdjust`
+  storage key as before — no additional migration needed beyond the plugin rename (see "Changed"
+  section below for `dynamic_difficulty` → `difficulty_ladder` rename details).
+- `generateLevels` setting (2-8, default 4): caps how many difficulty tiers "⚙️ Generate
+  Difficulties" can give a phrase. Threaded straight into `/generate`'s existing `levels`
+  parameter (`routes.py` already accepted and clamped it) — the frontend previously never sent
+  it, so every generated ladder silently defaulted to 4 regardless of arrangement complexity.
+  Clamping parses the stored value once and defaults only on `NaN` (a raw `|| 4` fallback would
+  also misfire on a legitimately parsed `0`), applied consistently at both the settings-page
+  render and the `/generate` request site; the range input also carries an accessible
+  programmatic label via `aria-labelledby`.
+
+### Fixed
+- Lower-tier generation's hand-position anchor (`_group_anchor_note`, used by the fret-jump
+  penalty and the beat-anchor/continuity bridging added below) could pick an open string
+  (fret 0) as the "current hand position" whenever that note happened to be the group's
+  highest-string-index note, even when the group also had fretted notes at a real position
+  elsewhere. An open string needs no hand position at all, so this produced bogus fret-jump
+  distances — inflating difficulty scores or inserting needless bridge notes for groups that
+  hadn't actually moved position, while a genuinely large jump could go undetected if it landed
+  on a different string than the open anchor. The anchor now prefers a fretted note (`f > 0`)
+  when the group has one, falling back to the open-string note only when every note in the
+  group is open. Scoped to the scoring/bridging call sites only (`prefer_fretted=True`,
+  the default) — `_notes_for_level`'s bottom-tier arpeggio note selection passes
+  `prefer_fretted=False` to keep preserving an open root string there, since that call site
+  wants the harmonic root regardless of fretted state, not a hand-position signal.
+- "⚙️ Generate Difficulties" was completely non-functional: `onGenerateClick()` called
+  `setGenerateLabel(...)` before that function was defined anywhere in the file, before the
+  `try` block — the resulting `ReferenceError` propagated out uncaught, so `_generating` and
+  the button's `disabled` state were never reset, permanently locking the button after the
+  first click and skipping the `fetch()` call entirely. Separately, the post-success reload
+  read a bare `hw` that was never declared in this function's scope (every other function
+  reads `window.highway` into a local `hw` first) — that `ReferenceError` was caught by the
+  `try`/`catch` and silently reported as "Generate failed" even when generation had actually
+  succeeded server-side. Fixed with a properly-defined `setGenerateLabel(text, resetDelay,
+  resetFn)` helper and a properly scoped `var hw = window.highway;`, matching the pattern used
+  everywhere else in the file.
+- All five label states the "⚙️ Generate Difficulties" button can show (idle, unavailable/no-song,
+  generating, failed, skipped) now go through the `setGenerateLabel` helper above instead of four
+  of them separately assigning `_generateBtn.textContent` and calling a duplicate
+  `_scheduleGenerateLabelReset`, so `_generateLabelTimer` has exactly one owner.
+
+### Changed
+- Generated fretted lower tiers now favor beat landmarks, preserve arpeggio roots, and add
+  intermediate authored groups when they avoid abrupt hand-position jumps. Long rests are not
+  penalized because they provide time to reposition.
+- Per-arrangement mastery records now retain the backend's instrument classification while
+  remaining compatible with legacy numeric records.
+- Drop-resistance settings now reject malformed or non-boolean persisted values and invalidate
+  pending downward confirmation after manual mastery or settings changes.
+- **Renamed plugin: `dynamic_difficulty` → `difficulty_ladder`** (display name "Dynamic
+  Difficulty" → "Difficulty Ladder"), matching the repository's new name
+  (`feedback-plugin-difficulty-ladder`). Every reference to the old id has been updated:
+  `plugin.json`'s `id`/`name`, the `localStorage` prefix, the player-controls button label, the
+  `/api/plugins/difficulty_ladder/...` routes, the `window` settings-changed event name, and the
+  diagnostics `schema` key. No migration path from the old `dynamic_difficulty.*` `localStorage`
+  keys — existing per-song mastery memory and settings under the old id are not carried forward.
+- Auto-adjust no longer acts on the first phrase(s) of a fresh song: a `WARMUP_PHRASES` (2) window
+  must be scored first, counted whether or not auto-adjust happens to be enabled yet, so pausing
+  and resuming mid-song doesn't reset it.
+- A qualifying accuracy streak now moves the mastery slider by `rampStep(th)` per phrase (a full
+  `th.step` spread over `RAMP_PHRASES` (3) qualifying phrases) instead of jumping the whole step in
+  one call — reads as an adaptation rather than a lurch, and stops early if the signal fades before
+  a full step's worth of movement completes. `WARMUP_PHRASES`/`RAMP_PHRASES` are fixed constants for
+  now (not settings), named to make a future settings-slider addition straightforward.
+
+### Documented
+- `tickScoring()`'s phrase accuracy only counts notes the provider reports as `'hit'`/`'miss'` — a
+  sustain reported as `'active'` (currently being held correctly) doesn't contribute to the ratio.
+  No behavior change here: this is recorded as a deliberate, revisit-able choice (the note's onset
+  is assumed to already resolve to `'hit'`/`'miss'` elsewhere in the provider's lifecycle; `'active'`
+  is understood to be an ongoing render signal, not a separate scoring event), in the same
+  documented-not-silently-worked-around spirit as the library-card-badge entry above.
+- Fretted-instrument ladder generation reworked to read as authored rather than
+  mechanically bucketed, based on analysis of a wide sample of existing
+  authored difficulty ladders (varied genres, both hand-tuned and
+  tool-generated):
+  - **Per-phrase adaptive depth**: the `levels` request parameter is now a cap,
+    not a fixed depth — each phrase gets its own ladder length (2..cap) from
+    how much difficulty *variation* it actually contains, so a simple riff
+    gets a short ladder and a technical passage gets a long one instead of
+    every phrase in the arrangement sharing one depth (`_phrase_level_count`).
+  - **Convex retention curve**: the bottom tier now keeps a much smaller share
+    of a phrase's content than a flat percentile split would (was ~1/n_levels
+    per tier; now front-loaded via `_RETENTION_CURVE_EXPONENT`), matching how
+    authored bottom tiers read as a sparse skeleton rather than a lightly
+    trimmed copy.
+  - **Explicit technique gating** (`_TECH_GATE_FRAC`): bends, palm mutes,
+    vibrato, harmonics, hammer-ons/pull-offs, slides, tremolo, pinch
+    harmonics, and taps are now stripped below tuned per-technique ladder
+    fractions, instead of only being down-weighted through the composite
+    score. Ordered to match how these actually appear in authored ladders:
+    bends/mutes earliest, tremolo/pinch-harmonics/taps reserved for the top
+    tier or two.
+  - **Earlier chord widening**: partial-voicing chords now open up much
+    earlier in the ladder (was a single root/partial split near the middle;
+    now root-only is a bottom-tier-only state) — authored ladders widen
+    chords quickly rather than holding them back.
+  - Notes with a dangling `ln` (link-next) flag are now cleared when their
+    linked target isn't guaranteed to survive into the same tier.
+  - Keys/piano generation is unchanged (fixed depth) — its scoring wasn't
+    part of this pass.
+
+### Added
+- Library card badge (issue #4): songs with a remembered per-song difficulty now show an
+  indicator on their library card via `window.feedBack.libraryCardActions.register(...)`
+  (`placement: 'overlay'`), reading the existing `difficulty_ladder.songMastery` map — no new
+  storage, no `MutationObserver`. Note: the card-actions capability's `label`/`icon` are static per
+  registration rather than computed per song, so the exact saved % isn't renderable as on-card
+  text through it today; see `screen.js`'s `registerLibraryCardBadge` for the full writeup.
+- `reactionSpeed` setting (1-3, issue #5): a second, independent auto-adjust axis mapping to
+  `EMA_ALPHA` (how much weight a single section's result carries in the rolling accuracy average).
+  `sensitivity` keeps its existing confidence-threshold/step-size meaning unchanged. Default
+  `reactionSpeed` (2) resolves to the same 0.35 `EMA_ALPHA` this plugin always used, so existing
+  users see no behavior change unless they touch the new slider.
+- Keys/piano difficulty thinning now also collapses octave-doubled voicings
+  (two notes of the same pitch class exactly 12 semitones apart) to a single
+  note at every reduced tier, on top of the existing outer-voice thinning —
+  a doubled root/octave plays identically to a beginner as the single note.
+- Per-song difficulty memory: remembers each song's own last-used
+  master-difficulty % (`localStorage`, keyed by filename + arrangement) and
+  restores it on revisit, instead of inheriting whatever global value the
+  previously played song left the slider at. Captures both manual slider
+  moves and this plugin's own auto-adjustments by wrapping the shared
+  `window.setMastery()` entry point. Songs without phrase-level difficulty
+  data are unaffected (nothing to remember).
+
+### Fixed
+- Generator ran the fretted guitar/bass fret-complexity heuristic against
+  every arrangement indiscriminately, including keys/piano charts — which
+  encode `midi = string*24 + fret` (no fretboard at all), so it would have
+  silently produced meaningless difficulty tiers instead of erroring. Added
+  instrument detection (manifest `type` + the same `/^(keys|piano|keyboard|
+  synth)/i` name match core's piano-roll mode uses) with a separate
+  pitch/polyphony/hand-span heuristic for keys, and a clean
+  `unsupported-instrument-drums` skip for drum-part entries (which point at
+  a `drum_tab.json`, not a notes/chords file, and were never reachable by
+  the old code path anyway).
+
+### Added
+- Phrase-ladder generation (`routes.py`): analyzes note/chord density, fret
+  complexity, and technique load per section to build a fresh Easy..Hard
+  phrase-level difficulty ladder for sloppak arrangements that don't have
+  one, and writes it back into the sloppak (dir or zip form) in place.
+  `/api/plugins/difficulty_ladder/generate` (single arrangement) and
+  `/generate-library` (best-effort library-wide sweep) routes; a
+  "⚙️ Generate Difficulties" player-controls button surfaces the single-song
+  path whenever `highway.hasPhraseData()` is false, with a double-submit
+  guard and an automatic highway reconnect on success.
+- Initial release: live accuracy-driven master-difficulty auto-adjustment
+  (reads existing note-detection scorer judgments via
+  `highway.getNoteStateProvider()`, commits a hit-rate verdict per phrase
+  boundary, nudges `window.setMastery()` up/down within configurable bounds).
+- Manual-override detection — auto-adjust stands down the moment the player
+  moves the master-difficulty slider themselves.
+- Glass-filling section HUD: canvas overlay in the player showing upcoming
+  phrases sized by peak authored difficulty and filled to the current
+  master-difficulty setting.
+- Settings panel: auto-adjust toggle, HUD toggle, sensitivity (1-3), and
+  min/max difficulty bounds.
