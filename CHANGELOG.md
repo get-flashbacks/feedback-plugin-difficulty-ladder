@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Verified the Split Screen compatibility floor and pinned the Note Detect
+  / Split Screen peer surfaces with integration tests (#130). Split Screen's
+  consumed API (`window.slopsmithSplitscreen.isActive()`) exists at least as
+  far back as **v1.10.6** — the earliest commit in that repo's history — so
+  the old "checked against v1.14.5, not a confirmed floor" proxy is lowered
+  to a source-level floor (the `window.feedBackSplitscreen` alias is newer,
+  v1.10.8, but the integration's `||` fallback covers it). New
+  `tests/peer_compat.test.js` drives the Note Detect factory wrapper through
+  a test-only export and asserts the documented degraded behavior for
+  missing / minimum (<1.33.0, no `player_context` → unpersisted per-highway
+  identity) / current (>=1.33.0, stable `player_context` identity) Note
+  Detect and for absent / inactive Split Screen, plus non-`ownSource`
+  detectors, `destroy()` cleanup and wrap idempotency. README and CLAUDE.md
+  updated to match. No behavior change; Version 0.30.4 -> 0.30.5.
 - Extracted the pure chart-scoring core out of `routes.py` into a sibling
   `scoring.py` (Stage 2b-4, #155, part of #146). `routes.py` (4387 -> 649
   lines) now holds only pack I/O, Pydantic request models and `setup()`'s

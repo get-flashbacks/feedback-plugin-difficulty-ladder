@@ -103,7 +103,7 @@ Also worth knowing before poking around:
 `screen.js` reaches directly into two other plugins' globals — `window.createNoteDetector` and `window.feedBackSplitscreen`/`window.slopsmithSplitscreen` — despite the event-bus best practice stated above; this is a real, pre-existing exception, not a hypothetical one, worth being explicit about since there's no manifest-level version enforcement for either:
 
 - **`feedback-plugin-notedetect`** (`window.createNoteDetector`) — split-screen panels are only registered when their detector was built with the `ownSource` instance factory (`screen.js:2119`), so **v1.15.2** is the real gate for that path; **v1.33.0** is a fidelity floor rather than a gate, since older providers fall back to unpersisted, per-highway player identities (see #130). Wrapped to register per-panel highways and inspect their state for adaptive difficulty.
-- **`feedback-plugin-splitscreen`** (`window.feedBackSplitscreen`, preferred, falling back to the legacy `window.slopsmithSplitscreen` — same `||` pattern used everywhere else in this codebase for the slopsmith→feedBack rename) — verified present as of splitscreen **v1.14.5**. Globals are used to detect and gate whether splitscreen is active before registering per-panel highways; difficulty-ladder maintains the per-panel score state itself, keyed by each highway.
+- **`feedback-plugin-splitscreen`** (`window.feedBackSplitscreen`, preferred, falling back to the legacy `window.slopsmithSplitscreen` — same `||` pattern used everywhere else in this codebase for the slopsmith→feedBack rename) — present at least as far back as splitscreen **v1.10.6**, the earliest version in that repo's history (its history begins at a `Clean release snapshot` tagged 1.10.6), which already exposes `slopsmithSplitscreen.isActive()`. The `feedBackSplitscreen` alias is newer (v1.10.8), but the `||` fallback covers the gap. Globals are used to detect and gate whether splitscreen is active before registering per-panel highways; difficulty-ladder maintains the per-panel score state itself, keyed by each highway.
 
 Both are feature-detected and optional — difficulty-ladder works standalone without either installed. See [feedback-plugin-splitscreen#47](https://github.com/get-flashbacks/feedback-plugin-splitscreen/issues/47) for why a `typeof` check alone doesn't catch a downstream contract change (that issue documents two other plugins' integrations going silently dead this way).
 
@@ -117,12 +117,15 @@ Chordr **v0.5.0**. This is a hard dependency for that one feature, not for
 the plugin as a whole, which still loads and generates ordinary ladders
 with Chordr absent.
 
-**Splitscreen's real minimum is unestablished** beyond "checked against
-v1.14.5" — issue #130 itself calls that a proxy, not a confirmed floor;
-don't treat it as one. Core (feedBack) floors for generation/tier-
-semantics live in issue **#129**. All floors on this page are moving
-targets under active audit as of 2026-09-26 — issues **#129** and
-**#130** are the live source of truth; re-check their current state
+**Splitscreen's floor is a source-level finding, not a live-host
+certification**: the consumed `slopsmithSplitscreen.isActive()` exists at
+least as far back as splitscreen **v1.10.6**, the oldest commit in that
+repo, so the old "checked against v1.14.5" proxy can be lowered — but
+nothing older is auditable from that repo's (snapshotted) history, so
+treat 1.10.6 as "earliest auditable", not "proven minimum". Core
+(feedBack) floors for generation/tier-semantics live in issue **#129**.
+All floors on this page are moving targets under active audit as of
+2026-09-26 — issues **#129** and **#130** are the live source of truth; re-check their current state
 rather than trusting any specific commit/version cited in a doc
 snapshot, this one included.
 
