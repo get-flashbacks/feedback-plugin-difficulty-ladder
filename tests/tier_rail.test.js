@@ -139,6 +139,44 @@ test('the rail carries an accessible name covering current and upcoming phrases'
     assert.equal(rail.children[0].getAttribute('aria-hidden'), 'true');
 });
 
+test('the rail cells allow hover so the documented title tooltip is reachable', () => {
+    const dom = makeDom();
+    const mod = freshPlugin({ dom });
+    mod.settings.showDifficultyGuide = true;
+    global.window.highway = {
+        hasPhraseData: () => true, getPhrases: () => phrasesForRail(), getTime: () => 5, getMastery: () => 0.74,
+    };
+    mod._syncDifficultyRail();
+
+    const rail = railOf(dom.player);
+    const cell = rail.children[0];
+    assert.ok(cell.style.cssText.includes('pointer-events:auto'),
+        'a cell opts back into pointer events so its title fires on hover despite the pointer-inert rail');
+    assert.ok(cell.getAttribute('title'), 'the cell carries the hover title');
+});
+
+test('advancing from the first to the second phrase updates the accessible name', () => {
+    const dom = makeDom();
+    const mod = freshPlugin({ dom });
+    mod.settings.showDifficultyGuide = true;
+    let t = 5;
+    global.window.highway = {
+        hasPhraseData: () => true, getPhrases: () => phrasesForRail(), getTime: () => t, getMastery: () => 0.74,
+    };
+    mod._syncDifficultyRail();
+    const rail = railOf(dom.player);
+    assert.match(rail.getAttribute('aria-label'), /Current phrase: tier 2 of 3, full detail at 3/);
+
+    // `start` stays 0 for both phrases, so the signature must also carry
+    // `curIdx` or the early-return leaves phrase 0 marked "Current".
+    t = 15;
+    mod._syncDifficultyRail();
+    const label = rail.getAttribute('aria-label');
+    assert.match(label, /Current phrase: tier 2 of 3, full detail at 1/,
+        'the current cell tracks the phrase transition even though start is unchanged');
+    assert.match(label, /Upcoming phrase: tier 2 of 3, full detail at 3/);
+});
+
 test('a host reporting no mastery shows "tier unknown" instead of fabricating tier 0', () => {
     const dom = makeDom();
     const mod = freshPlugin({ dom });

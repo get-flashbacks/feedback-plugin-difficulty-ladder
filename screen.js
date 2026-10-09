@@ -3401,7 +3401,9 @@
         var li = document.createElement('li');
         li.setAttribute('role', 'listitem');
         li.setAttribute('aria-hidden', 'true');
-        li.style.cssText = 'display:flex;gap:1px;align-items:flex-end;height:16px;';
+        // The rail is pointer-events:none so the band never intercepts highway
+        // clicks; the cells opt back in so their `title` tooltip is hoverable.
+        li.style.cssText = 'display:flex;gap:1px;align-items:flex-end;height:16px;pointer-events:auto;';
         for (var tier = 0; tier <= maxTier; tier++) {
             var seg = document.createElement('span');
             var lit = currentTier != null && tier <= currentTier;
@@ -3433,7 +3435,7 @@
         var list = phrases.slice(start, start + RAIL_LOOKAHEAD);
         var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : null;
         var sig = JSON.stringify([
-            start,
+            curIdx,
             _masteryPct(mastery),
             list.map(function (p) { return [_phraseTopDifficulty(p), p.max_difficulty]; }),
         ]);
