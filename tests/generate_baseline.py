@@ -14,7 +14,7 @@ for p in (_PLUGIN_DIR, _CORE_LIB):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-import routes
+import scoring
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "fretted_validation"
@@ -38,7 +38,7 @@ def main():
         with open(fixture_path) as f:
             arr = json.load(f)
 
-        result = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+        result = scoring.generate_phrases_for_arrangement(arr, n_levels=6)
 
         output_path = OUTPUT_DIR / f"{fixture_file}.baseline.json"
         with open(output_path, 'w') as f:

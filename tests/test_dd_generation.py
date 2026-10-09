@@ -1,4 +1,4 @@
-"""Tests for the fretted-instrument difficulty ladder generator in routes.py.
+"""Tests for the fretted-instrument difficulty ladder generator in scoring.py.
 
 Self-contained sys.path bootstrap (this plugin has no pyproject.toml / shared
 conftest of its own) so `pytest tests/` works from this directory directly.
@@ -418,7 +418,7 @@ def test_flashy_techniques_are_gated_out_of_low_tiers():
     # #103/B3 guarantees the phrase's very first onset survives to the
     # bottom tier whenever the rest of the tier allows it -- here that's
     # _technical_notes(seed 7)'s t=0 note, which happens to carry `hm` at
-    # fret 5. _prune_techniques' pitch-preservation rule (routes.py,
+    # fret 5. _prune_techniques' pitch-preservation rule (scoring.py,
     # _HARMONIC_PITCH_SAFE_FRETS) deliberately does NOT strip `hm` off a
     # fret outside {12, 19, 24}, since removing it there would change the
     # struck pitch -- "keeping a technique on a low tier is better than a
@@ -673,7 +673,7 @@ def test_authored_single_onset_window_discounts_fretted_once():
     own opening and closing) receives the boundary discount exactly ONCE --
     the first-onset pass discounts it and the ending pass must then skip it
     via `first_onset_groups`. Fails with `or id(last) in first_onset_groups`
-    removed from routes.py (the group would be discounted twice).
+    removed from scoring.py (the group would be discounted twice).
 
     The arrangement needs >= MIN_EVENTS_FOR_GENERATION events, so the filler
     lives in an earlier authored window and only the final window [6, 6.5)
@@ -1579,7 +1579,7 @@ def _legacy_keys_scores(groups, *, tempo=None):
 
     Deliberately BASE-FORMULA ONLY: this re-implements the poly / span /
     density / speed / sustain cost from scratch, sharing no code with
-    `routes.py`'s implementation, and that independence is the whole point of
+    `scoring.py`'s implementation, and that independence is the whole point of
     the pin -- it can catch a change to any of those five terms, including one
     introduced by accident while editing something else.
 

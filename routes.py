@@ -47,14 +47,14 @@ from safepath import safe_join
 
 # ── Pack I/O, request models, and HTTP ───────────────────────────────────────
 #
-# SEAM. Everything above this banner computes scoring math and is I/O-free;
-# everything below it does on-disk work (sloppak dir/zip read+write) or HTTP
-# and computes no scoring math. `pure-core-has-no-io` enforces the half that
-# can be checked mechanically: nothing above the banner may reach down into
-# a symbol defined below it, or take on any external module outside
-# {re, bisect, math, dataclasses, itertools}. A pure helper that happens to
-# live in this half is not a violation of the sentence — but new ones have no
-# reason to be added here.
+# SEAM. Everything below this banner does on-disk work (sloppak dir/zip
+# read+write) or HTTP and computes no scoring math; above it is only the
+# module docstring and imports. The scoring math this file drives lives in
+# the sibling `scoring.py`, loaded at setup through
+# `context["load_sibling"]("scoring")`. `pure-core-has-no-io` enforces that
+# half's contract: scoring.py may only depend on the pure stdlib set
+# {re, bisect, math, dataclasses, itertools} and may not reach into this
+# module or any I/O module. No scoring math belongs above this banner.
 
 PLUGIN_ID = "difficulty_ladder"
 MAX_PROCESSING_SECONDS = 120  # hard cap per /generate-library call to bound CPU/DoS risk
