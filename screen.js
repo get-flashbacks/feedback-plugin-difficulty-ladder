@@ -2004,7 +2004,7 @@
     //     objects keep their shape. (Stage 4-4 #166: flagged for removal
     //     once the direct-ratio callers are migrated; do not add new uses.)
     //   hooks.recordStreak: main updates the mastery streak on every commit;
-    //     split has no equivalent (Stage 4-1 DIFFERENCE test).
+    //     split has no equivalent (pinned by the Stage 4-2 shared-commit test).
     //   hooks.onManualOverride(state, curPct): main disables auto-adjust
     //     GLOBALLY (setting + persisted + UI sync); split sets the panel's
     //     `manualOverride` flag only.
