@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Keys/piano ladders now charge for black-key / awkward-fingering content
+  (#178, item 2 of the keys roadmap #175). `_score_groups_keys` previously
+  ignored which keys are played, so a passage dense in accidentals cost
+  exactly what its transposition to C major did. Each group now pays its
+  black-key share (black notes / total notes, pitch classes 1/3/6/8/10)
+  scaled to a `_KEYS_BLACK_KEY_MAX_BONUS` cap of 0.02: a single black
+  melody note pays the full cap, a 4-voice chord with one black key pays a
+  quarter of it. The term is mechanical like the #177 leap term, so it
+  raises `cost` and `retention_score` together without touching the
+  cost/retention separation. The cap sits below the keys metrical
+  `_KEYS_BEAT_VALUE_COEF` (0.025) -- the same guard the #179 key-stability
+  weight obeys -- and well under the fretted metrical 0.12 ceiling, so a
+  fully-black passage scores at most 0.02/group above its all-white
+  transposition: a nudge, not a reordering. Measured: +0.015/group mean on
+  a C-major vs Db-major transposition pair (0.75 mean black share x 0.02);
+  phrase `difficulty_cost` 0.2082 -> 0.2232 end to end with identical
+  top-tier content and nesting; tier-0 content unchanged on mixed textures
+  (0-2 notes symdiff over 15-19). No separate transition term: movement
+  between onsets is already priced by the #177 leap term, and a
+  white->black step at the same pitch distance would otherwise be charged
+  twice for one move. The two #179/#178 terms compound on chromatic
+  material but model different things (tonal expectation vs the key under
+  the finger): a black key that IS stable in the estimated key still pays
+  this mechanical cost while earning that stability discount. Evidence
+  🔴 weak per #103's convention (beginner-method precedent, not a cited
+  finding -- same tier as #103/B10 and C7). Four existing keys tests
+  isolate the term (zeroed) so their fixtures' incidental black/white
+  content can't move them; the term itself is pinned by a formula test, a
+  constant guard, transposition unit + end-to-end tests, a
+  cost-vs-retention test, and a chord-share test, each verified to fail
+  with the term zeroed.
 - Test bootstrap preparation for sibling `scoring.py` module extraction (Stage 2b-3, #154). Added PEP 562 `__getattr__` to `routes.py` for lazy module loading and `load_sibling` context key for tests.
 - Fretted validation regression tests for issue #185: 8 real fretted arrangements (guitar/bass) with recorded baselines. Verified identical output between commit before #182 (dbfaeba^) and current main (c37ce5c), confirming no shared-code drift from the keys melody fix.
 

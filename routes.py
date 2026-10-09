@@ -2323,6 +2323,40 @@ _KEYS_LEAP_MAX_BONUS = 0.05
 # heuristic key estimate is, same guard the fretted bonus obeys.
 _KEYS_KEY_STABILITY_RETENTION_BONUS = 0.018
 
+# #178: black-key / awkward-fingering cost on the keys path. Keys cost
+# ignored which keys are played, so a passage dense in accidentals cost
+# exactly what its transposition to C major did -- for a beginner the
+# thumb-on-black-key shapes and shorter black-key levers are genuinely
+# harder than white-key material at the same density (beginner methods
+# teach white-key material first; that this ordering is the best TEACHING
+# order is inferred from pedagogical precedent, not tested -- evidence
+# 🔴 weak per #103's convention, design judgment rather than a cited
+# finding, same tier as #103/B10 and C7).
+# The set is the five raised keys (C# D# F# G# A#, pitch classes 1/3/6/8/10);
+# the term charges the group's black-key SHARE (black notes / total notes),
+# so a single black melody note pays the full cap while a 4-voice chord
+# with one black key pays a quarter of it -- awkwardness scales with how
+# much of what the hand is holding is black. No separate TRANSITION term:
+# movement between onsets is already priced by the #177 leap term, and a
+# white->black step at the same pitch distance would otherwise be charged
+# twice for one move.
+# Cap 0.02: deliberately BELOW `_KEYS_BEAT_VALUE_COEF` (0.025), the same
+# guard the #179 key-stability weight obeys -- metrical position is a
+# stronger, better-evidenced retention signal (#103/B2) than a pitch-class
+# heuristic is -- and well under the fretted metrical 0.12 ceiling the
+# #177 leap guard pins against. Roughly 20% of the keys cost spread
+# (~0.10), so a fully-black passage scores at most 0.02/group above its
+# all-white transposition: a nudge, not a reordering.
+# Interaction with #179's key-stability weighting (checked, not assumed):
+# the two terms compound in the same direction on chromatic material but
+# model different things -- this one is instrument-mechanical (the key
+# under the finger), that one is cognitive (tonal expectation). A black
+# key that IS stable in the estimated key (Bb in F major) still pays this
+# mechanical cost while earning that stability discount; neither term
+# disables the other.
+_KEYS_BLACK_KEY_PITCH_CLASSES = frozenset({1, 3, 6, 8, 10})
+_KEYS_BLACK_KEY_MAX_BONUS = 0.02
+
 # #181: minimum musical floor for the keys bottom tier. The
 # proportional floor in _assign_tiers guarantees tier 0 a share of
 # the phrase's GROUPS -- ceil(((1/n_tiers)^1.35) * total), about 15%
@@ -2413,6 +2447,29 @@ def _keys_leap_bonus(distance, available_seconds, tempo):
         _KEYS_LEAP_MAX_BONUS,
         _KEYS_LEAP_MAX_BONUS * index / reference * pressure,
     )
+
+
+def _keys_black_key_bonus(ns):
+    """#178's black-key / awkward-fingering cost for one group's notes, as
+    a value in [0, `_KEYS_BLACK_KEY_MAX_BONUS`]: the group's black-key
+    SHARE (black notes / total notes) scaled to the cap.
+
+    Share, not count: a single black melody note pays the full cap (every
+    key the hand plays is black), while a 4-voice chord with one black key
+    pays a quarter of it. Charged on the MIDIS AS WRITTEN -- including the
+    full voicing of a melody-flagged group, even though `_score_groups_keys`
+    prices poly/span on the melody note alone above: the hand still shapes
+    the whole chord, and this term models the fingering, not the voice
+    budget. Mechanical like the #177 leap term, so -- exactly like it -- it
+    raises `cost` and `retention_score` together and must NOT touch the
+    cost/retention separation the beat-value discount established."""
+    if not ns:
+        return 0.0
+    black = sum(
+        1 for n in ns
+        if _note_midi_keys(n) % 12 in _KEYS_BLACK_KEY_PITCH_CLASSES
+    )
+    return _KEYS_BLACK_KEY_MAX_BONUS * black / len(ns)
 
 
 def _group_notes_keys(notes, chords, *, onset_window_ms=30):
@@ -2725,7 +2782,11 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
         # together. It must NOT touch the cost/retention separation the
         # beat-value discount established: `cost` stays intrinsic mechanical
         # difficulty, and the only thing `retention_score` does on top of it is
-        # subtract the metrical discount. `cost` is left unclamped here to
+        # subtract the metrical discount. #178's black-key term is mechanical
+        # in the same sense and joins it here, for the same reason: what the
+        # hand holds (this term) and where it moves (the leap) are both
+        # intrinsic to playing the notes, not reasons to keep or drop them.
+        # `cost` is left unclamped here to
         # MIRROR `_score_groups`'s convention, NOT because keys `cost` stays
         # under 1.0 -- it does not. The base formula's weights sum to exactly
         # 1.00 (0.30 + 0.25 + 0.20 + 0.15 + 0.10) and its terms can all
@@ -2738,8 +2799,9 @@ def _score_groups_keys(groups, beat_times=(), *, tempo=None):
         # far and adding it would be a behaviour change dressed as tidiness.
         # Only `retention_score` is clamped, as before.
         leap_bonus = leap_by_index[gi]
-        cost += leap_bonus
-        retention_score += leap_bonus
+        black_bonus = _keys_black_key_bonus(ns)
+        cost += leap_bonus + black_bonus
+        retention_score += leap_bonus + black_bonus
         g["cost"] = cost
         g["value"] = value
         g["retention_score"] = max(0.0, min(1.0, retention_score))
