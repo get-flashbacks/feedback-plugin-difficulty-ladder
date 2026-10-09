@@ -1512,33 +1512,49 @@
     }
 
     // ---- Per-song scoring state ----
+    // `_mainScore` is the main player's score state -- the DEFAULT STATE of
+    // the shared machine below (same fields a per-panel split state holds).
+    // The old per-field `let` bindings are gone: `_mainScore` IS the
+    // storage, so there is no sync layer and no way for two copies to
+    // disagree. Readers that used the `let`s read `_mainScore.*` now.
+    // (Declared here so `resetPerSongState` can use it; the machine section
+    // documents the field-parity contract with the split initializer. The
+    // declaration assignment below runs at load, BEFORE `resetPerSongState()`
+    // is first called -- `_resetMainScoreState` therefore only ever refreshes
+    // fields and never allocates the object, so a state reference handed out
+    // earlier (a split-style caller holding `_mainScore`) stays valid.)
+    var _mainScore = {
+        judgedKeys: new Set(),
+        pendingJudgments: new Map(),
+        phraseHits: 0,
+        phraseTotal: 0,
+        phraseJudgments: [],
+        phrasesScored: 0,
+        curPhraseIdx: -1,
+        lastScoredT: -1,
+        lastScoredWallT: -1,
+        noteCursor: 0,
+        chordCursor: 0,
+        emaHitRate: null,
+        lastObservedMasteryPct: null,
+        lastAutoAction: null,
+        rampDirection: null,
+        rampProgress: 0,
+        downStreak: 0,
+        manualOverride: false,
+        context: null,
+        playerKey: null,
+    };
     let _songKey = null;
     let _songInstrument = null;    // authoritative routes.py classification when available
-    let _emaHitRate = null;        // null = no phrase scored yet this song
     // EMA weight is now the reactionSpeed setting (emaAlpha(), above) rather
     // than a hardcoded constant — see issue #5. Read live (not cached) since
     // the settings-changed listener below can update settings.reactionSpeed
     // mid-song.
-    let _judgedKeys = null;        // Set, reset every phrase to bound memory
-    let _pendingJudgments = null;  // Map of matured notes awaiting terminal hit/miss
-    let _phraseHits = 0;
-    let _phraseTotal = 0;
-    let _phraseJudgments = [];
-    let _phrasesScored = 0;        // counts real phrases committed this song, gates WARMUP_PHRASES
-    let _curPhraseIdx = -1;
-    let _lastObservedMasteryPct = null; // detects manual slider changes before or after auto-apply
-    let _lastAutoAction = null;     // { direction, pct, reason } - for diagnostics
-    let _rampDirection = null;
-    let _rampProgress = 0;
-    let _downStreak = 0;
     let _masteryStreak = 0;     // consecutive high-accuracy phrases at configured max mastery
     // Forward-advancing cursors into the time-sorted notes/chords arrays —
     // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
     // performance doctrine). Reset only on a backward seek (loop/rewind).
-    let _noteCursor = 0;
-    let _chordCursor = 0;
-    let _lastScoredT = -1;
-    let _lastScoredWallT = -1;
     let _hudMaxDifficulty = null;
     let _hudBadgeMeasureKey = null;
     let _hudBadgeWidth = 0;
@@ -1579,24 +1595,8 @@
     }
 
     function resetPerSongState() {
-        _emaHitRate = null;
-        _judgedKeys = new Set();
-        _pendingJudgments = new Map();
-        _phraseHits = 0;
-        _phraseTotal = 0;
-        _phraseJudgments = [];
-        _phrasesScored = 0;
-        _curPhraseIdx = -1;
-        _lastObservedMasteryPct = null;
-        _lastAutoAction = null;
-        _rampDirection = null;
-        _rampProgress = 0;
-        _downStreak = 0;
+        _resetMainScoreState();
         _masteryStreak = 0;
-        _noteCursor = 0;
-        _chordCursor = 0;
-        _lastScoredT = -1;
-        _lastScoredWallT = -1;
         _hudMaxDifficulty = null;
         _hudBadgeMeasureKey = null;
         _hudBadgeWidth = 0;
@@ -1793,11 +1793,17 @@
 
     function recordPhraseAttempt(ratio, explicitContext, scoreState, explicitHighway) {
         var context = normalizePlayerContext(explicitContext || _mainPlayerContext);
-        var phraseIdx = scoreState ? scoreState.curPhraseIdx : _curPhraseIdx;
-        var phraseTotal = scoreState ? scoreState.phraseTotal : _phraseTotal;
-        var phraseHits = scoreState ? scoreState.phraseHits : _phraseHits;
-        var phraseJudgments = scoreState && Array.isArray(scoreState.phraseJudgments)
-            ? scoreState.phraseJudgments : _phraseJudgments;
+        // The main player passes its own `_mainScore`; split panels pass
+        // their per-highway state; direct callers may pass null, which reads
+        // the main player's ledger. `scoreState` must be a state object or
+        // null/undefined -- a truthy non-object would read garbage fields.
+        var ledger = scoreState == null ? _mainScore : scoreState;
+        if (typeof ledger !== 'object') return false;
+        var phraseIdx = ledger.curPhraseIdx;
+        var phraseTotal = ledger.phraseTotal;
+        var phraseHits = ledger.phraseHits;
+        var phraseJudgments = Array.isArray(ledger.phraseJudgments)
+            ? ledger.phraseJudgments : [];
         var hw = explicitHighway || (context && context.highway)
             || (!context ? window.highway : null);
         if (!context || phraseIdx < 0 || phraseTotal <= 0 || !hw) return false;
@@ -1975,38 +1981,71 @@
         return writeProgress(ctx, { bestMastery: mastery });
     }
 
-    function commitPhraseResult(ratio) {
-        var alpha, hw;
-        hw = window.highway;
-        recordPhraseAttempt(ratio, _mainPlayerContext, null, hw);
-        _updateBestMastery(_mainPlayerContext, hw, ratio);
-        alpha = emaAlpha();
-        _emaHitRate = (_emaHitRate == null) ? ratio : (alpha * ratio + (1 - alpha) * _emaHitRate);
-        // Counts every phrase actually played this song, regardless of
-        // autoAdjust — a warm-up satisfied while paused should still count
-        // once the user flips auto-adjust back on, rather than resetting.
-        _phrasesScored++;
-        hw = window.highway;
-        updateMasteryStreak(ratio, hw && typeof hw.getMastery === 'function'
-            ? Math.round(hw.getMastery() * 100) : null);
-        if (!settings.autoAdjust) {
-            _rampDirection = null;
-            _rampProgress = 0;
-            _downStreak = 0;
-            contributeDiagnostics();
-            return;
+    // The shared ramp/commit step (#164): fold one committed phrase ratio
+    // into `state`'s EMA and counters, then run the warm-up / down-confirm /
+    // manual-override / ramp state machine both pipelines share. The two
+    // callers differ ONLY in the side channels around that machine --
+    // captured in `hooks` -- which is why the KNOWN DIFFERENCES the Stage
+    // 4-1 tests pin (write channel, override scope, attempt scope, streak,
+    // diagnostics) live there and not in the steps below:
+    //   hooks.contextForAttempt/highwayForAttempt/stateForAttempt: where the
+    //     phrase attempt record reads its ledger from (main: the default
+    //     state itself; split: the panel's own `state`).
+    //   hooks.recordStreak: main updates the mastery streak on every commit;
+    //     split has no equivalent (pinned but untested -- Stage 4-2 decides).
+    //   hooks.onManualOverride(state, curPct): main disables auto-adjust
+    //     GLOBALLY (setting + persisted + UI sync); split sets the panel's
+    //     `manualOverride` flag only.
+    //   hooks.applyStep(state, hw, curPct, step, direction, next): main writes
+    //     via `window.setMastery` and records `lastAutoAction` on the state
+    //     for diagnostics; split writes via the panel highway
+    //     (`_applyDifficultyForContext` when the panel has a context, raw
+    //     `hw.setMastery` for legacy untagged panels) with no auto-action
+    //     record.
+    //   hooks.afterCommit(state): main contributes a diagnostics payload on
+    //     every return path; split contributes none. It reads the live
+    //     default state directly -- no sync layer, since `_mainScore` IS the
+    //     storage `contributeDiagnostics` already reads.
+    // Returns nothing; all ramp progress lands in `state`.
+    function _commitScoreRatio(state, ratio, hw, hooks) {
+        // Attempt scope stays a caller property, not the machine's: split
+        // records only when the panel has a context (an untagged legacy
+        // panel logs none); main always records one.
+        var attemptState = hooks.stateForAttempt === undefined ? state : hooks.stateForAttempt;
+        var attemptContext = hooks.contextForAttempt;
+        if (hooks.recordAttempt === undefined ? !!attemptContext : hooks.recordAttempt) {
+            recordPhraseAttempt(ratio, attemptContext, attemptState, hooks.highwayForAttempt || hw);
         }
-        if (!hw || typeof hw.getMastery !== 'function') {
-            _rampDirection = null;
-            _rampProgress = 0;
-            _downStreak = 0;
-            contributeDiagnostics();
+        _updateBestMastery(hooks.contextForAttempt, hw, ratio);
+        var alpha = emaAlpha();
+        state.emaHitRate = (state.emaHitRate == null)
+            ? ratio : (alpha * ratio + (1 - alpha) * state.emaHitRate);
+        // Counts every phrase actually played this song, regardless of
+        // autoAdjust -- a warm-up satisfied while paused should still count
+        // once the user flips auto-adjust back on, rather than resetting.
+        state.phrasesScored++;
+        if (hooks.recordStreak) {
+            updateMasteryStreak(ratio, hw && typeof hw.getMastery === 'function'
+                ? Math.round(hw.getMastery() * 100) : null);
+        }
+        if (!settings.autoAdjust || state.manualOverride || !hw || typeof hw.getMastery !== 'function') {
+            state.downStreak = 0;
+            state.rampProgress = 0;
+            // Main has no `manualOverride` gate (its field stays false), so
+            // `state.manualOverride` here is split-only -- but clearing the
+            // ramp counters on this path is shared: main did exactly this on
+            // its own early returns. Main additionally clears `rampDirection`
+            // on early returns; split never had a `rampDirection` clear here
+            // (it returns with the field untouched). That asymmetry is
+            // preserved below via `hooks.clearRampDirectionOnEarlyReturn`.
+            if (hooks.clearRampDirectionOnEarlyReturn) state.rampDirection = null;
+            if (hooks.afterCommit) hooks.afterCommit(state);
             return;
         }
         // Cold-start guard: don't let a single nervous/rusty first section on
         // a fresh song swing the slider before there's enough signal.
-        if (_phrasesScored < WARMUP_PHRASES) {
-            contributeDiagnostics();
+        if (state.phrasesScored < WARMUP_PHRASES) {
+            if (hooks.afterCommit) hooks.afterCommit(state);
             return;
         }
 
@@ -2015,54 +2054,86 @@
         // change. Treat originless drift conservatively as a possible manual
         // override and stand down; this is a safety heuristic, not proof that
         // a person moved the slider.
-        if (_lastObservedMasteryPct != null && curPct !== _lastObservedMasteryPct) {
-            _rampDirection = null;
-            _rampProgress = 0;
-            _downStreak = 0;
-            settings.autoAdjust = false;
-            lsSet('autoAdjust', false);
-            syncControlsUI();
-            contributeDiagnostics();
+        if (state.lastObservedMasteryPct != null && curPct !== state.lastObservedMasteryPct) {
+            state.rampDirection = null;
+            state.rampProgress = 0;
+            state.downStreak = 0;
+            hooks.onManualOverride(state, curPct);
+            if (hooks.afterCommit) hooks.afterCommit(state);
             return;
         }
 
         var th = thresholds();
-        var direction = rampDirection(_emaHitRate, th);
-        _downStreak = direction === 'down' && settings.dropResistance ? _downStreak + 1 : 0;
+        var direction = rampDirection(state.emaHitRate, th);
+        state.downStreak = direction === 'down' && settings.dropResistance ? state.downStreak + 1 : 0;
         if (direction == null) {
-            _rampDirection = null;
-            _rampProgress = 0;
-            contributeDiagnostics();
+            state.rampDirection = null;
+            state.rampProgress = 0;
+            if (hooks.afterCommit) hooks.afterCommit(state);
             return;
         }
-        _lastObservedMasteryPct = curPct;
-        if (direction === 'down' && settings.dropResistance && _downStreak < DOWN_CONFIRM_PHRASES) {
-            _rampDirection = null;
-            _rampProgress = 0;
-            contributeDiagnostics();
+        state.lastObservedMasteryPct = curPct;
+        if (direction === 'down' && settings.dropResistance && state.downStreak < DOWN_CONFIRM_PHRASES) {
+            state.rampDirection = null;
+            state.rampProgress = 0;
+            if (hooks.afterCommit) hooks.afterCommit(state);
             return;
         }
-        if (_rampDirection !== direction) {
-            _rampDirection = direction;
-            _rampProgress = 0;
+        if (state.rampDirection !== direction) {
+            state.rampDirection = direction;
+            state.rampProgress = 0;
         }
-        var step = rampStep(th, _rampProgress, direction);
+        var step = rampStep(th, state.rampProgress, direction);
         var next = direction === 'up' ? curPct + step : curPct - step;
         next = Math.max(settings.minMastery, Math.min(settings.maxMastery, next));
 
-        if (next !== curPct && typeof window.setMastery === 'function') {
-            window.setMastery(next);
-            _lastObservedMasteryPct = next;
-            _rampProgress = (_rampProgress + 1) % RAMP_PHRASES;
-            var dir = next > curPct ? 'up' : 'down';
-            _lastAutoAction = {
-                direction: dir,
-                pct: next,
-                step: step,
-                reason: dir === 'up' ? 'ema_above_up_threshold' : 'ema_below_down_threshold',
-            };
-        }
-        contributeDiagnostics();
+        if (hooks.applyStep) hooks.applyStep(state, hw, curPct, step, direction, next);
+        if (hooks.afterCommit) hooks.afterCommit(state);
+    }
+
+    // Main-player hooks for the shared commit step: the default state's
+    // side channels. `contextForAttempt` is read live (not captured) so a
+    // mid-song context switch commits to the current context.
+    function _mainCommitHooks() {
+        return {
+            get contextForAttempt() { return _mainPlayerContext; },
+            stateForAttempt: _mainScore,
+            highwayForAttempt: null,
+            recordStreak: true,
+            clearRampDirectionOnEarlyReturn: true,
+            onManualOverride: function () {
+                settings.autoAdjust = false;
+                lsSet('autoAdjust', false);
+                syncControlsUI();
+            },
+            applyStep: function (state, hw, curPct, step, direction, next) {
+                if (next !== curPct && typeof window.setMastery === 'function') {
+                    window.setMastery(next);
+                    state.lastObservedMasteryPct = next;
+                    state.rampProgress = (state.rampProgress + 1) % RAMP_PHRASES;
+                    var dir = next > curPct ? 'up' : 'down';
+                    state.lastAutoAction = {
+                        direction: dir,
+                        pct: next,
+                        step: step,
+                        reason: dir === 'up' ? 'ema_above_up_threshold' : 'ema_below_down_threshold',
+                    };
+                }
+            },
+            // Reads the live default state directly -- no sync layer, since
+            // `_mainScore` IS the storage `contributeDiagnostics` already
+            // reads.
+            afterCommit: function () { contributeDiagnostics(); },
+        };
+    }
+
+    function commitPhraseResult(ratio) {
+        var hw = window.highway;
+        // The main player IS the default state (#164): the shared machine
+        // runs against `_mainScore` directly, so every other reader --
+        // `recordPhraseAttempt` (via `stateForAttempt`), `contributeDiagnostics`
+        // (via the `afterCommit` hook) -- observes the live values.
+        _commitScoreRatio(_mainScore, ratio, hw, _mainCommitHooks());
     }
 
     function updateMasteryStreak(ratio, masteryPct) {
@@ -2093,8 +2164,8 @@
         var provider = hw && typeof hw.getNoteStateProvider === 'function' ? hw.getNoteStateProvider() : null;
         fb.diagnostics.contribute(PLUGIN_ID, {
             schema: 'difficulty_ladder.v1',
-            ema_hit_rate: _emaHitRate,
-            last_auto_action: _lastAutoAction,
+            ema_hit_rate: _mainScore.emaHitRate,
+            last_auto_action: _mainScore.lastAutoAction,
             provider_registered: !!provider,
             auto_adjust_enabled: settings.autoAdjust,
             show_difficulty_guide: settings.showDifficultyGuide,
@@ -2509,8 +2580,182 @@
     function _advanceMainCursorsToTime(hw, playbackTime) {
         var notes = typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [];
         var chords = typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [];
-        _noteCursor = _advanceCursorToTime(notes, _noteCursor, playbackTime);
-        _chordCursor = _advanceCursorToTime(chords, _chordCursor, playbackTime);
+        _advanceScoreCursors(_mainScore, notes, chords, playbackTime);
+    }
+
+    // ---- Shared scoring state machine (Stage 4-2, #164) --------------------
+    // One parameterized judgment-polling/commit machine for the main player
+    // and (from Stage 4-3) Split Screen panels. The main player is the
+    // DEFAULT STATE: `_mainScore` holds the same fields a per-panel split
+    // state holds, and every shared step below reads/writes the state object
+    // it is handed -- never the module-level `let` bindings directly.
+    // `_mainScore` IS the main player's storage (replacing the old
+    // per-field `let` bindings); `resetPerSongState`, `contributeDiagnostics`
+    // and the rest of the file read it directly, so there is no sync layer
+    // and no way for the two sides to disagree.
+    //
+    // Field parity with `_resetSplitScoreState` is load-bearing, not
+    // cosmetic: `_mainScore` must carry every field the shared steps touch,
+    // including the ones the main path previously had no use for (`context`,
+    // `playerKey`, `manualOverride` live on the default state too, holding
+    // null/false). A field added to one initializer and not the other is a
+    // divergence the characterization tests may not catch, since they only
+    // observe committed outcomes. `_mainScore` is assigned ONCE at load (the
+    // declaration above); `_resetMainScoreState` only refreshes its fields
+    // in place, so a reference handed out earlier stays valid.
+
+    // Reset the main player's score state for a new song. Split panel states
+    // reset through `_resetSplitScoreState`, never here -- this is main-only.
+    function _resetMainScoreState() {
+        _mainScore.judgedKeys = new Set();
+        _mainScore.pendingJudgments = new Map();
+        _mainScore.phraseHits = 0;
+        _mainScore.phraseTotal = 0;
+        _mainScore.phraseJudgments = [];
+        _mainScore.phrasesScored = 0;
+        _mainScore.curPhraseIdx = -1;
+        _mainScore.lastScoredT = -1;
+        _mainScore.lastScoredWallT = -1;
+        _mainScore.noteCursor = 0;
+        _mainScore.chordCursor = 0;
+        _mainScore.emaHitRate = null;
+        _mainScore.lastObservedMasteryPct = null;
+        _mainScore.lastAutoAction = null;
+        _mainScore.rampDirection = null;
+        _mainScore.rampProgress = 0;
+        _mainScore.downStreak = 0;
+        _mainScore.manualOverride = false;
+        _mainScore.context = null;
+        _mainScore.playerKey = null;
+    }
+
+    // The shared enqueue step: feed one highway's time-sorted notes/chords
+    // into `state`'s pending ledger up to `cutoff`. Same call for the main
+    // path (state = `_mainScore`) and each split panel (state = the
+    // per-highway object) -- the only difference is whose cursors advance.
+    function _enqueueScoreEvents(hw, state, phrase, cutoff) {
+        var notes = typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [];
+        var chords = typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [];
+        state.noteCursor = _enqueuePhraseJudgments(
+            notes, state.noteCursor, phrase, cutoff, function (n) { return [n]; },
+            state.pendingJudgments, state.judgedKeys
+        );
+        state.chordCursor = _enqueuePhraseJudgments(
+            chords, state.chordCursor, phrase, cutoff, function (c) { return c.notes || []; },
+            state.pendingJudgments, state.judgedKeys
+        );
+    }
+
+    // The shared poll step: resolve `state`'s pending ledger against
+    // `provider`, folding terminal hit/miss verdicts into the in-flight
+    // phrase totals. Same `onTerminal` shape on both paths -- the ledgers
+    // are structurally identical (`phraseTotal`/`phraseHits`/`phraseJudgments`
+    // with `key`/`time`/`string`/`fret`/`hit` entries), which is what lets
+    // `recordPhraseAttempt` read either one through its `scoreState` param.
+    function _pollScorePending(state, provider, playbackTime, force) {
+        _pollPendingJudgments(
+            state.pendingJudgments, state.judgedKeys, provider, playbackTime, force,
+            function (entry, hit) {
+                state.phraseTotal++;
+                if (hit) state.phraseHits++;
+                state.phraseJudgments.push({
+                    key: entry.key, time: entry.time, string: entry.note.s,
+                    fret: entry.note.f, hit: hit,
+                });
+            }
+        );
+    }
+
+    // The shared cursor-advance step: skip every event crossed by a forward
+    // seek before resuming normal cursor-fed scoring at the destination.
+    // Reads the highway's arrays once (they are re-fetched per call -- the
+    // chart can change under a seek), advances the passed state's cursors.
+    function _advanceScoreCursors(state, notes, chords, playbackTime) {
+        state.noteCursor = _advanceCursorToTime(notes, state.noteCursor, playbackTime);
+        state.chordCursor = _advanceCursorToTime(chords, state.chordCursor, playbackTime);
+    }
+
+    // The shared discontinuity step: fold one frame's seek handling into
+    // `state` and report whether the frame's phrase work should be skipped.
+    // Backward and forward seeks both abandon the in-flight phrase's
+    // judgments (a replay must judge fresh; a forward jump must not
+    // fabricate judgments for its unplayed tail); the caller advances
+    // cursors past the jump via `_advanceScoreCursors` when `jumpedForward`
+    // comes back true. Returns `{ rewound, jumpedForward }`.
+    function _updateScoreDiscontinuity(state, t, wallT) {
+        var rewound = false;
+        var jumpedForward = _isForwardScoringDiscontinuity(
+            state.lastScoredT, t, state.lastScoredWallT, wallT
+        );
+        // A backward jump (loop restart, user seek, section-practice rewind)
+        // invalidates the forward-only cursors -- resync from scratch. This
+        // branch is the only O(N)-ish path here and it's seek-triggered,
+        // not per-frame.
+        if (t < state.lastScoredT - 0.05) {
+            rewound = true;
+            state.noteCursor = 0;
+            state.chordCursor = 0;
+            // A seek within the same phrase leaves judgedKeys/phraseHits/etc
+            // stale -- without this, replayed notes are skipped as already
+            // judged (their keys are still in the set) and multiple passes
+            // over the same phrase silently merge into one attempt.
+            state.phraseHits = 0;
+            state.phraseTotal = 0;
+            state.phraseJudgments = [];
+            state.judgedKeys = new Set();
+            state.pendingJudgments = new Map();
+        }
+        if (jumpedForward) {
+            state.phraseHits = 0;
+            state.phraseTotal = 0;
+            state.phraseJudgments = [];
+            state.judgedKeys = new Set();
+            state.pendingJudgments = new Map();
+        }
+        state.lastScoredT = t;
+        state.lastScoredWallT = wallT;
+        return { rewound: rewound, jumpedForward: jumpedForward };
+    }
+
+    // The shared phrase-transition step: locate the phrase covering `t`,
+    // and when it differs from the state's current one, collect the old
+    // phrase's tail (enqueue with an infinite cutoff, one final forced
+    // poll, then discard whatever is still unresolved so it cannot leak
+    // into the next phrase) and report the completed ratio for the caller
+    // to commit. Returns `{ idx, commitRatio }` where `commitRatio` is null
+    // when nothing should commit (rewound/jumped-forward frame, first
+    // sighting, gap between phrases, or an empty phrase). The state is
+    // always left reset for the incoming phrase, committed or not.
+    function _advanceScorePhrase(hw, state, phrases, t, provider, flags) {
+        var rewound = flags && flags.rewound;
+        var jumpedForward = flags && flags.jumpedForward;
+        var idx = state.curPhraseIdx;
+        if (idx < 0 || t < phrases[idx].start_time || t >= phrases[idx].end_time) {
+            idx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
+        }
+        var commitRatio = null;
+        if (idx !== state.curPhraseIdx) {
+            // Collect even the tail that has not reached the normal maturity
+            // delay, give every pending result one final poll, then explicitly
+            // discard unresolved entries so they cannot leak into the next
+            // phrase.
+            if (!rewound && !jumpedForward && state.curPhraseIdx >= 0) {
+                // eslint-disable-next-line security/detect-object-injection -- curPhraseIdx is bounded by the >= 0 check above and phrases.length
+                _enqueueScoreEvents(hw, state, phrases[state.curPhraseIdx], Infinity);
+                _pollScorePending(state, provider, t, true);
+                state.pendingJudgments.clear();
+            }
+            if (!rewound && !jumpedForward && state.curPhraseIdx >= 0 && state.phraseTotal > 0) {
+                commitRatio = state.phraseHits / state.phraseTotal;
+            }
+            state.curPhraseIdx = idx;
+            state.phraseHits = 0;
+            state.phraseTotal = 0;
+            state.phraseJudgments = [];
+            state.judgedKeys = new Set();
+            state.pendingJudgments = new Map();
+        }
+        return { idx: idx, commitRatio: commitRatio };
     }
 
     // Feed time-sorted song events into a phrase-local pending ledger exactly
@@ -2562,30 +2807,11 @@
     }
 
     function _enqueueMainPhraseEvents(hw, phrase, cutoff) {
-        var notes = typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [];
-        var chords = typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [];
-        _noteCursor = _enqueuePhraseJudgments(
-            notes, _noteCursor, phrase, cutoff, function (n) { return [n]; },
-            _pendingJudgments, _judgedKeys
-        );
-        _chordCursor = _enqueuePhraseJudgments(
-            chords, _chordCursor, phrase, cutoff, function (c) { return c.notes || []; },
-            _pendingJudgments, _judgedKeys
-        );
+        _enqueueScoreEvents(hw, _mainScore, phrase, cutoff);
     }
 
     function _pollMainPending(provider, playbackTime, force) {
-        _pollPendingJudgments(
-            _pendingJudgments, _judgedKeys, provider, playbackTime, force,
-            function (entry, hit) {
-                _phraseTotal++;
-                if (hit) _phraseHits++;
-                _phraseJudgments.push({
-                    key: entry.key, time: entry.time, string: entry.note.s,
-                    fret: entry.note.f, hit: hit,
-                });
-            }
-        );
+        _pollScorePending(_mainScore, provider, playbackTime, force);
     }
 
     function tickScoring() {
@@ -2610,69 +2836,37 @@
         var phrases = hw.getPhrases();
         if (!phrases || phrases.length === 0) return;
         var t = hw.getTime();
-        var previousT = _lastScoredT;
         var wallT = _scoringWallTimeSeconds();
-        var rewound = false;
         // With no seek-origin metadata, a large playback-time gap is treated
         // conservatively as a forward seek. Abandon the in-flight phrase so
         // boundary collection cannot fabricate judgments for its unplayed tail.
-        var jumpedForward = _isForwardScoringDiscontinuity(previousT, t, _lastScoredWallT, wallT);
-
-        // A backward jump (loop restart, user seek, section-practice rewind)
-        // invalidates the forward-only cursors below — resync from scratch.
-        // This branch is the only O(N)-ish path here and it's seek-triggered,
-        // not per-frame.
-        if (t < _lastScoredT - 0.05) {
-            rewound = true;
-            _noteCursor = 0;
-            _chordCursor = 0;
-            // A seek within the same phrase leaves judgedKeys/phraseHits/etc
-            // stale — without this, replayed notes are skipped as already
-            // judged (their keys are still in _judgedKeys) and multiple
-            // passes over the same phrase silently merge into one attempt.
-            _phraseHits = 0;
-            _phraseTotal = 0;
-            _phraseJudgments = [];
-            _judgedKeys = new Set();
-            _pendingJudgments = new Map();
-        }
+        // Shared discontinuity step (#164): the main player runs it against
+        // the default state, which IS its storage -- no sync layer, so the
+        // reset below cannot be clobbered by stale values the way a
+        // re-sync-from-`let`s would (the forward-seek-within-a-phrase
+        // regression: the 0.4 hit survived the seek and the commit read
+        // 0.667 not 0).
+        var discontinuity = _updateScoreDiscontinuity(_mainScore, t, wallT);
+        var rewound = discontinuity.rewound;
+        var jumpedForward = discontinuity.jumpedForward;
         if (jumpedForward) {
             // Seek-only scan: skip every event crossed by the jump before
             // resuming normal cursor-fed scoring at the destination.
             _advanceMainCursorsToTime(hw, t);
-            _phraseHits = 0;
-            _phraseTotal = 0;
-            _phraseJudgments = [];
-            _judgedKeys = new Set();
-            _pendingJudgments = new Map();
         }
-        _lastScoredT = t;
-        _lastScoredWallT = wallT;
 
-        var idx = _curPhraseIdx;
-        if (idx < 0 || t < phrases[idx].start_time || t >= phrases[idx].end_time) {
-            idx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
-        }
-        if (idx !== _curPhraseIdx) {
-            // Collect even the tail that has not reached the normal maturity
-            // delay, give every pending result one final poll, then explicitly
-            // discard unresolved entries so they cannot leak into the next
-            // phrase.
-            if (!rewound && !jumpedForward && _curPhraseIdx >= 0) {
-                // eslint-disable-next-line security/detect-object-injection -- _curPhraseIdx is bounded by the >= 0 check above and phrases.length
-                _enqueueMainPhraseEvents(hw, phrases[_curPhraseIdx], Infinity);
-                _pollMainPending(provider, t, true);
-                _pendingJudgments.clear();
-            }
-            if (!rewound && !jumpedForward && _curPhraseIdx >= 0 && _phraseTotal > 0) {
-                commitPhraseResult(_phraseHits / _phraseTotal);
-            }
-            _curPhraseIdx = idx;
-            _phraseHits = 0;
-            _phraseTotal = 0;
-            _phraseJudgments = [];
-            _judgedKeys = new Set();
-            _pendingJudgments = new Map();
+        // Shared phrase-transition step (#164): the main player runs it
+        // against the default state and commits whatever completed ratio it
+        // reports. Collects the old phrase's tail (infinite-cutoff enqueue,
+        // final forced poll, discard-then-reset) exactly as the inline code
+        // did -- including committing NOTHING on rewound/jumped-forward
+        // frames, in gaps, or for empty phrases.
+        var transition = _advanceScorePhrase(hw, _mainScore, phrases, t, provider, {
+            rewound: rewound, jumpedForward: jumpedForward,
+        });
+        var idx = transition.idx;
+        if (transition.commitRatio != null) {
+            commitPhraseResult(transition.commitRatio);
         }
         if (idx < 0) return;
 
@@ -2721,6 +2915,11 @@
         state.chordCursor = 0;
         state.emaHitRate = null;
         state.lastObservedMasteryPct = null;
+        // Diagnostics-only on the main path (`contributeDiagnostics` reads it
+        // off `_mainScore`); carried on split states too so the shared commit
+        // step and the field-parity test treat both initializers alike. Never
+        // populated on split -- panels contribute no diagnostics payload.
+        state.lastAutoAction = null;
         state.rampDirection = null;
         state.rampProgress = 0;
         state.downStreak = 0;
@@ -2861,51 +3060,39 @@
         _masteryLifecycleUnsubscribes.splice(0).forEach(function (unsubscribe) { unsubscribe(); });
     }
 
-    function commitSplitPhraseResult(state, hw, ratio) {
-        _updateBestMastery(state && state.context, hw, ratio);
-        var alpha = emaAlpha();
-        state.emaHitRate = state.emaHitRate == null ? ratio : alpha * ratio + (1 - alpha) * state.emaHitRate;
-        state.phrasesScored++;
-        if (!settings.autoAdjust || state.manualOverride || !hw || typeof hw.getMastery !== 'function') {
-            state.downStreak = 0;
-            state.rampProgress = 0;
-            return;
-        }
-        if (state.phrasesScored < WARMUP_PHRASES) return;
+    // Split-player hooks for the shared commit step (#164): the per-panel
+    // side channels. Split records a phrase attempt only when the panel has
+    // a player context -- an untagged (legacy) panel logs none -- while the
+    // main path always records one; that scope difference is the caller's
+    // property, not the shared machine's.
+    function _splitCommitHooks(state) {
+        return {
+            get contextForAttempt() { return state.context; },
+            stateForAttempt: state,
+            highwayForAttempt: null,
+            recordStreak: false,
+            clearRampDirectionOnEarlyReturn: false,
+            onManualOverride: function (panelState) {
+                // This compatibility path has no change-origin metadata.
+                // Treat drift conservatively as a possible manual override
+                // and disable only this controller; it is not proof a person
+                // moved the slider.
+                panelState.manualOverride = true;
+            },
+            applyStep: function (panelState, hw, curPct, step, direction, next) {
+                if (next !== curPct && typeof hw.setMastery === 'function') {
+                    if (panelState.context) _applyDifficultyForContext(panelState.context, next, hw, 'adaptive');
+                    else hw.setMastery(next / 100); // legacy Split Screen: isolated but intentionally not persisted
+                    panelState.lastObservedMasteryPct = next;
+                    panelState.rampProgress = (panelState.rampProgress + 1) % RAMP_PHRASES;
+                }
+            },
+            afterCommit: null,
+        };
+    }
 
-        var curPct = Math.round(hw.getMastery() * 100);
-        if (state.lastObservedMasteryPct != null && curPct !== state.lastObservedMasteryPct) {
-            // This compatibility path has no change-origin metadata. Treat
-            // drift conservatively as a possible manual override and disable
-            // only this controller; it is not proof a person moved the slider.
-            state.rampDirection = null;
-            state.rampProgress = 0;
-            state.downStreak = 0;
-            state.manualOverride = true;
-            return;
-        }
-        var th = thresholds();
-        var direction = rampDirection(state.emaHitRate, th);
-        state.downStreak = direction === 'down' && settings.dropResistance ? state.downStreak + 1 : 0;
-        if (!direction || (direction === 'down' && settings.dropResistance && state.downStreak < DOWN_CONFIRM_PHRASES)) {
-            state.rampDirection = null;
-            state.rampProgress = 0;
-            return;
-        }
-        state.lastObservedMasteryPct = curPct;
-        if (state.rampDirection !== direction) {
-            state.rampDirection = direction;
-            state.rampProgress = 0;
-        }
-        var step = rampStep(th, state.rampProgress, direction);
-        var next = Math.max(settings.minMastery, Math.min(settings.maxMastery,
-            direction === 'up' ? curPct + step : curPct - step));
-        if (next !== curPct && typeof hw.setMastery === 'function') {
-            if (state.context) _applyDifficultyForContext(state.context, next, hw, 'adaptive');
-            else hw.setMastery(next / 100); // legacy Split Screen: isolated but intentionally not persisted
-            state.lastObservedMasteryPct = next;
-            state.rampProgress = (state.rampProgress + 1) % RAMP_PHRASES;
-        }
+    function commitSplitPhraseResult(state, hw, ratio) {
+        _commitScoreRatio(state, ratio, hw, _splitCommitHooks(state));
     }
 
     function _enqueueSplitPhraseEvents(hw, state, phrase, cutoff) {
@@ -2992,9 +3179,10 @@
                 state.pendingJudgments.clear();
             }
             if (!rewound && !jumpedForward && state.curPhraseIdx >= 0 && state.phraseTotal > 0) {
-                if (state.context) recordPhraseAttempt(
-                    state.phraseHits / state.phraseTotal, state.context, state, hw
-                );
+                // The attempt record is the shared commit step's job (via
+                // `_splitCommitHooks`) -- recording here too would log every
+                // split phrase twice. Left over from before the #164
+                // migration; the direct call is deleted, not moved.
                 commitSplitPhraseResult(state, hw, state.phraseHits / state.phraseTotal);
             }
             state.curPhraseIdx = idx; state.phraseHits = 0; state.phraseTotal = 0;
@@ -3392,7 +3580,7 @@
             // A manual choice wins over a pending Split Screen scorer write.
             cancelDebouncedSettingWrite('autoAdjust');
             lsSet('autoAdjust', settings.autoAdjust);
-            _lastObservedMasteryPct = null;
+            _mainScore.lastObservedMasteryPct = null;
             if (settings.autoAdjust) _resetSplitManualOverrideForContext(_mainPlayerContext);
             syncControlsUI();
         };
@@ -3541,12 +3729,12 @@
         if (has('autoAdjust') && settings.autoAdjust === true) _resetSplitManualOverrideForContext(_mainPlayerContext);
         if (has('dropResistance')) {
             settings.dropResistance = settings.dropResistance === true;
-            _downStreak = 0;
+            _mainScore.downStreak = 0;
         }
         if (has('levelUpOnly')) {
             settings.levelUpOnly = settings.levelUpOnly === true;
-            _rampDirection = null;
-            _rampProgress = 0;
+            _mainScore.rampDirection = null;
+            _mainScore.rampProgress = 0;
         }
         if (has('minMastery') || has('maxMastery')) _normalizeMasteryBounds();
     }
@@ -3637,6 +3825,15 @@
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
             registerSplitHighway, tickOneSplitHighway: tickOneSplitHighway,
             _splitScoreStateForHighway,
+            // Stage 4-2 (#164) shared-machine surface: the main player's
+            // default state plus the shared steps both pipelines run. Exported
+            // for tests; Split Screen migration (Stage 4-3, #165) consumes the
+            // same steps with a per-panel state.
+            _mainScore: function () { return _mainScore; },
+            _resetMainScoreState,
+            _enqueueScoreEvents, _pollScorePending,
+            _advanceScoreCursors, _updateScoreDiscontinuity, _advanceScorePhrase,
+            _commitScoreRatio, _mainCommitHooks, _splitCommitHooks,
             _applyDifficultyForContext,
             _contextEventPayload,
             _onMasteryApplied,
