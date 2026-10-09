@@ -4422,16 +4422,18 @@ test('Stage 4-2: the shared transition step collects the tail and reports the ra
     // First sighting: no commit, state arms on phrase 0.
     const first = mod._advanceScorePhrase(hw, state, phrases, 0.8, provider, {});
     assert.equal(first.idx, 0);
-    assert.equal(first.commitRatio, null);
+    assert.equal(first.completed, null);
     mod._enqueueScoreEvents(hw, state, phrases[0], 0.8 - 0.6);
     mod._pollScorePending(state, provider, 0.8, false);
     assert.equal(state.phraseTotal, 1);
-    // Crossing into phrase 1: the tail is collected and the completed ratio
+    // Crossing into phrase 1: the tail is collected and the completed ledger
     // reported for the CALLER to commit -- the step itself never commits.
     const before = state.phrasesScored;
     const crossed = mod._advanceScorePhrase(hw, state, phrases, 1.2, provider, {});
     assert.equal(crossed.idx, 1);
-    assert.equal(crossed.commitRatio, 1);
+    assert.equal(crossed.completed.ratio, 1);
+    assert.equal(crossed.completed.curPhraseIdx, 0, 'the snapshot names the COMPLETED phrase, not the incoming one');
+    assert.equal(crossed.completed.phraseTotal, 1);
     assert.equal(state.phrasesScored, before, 'the transition step reports; it does not commit');
     assert.equal(state.phraseTotal, 0, 'state is reset for the incoming phrase');
     // A rewound crossing commits nothing, by flag rather than by caller check.
@@ -4439,5 +4441,31 @@ test('Stage 4-2: the shared transition step collects the tail and reports the ra
     state.phraseHits = 1;
     state.curPhraseIdx = 0;
     const rewound = mod._advanceScorePhrase(hw, state, phrases, 1.2, provider, { rewound: true });
-    assert.equal(rewound.commitRatio, null);
+    assert.equal(rewound.completed, null);
+});
+
+test('Stage 4-3: the tick commits the completed ledger, so the attempt record names the finished phrase', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ session_id: 'split-42', player_id: 'player-2' });
+    let time = 0.8;
+    const highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [
+            { start_time: 0, end_time: 1, max_difficulty: 2 },
+            { start_time: 1, end_time: 2, max_difficulty: 2 },
+        ],
+        getTime: () => time,
+        getNoteStateProvider: () => () => 'hit',
+        getFilteredNotes: () => [{ t: 0.1, s: 1, f: 2 }],
+        getFilteredChords: () => [],
+        getMastery: () => 0.5,
+    };
+    const state = mod.newSplitScoreState(ctx);
+    mod.tickOneSplitHighway(highway, state);
+    time = 1.2;
+    mod.tickOneSplitHighway(highway, state);
+    const attempts = mod.loadPhraseAttempts(ctx);
+    assert.equal(attempts.length, 1, 'one commit, one attempt -- the snapshot ledger reaches the record');
+    assert.equal(attempts[0].phrase_index, 0, 'the attempt names the COMPLETED phrase, not the incoming one');
+    assert.equal(attempts[0].note_count, 1);
 });
