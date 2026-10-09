@@ -1311,7 +1311,7 @@ def _score_groups(groups, n_strings, beat_times=(), *, tempo=None, tuning=(), is
         )
         group_categories = set().union(*(_technique_categories(n) for n in ns))
         # Deliberately NOT re-clamped to 1.0 here: _tech_score already clamps
-        # each note to [0,1] on its own (routes.py's _tech_score), so a
+        # each note to [0,1] on its own (_tech_score, this file), so a
         # single note stacking techniques (e.g. tap + a round-trip bend)
         # routinely saturates max(_tech_score) at exactly 1.0 -- clamping
         # `technique` again would silently swallow the coordination bonus in
@@ -3612,8 +3612,8 @@ def generate_phrases_for_arrangement(arr, *, n_levels=4, section_times: list[flo
         # difficulty mapping: equal-retention groups can end up at different tiers
         # when one phrase's local playability needs trigger promotions that don't
         # occur in another phrase. Disabling it preserves the shared global tier
-        # scale. _refine_lower_tier_path and its bridge helpers (routes.py
-        # 726-820) are now unused in production pending the TODO below.
+        # scale. _refine_lower_tier_path and its bridge helpers (above, in
+        # this file's tiering region) are now unused in production pending the TODO below.
         # TODO: incorporate playability constraints into arrangement-wide
         # tier assignment (before generating phrase levels) instead of post-hoc.
         levels_out = []

@@ -552,7 +552,7 @@
     }
     /* eslint-enable security/detect-object-injection */
 
-    // Mirrors routes.py's _instrument_kind() — the generator-eligibility
+    // Mirrors scoring.py's _instrument_kind() — the generator-eligibility
     // classifier ('fretted'/'keys'/'drums'/'unsupported') — for the one
     // caller below that needs to know whether the backend would generate
     // a ladder for this arrangement. This is a faithful port, not an
@@ -1546,7 +1546,7 @@
         playerKey: null,
     };
     let _songKey = null;
-    let _songInstrument = null;    // authoritative routes.py classification when available
+    let _songInstrument = null;    // authoritative scoring.py classification when available
     // EMA weight is now the reactionSpeed setting (emaAlpha(), above) rather
     // than a hardcoded constant — see issue #5. Read live (not cached) since
     // the settings-changed listener below can update settings.reactionSpeed
@@ -3470,7 +3470,7 @@
             // supported rows before any generated/skipped early return.
             rememberGeneratedInstruments(target.filename, target.arrangement_index, data);
             // /generate processes the full song.  A pack can mix guitar,
-            // bass and keys arrangements; routes.py classifies each one and
+            // bass and keys arrangements; scoring.py classifies each one and
             // intentionally skips drums.  Do not treat a partial skip as a
             // failure when other arrangements were generated successfully.
             if (data.generated === 0) {

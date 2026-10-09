@@ -2,8 +2,9 @@
 """Before/after validation for #185: fretted-path drift across #182.
 
 Runs generate_phrases_for_arrangement on real fretted arrangements using
-routes.py at the commit before #182 and at the current checkout, then diffs
-the full output. Expected result: identical output for every arrangement.
+routes.py at the commit before #182 and the current checkout's scoring core
+(scoring.py), then diffs the full output. Expected result: identical output
+for every arrangement.
 
 Lives in tools/ because it is a CLI script that prints to stdout by design
 (the no-print-in-routes custom check exempts tools/).
@@ -29,7 +30,7 @@ for _p in (str(PLUGIN_DIR), str(CORE_LIB)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import routes as routes_current  # noqa: E402
+import scoring  # noqa: E402
 
 
 def _routes_source_at_commit(commit):
@@ -77,7 +78,7 @@ def main():
     for raw in args.arrangements:
         path = Path(raw)
         arr = json.loads(path.read_text())
-        got = routes_current.generate_phrases_for_arrangement(arr, n_levels=args.n_levels)
+        got = scoring.generate_phrases_for_arrangement(arr, n_levels=args.n_levels)
         exp = routes_before.generate_phrases_for_arrangement(arr, n_levels=args.n_levels)
         if got == exp:
             print(f"{path.name}: IDENTICAL")
