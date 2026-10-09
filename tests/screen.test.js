@@ -687,6 +687,10 @@ test('_hostReportsPhraseTiers reports the host tier-semantics signal (true/false
         'a reported 0 is a real value, not an absent field');
     assert.equal(mod._hostReportsPhraseTiers({ getPhrases: () => [{ max_difficulty: 3 }] }), false,
         'a host whose phrases never carry top_difficulty predates tier-number semantics');
+    assert.equal(mod._hostReportsPhraseTiers({ getPhrases: () => [
+        { max_difficulty: 3, top_difficulty: 3 },
+        { max_difficulty: 3 },
+    ] }), false, 'a mixed host is legacy for the phrases that do not report the field');
 });
 
 // Host-contract coverage (issue #129): the HUD glass, the render-neutral v3
@@ -711,6 +715,13 @@ test('host-contract: the HUD fill, the v3 tier and the attempt log agree on a fu
 
     const presented = mod._presentedDifficultyLevel(highway, phrase);
     assert.equal(presented, 2);
+    // The v3 EMIT, not just _v3CurrentTier: a missing event or a payload
+    // tier mapped differently from the helper passes nothing here.
+    const fullCollector = collectOneEmit();
+    mod.calculateAndEmitSectionDifficulties(null, highway);
+    const fullV3 = fullCollector.v3().detail.sections[0];
+    assert.equal(fullV3.phrases[0].current_tier, 2, 'the v3 payload tier agrees on a full ladder');
+    assert.equal(fullV3.phrases[0].top_tier, 3);
     assert.equal(mod._v3CurrentTier(0.74, 3, 3), 2, 'v3 agrees on a full ladder');
     assert.equal(mod._tierFillFrac(0.74, 3, 3).idxLevel, presented, 'the HUD maps from the same index');
     assert.equal(mod._tierFillFrac(0.74, 3, 3).fillFrac, 2 / 3);
@@ -734,8 +745,23 @@ test('host-contract: on a collapsed ladder v3 caps at full detail while the atte
 
     const presented = mod._presentedDifficultyLevel(highway, phrase);
     assert.equal(presented, 3, 'the slider maps to tier 3 of 3');
+    // The v3 EMIT on a collapsed ladder: the payload caps at full detail.
+    const collapsedCollector = collectOneEmit();
+    mod.calculateAndEmitSectionDifficulties(null, highway);
+    assert.equal(collapsedCollector.v3().detail.sections[0].phrases[0].current_tier, 1,
+        'the v3 payload reports the detail level, capped at full detail');
     assert.equal(mod._v3CurrentTier(0.9, 3, 1), 1, 'v3 reports the detail level, capped at full detail');
-    assert.equal(mod._tierFillFrac(0.9, 3, 1).fillFrac, 1, 'the HUD glass is full at/above full detail');
+    // Intermediate mastery is the discriminating HUD assertion: at 0.9 every
+    // fill formulation hits 1, while at 0.5 idxLevel = floor(0.5 * 4) = 2,
+    // so the pTop-based fill is min(1, 2/1) = 1 but a max_difficulty-based
+    // fill would be (2+1)/(3+1) = 3/4. The assertion reads the production
+    // path's own argument (pTop), not a hand-supplied 1, so a drawHud
+    // regression to max_difficulty fails here.
+    var collapsedTop = mod._phraseTopDifficulty(phrase);
+    assert.equal(collapsedTop, 1);
+    assert.equal(mod._tierFillFrac(0.5, 3, collapsedTop).fillFrac, 1);
+    assert.notEqual(mod._tierFillFrac(0.5, 3, 3).fillFrac, mod._tierFillFrac(0.5, 3, collapsedTop).fillFrac,
+        'the HUD fill is scaled by the collapsed top, not max_difficulty');
 
     mod.recordPhraseAttempt(1, ctx, state, highway);
     assert.equal(mod.loadPhraseAttempts(ctx)[0].presented_difficulty, presented,

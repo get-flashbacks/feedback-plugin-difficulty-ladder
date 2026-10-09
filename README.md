@@ -487,10 +487,11 @@ implement the player-context features this table only versions.
 
 The plugin cannot declare `minHost` (no release to pin to), so it ships an
 **actionable runtime diagnostic instead**: `contributeDiagnostics` publishes
-`host_reports_phrase_tiers` — `true` when the host exposes
-`getPhrases().top_difficulty` (core `e5339c0`+), `false` when it predates
-that field (every tier is then derived from `max_difficulty` alone, which
-cannot tell a collapsed single-level phrase from a full one), and `null`
+`host_reports_phrase_tiers` — `true` when every phrase the host reports
+carries `top_difficulty` (core `e5339c0`+), `false` when at least one phrase
+lacks it (tiers are then derived from `max_difficulty` alone on those
+phrases, which cannot tell a collapsed single-level phrase from a full
+one — a mixed host is still a legacy host for those phrases), and `null`
 when there is no phrase data to judge. The three phrase-tier consumers
 (HUD glass, the `difficulty_ladder.sections.v3` event, and the phrase-attempt
 log) and their one intentional divergence on a collapsed ladder

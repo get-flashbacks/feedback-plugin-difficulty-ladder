@@ -1667,18 +1667,21 @@
     }
 
     // Whether this host reports the per-phrase `top_difficulty` field that
-    // core e5339c0 added. true  -> phrase-tier semantics are reported directly;
-    // false -> the host predates it and every tier is derived from
-    // max_difficulty alone (identical for fully authored ladders, but a
-    // collapsed single-level phrase cannot be told apart from a full one);
-    // null  -> no usable phrase data to judge (not a verdict, matching the
-    // "absent is not zero" convention used for missing mastery/tier data).
-    // A snapshot read for the compatibility diagnostic, never a per-frame path.
+    // core e5339c0 added. true  -> EVERY phrase reports `top_difficulty`,
+    // so phrase-tier semantics are reported directly; false -> at least one
+    // phrase lacks it, so tiers are derived from max_difficulty alone on
+    // those phrases (identical for fully authored ladders, but a collapsed
+    // single-level phrase cannot be told apart from a full one); null ->
+    // no usable phrase data to judge (not a verdict, matching the "absent
+    // is not zero" convention used for missing mastery/tier data). `every`
+    // rather than `some`: a mixed host is still a legacy host for the
+    // phrases that do not report the field. A snapshot read for the
+    // compatibility diagnostic, never a per-frame path.
     function _hostReportsPhraseTiers(hw) {
         if (!hw || typeof hw.getPhrases !== 'function') return null;
         var phrases = hw.getPhrases();
         if (!Array.isArray(phrases) || phrases.length === 0) return null;
-        return phrases.some(function (p) {
+        return phrases.every(function (p) {
             return p && p.top_difficulty != null && isFinite(Number(p.top_difficulty));
         });
     }
