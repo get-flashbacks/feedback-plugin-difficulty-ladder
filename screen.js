@@ -1666,6 +1666,23 @@
         return isFinite(top) ? top : Number(phrase && phrase.max_difficulty) || 0;
     }
 
+    // Whether this host reports the per-phrase `top_difficulty` field that
+    // core e5339c0 added. true  -> phrase-tier semantics are reported directly;
+    // false -> the host predates it and every tier is derived from
+    // max_difficulty alone (identical for fully authored ladders, but a
+    // collapsed single-level phrase cannot be told apart from a full one);
+    // null  -> no usable phrase data to judge (not a verdict, matching the
+    // "absent is not zero" convention used for missing mastery/tier data).
+    // A snapshot read for the compatibility diagnostic, never a per-frame path.
+    function _hostReportsPhraseTiers(hw) {
+        if (!hw || typeof hw.getPhrases !== 'function') return null;
+        var phrases = hw.getPhrases();
+        if (!Array.isArray(phrases) || phrases.length === 0) return null;
+        return phrases.some(function (p) {
+            return p && p.top_difficulty != null && isFinite(Number(p.top_difficulty));
+        });
+    }
+
     function _presentedDifficultyLevel(hw, phrase) {
         const max = Number(phrase?.max_difficulty);
         let mastery;
@@ -2185,6 +2202,11 @@
             ema_hit_rate: _mainScore.emaHitRate,
             last_auto_action: _mainScore.lastAutoAction,
             provider_registered: !!provider,
+            // Host-compatibility signal (#129): whether this host exposes
+            // getPhrases().top_difficulty (core e5339c0+). false means the
+            // host predates tier-number phrase semantics and the HUD/attempt
+            // tiers are derived from max_difficulty alone. null = no phrases.
+            host_reports_phrase_tiers: _hostReportsPhraseTiers(hw),
             auto_adjust_enabled: settings.autoAdjust,
             show_difficulty_guide: settings.showDifficultyGuide,
             phrase_attempt_log: {
@@ -3762,6 +3784,7 @@
             loadPhraseAttemptStore, loadPhraseAttempts, savePhraseAttempts,
             recordPhraseAttempt, _phraseIdOf,
             _presentedDifficultyLevel, _tierFillFrac, _phraseTopDifficulty, _chartHasContentIn,
+            _hostReportsPhraseTiers, contributeDiagnostics,
             _sectionsV3Payload, _v3TierRange, _v3CurrentTier, _v3PhraseSongKey,
             calculateAndEmitSectionDifficulties,
             commitPhraseResult, resetPerSongState,

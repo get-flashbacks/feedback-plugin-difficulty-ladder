@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Actionable host-compatibility diagnostic and host-contract coverage for
+  phrase-tier semantics (#129, M1). `contributeDiagnostics` now publishes
+  `host_reports_phrase_tiers` — `true` when the host exposes
+  `getPhrases().top_difficulty` (core `e5339c0`+), `false` when it predates
+  the field (tiers derive from `max_difficulty` alone), `null` when there is
+  no phrase data — so an operator can see at a glance whether a host predates
+  tier-number semantics, since the plugin cannot declare an honest `minHost`
+  with no core release to pin to. New host-contract tests in
+  `tests/screen.test.js` pin that the three phrase-tier consumers (HUD glass,
+  the `difficulty_ladder.sections.v3` event, the phrase-attempt log) agree on
+  a full ladder and diverge exactly as documented on a collapsed ladder
+  (`top_difficulty < max_difficulty`): v3 caps at full detail, the HUD/attempt
+  log report the slider tier. No behavior change beyond the new diagnostic
+  field; Version 0.30.5 -> 0.30.6.
+
 ### Changed
 - Verified the Split Screen compatibility floor and pinned the Note Detect
   / Split Screen peer surfaces with integration tests (#130). Split Screen's

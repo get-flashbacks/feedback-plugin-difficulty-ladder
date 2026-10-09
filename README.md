@@ -485,6 +485,18 @@ for generation working at all, until a release-qualified audit lets
 and [#88](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder/issues/88)
 implement the player-context features this table only versions.
 
+The plugin cannot declare `minHost` (no release to pin to), so it ships an
+**actionable runtime diagnostic instead**: `contributeDiagnostics` publishes
+`host_reports_phrase_tiers` — `true` when the host exposes
+`getPhrases().top_difficulty` (core `e5339c0`+), `false` when it predates
+that field (every tier is then derived from `max_difficulty` alone, which
+cannot tell a collapsed single-level phrase from a full one), and `null`
+when there is no phrase data to judge. The three phrase-tier consumers
+(HUD glass, the `difficulty_ladder.sections.v3` event, and the phrase-attempt
+log) and their one intentional divergence on a collapsed ladder
+(`top_difficulty < max_difficulty`) are pinned by `tests/screen.test.js`'s
+host-contract tests.
+
 **Peer plugin requirements** (see also `CLAUDE.md` → *Plugin dependencies*,
 [#130](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder/issues/130)).
 None of these block the plugin from loading or generating ordinary

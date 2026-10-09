@@ -677,6 +677,91 @@ test('_v3CurrentTier reports no tier at all for an entry that has no ladder', ()
     assert.equal(mod._v3CurrentTier(0.5, 0, 3), null);
 });
 
+test('_hostReportsPhraseTiers reports the host tier-semantics signal (true/false/null)', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._hostReportsPhraseTiers(null), null);
+    assert.equal(mod._hostReportsPhraseTiers({}), null);
+    assert.equal(mod._hostReportsPhraseTiers({ getPhrases: () => [] }), null);
+    assert.equal(mod._hostReportsPhraseTiers({ getPhrases: () => [{ max_difficulty: 3, top_difficulty: 1 }] }), true);
+    assert.equal(mod._hostReportsPhraseTiers({ getPhrases: () => [{ max_difficulty: 3, top_difficulty: 0 }] }), true,
+        'a reported 0 is a real value, not an absent field');
+    assert.equal(mod._hostReportsPhraseTiers({ getPhrases: () => [{ max_difficulty: 3 }] }), false,
+        'a host whose phrases never carry top_difficulty predates tier-number semantics');
+});
+
+// Host-contract coverage (issue #129): the HUD glass, the render-neutral v3
+// event and the phrase-attempt log are three consumers of the SAME mastery ->
+// tier mapping. These pin that they agree on a full ladder, and pin the one
+// place they intentionally diverge on a collapsed ladder (top_tier < max_tier):
+// v3 reports "detail" (capped at full detail, matching its contract), while the
+// HUD/attempt log report the slider's tier, which keeps climbing to max_tier
+// even though no extra content plays above top_tier.
+test('host-contract: the HUD fill, the v3 tier and the attempt log agree on a full ladder', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ song_id: 'song.feedpak', arrangement_id: 'lead' });
+    const phrase = { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 3 };
+    const highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }], phrases: [phrase], mastery: 0.74,
+    });
+    const state = mod.newSplitScoreState(ctx);
+    state.curPhraseIdx = 0;
+    state.phraseTotal = 1;
+    state.phraseHits = 1;
+    collectOneEmit();
+
+    const presented = mod._presentedDifficultyLevel(highway, phrase);
+    assert.equal(presented, 2);
+    assert.equal(mod._v3CurrentTier(0.74, 3, 3), 2, 'v3 agrees on a full ladder');
+    assert.equal(mod._tierFillFrac(0.74, 3, 3).idxLevel, presented, 'the HUD maps from the same index');
+    assert.equal(mod._tierFillFrac(0.74, 3, 3).fillFrac, 2 / 3);
+
+    mod.recordPhraseAttempt(1, ctx, state, highway);
+    assert.equal(mod.loadPhraseAttempts(ctx)[0].presented_difficulty, presented);
+});
+
+test('host-contract: on a collapsed ladder v3 caps at full detail while the attempt log records the slider tier', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ song_id: 'song.feedpak', arrangement_id: 'lead' });
+    const phrase = { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 };
+    const highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }], phrases: [phrase], mastery: 0.9,
+    });
+    const state = mod.newSplitScoreState(ctx);
+    state.curPhraseIdx = 0;
+    state.phraseTotal = 1;
+    state.phraseHits = 1;
+    collectOneEmit();
+
+    const presented = mod._presentedDifficultyLevel(highway, phrase);
+    assert.equal(presented, 3, 'the slider maps to tier 3 of 3');
+    assert.equal(mod._v3CurrentTier(0.9, 3, 1), 1, 'v3 reports the detail level, capped at full detail');
+    assert.equal(mod._tierFillFrac(0.9, 3, 1).fillFrac, 1, 'the HUD glass is full at/above full detail');
+
+    mod.recordPhraseAttempt(1, ctx, state, highway);
+    assert.equal(mod.loadPhraseAttempts(ctx)[0].presented_difficulty, presented,
+        'the attempt log records the same uncapped tier the HUD maps from mastery');
+});
+
+test('contributeDiagnostics reports the host tier-semantics signal', () => {
+    const mod = freshPlugin();
+    const contributed = [];
+    global.window.feedBack = { diagnostics: { contribute: (id, payload) => contributed.push(payload) } };
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3 }],
+    });
+    mod.contributeDiagnostics();
+    assert.equal(contributed.length, 1);
+    assert.equal(contributed[0].host_reports_phrase_tiers, false);
+
+    global.window.highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }],
+        phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 2 }],
+    });
+    mod.contributeDiagnostics();
+    assert.equal(contributed[1].host_reports_phrase_tiers, true);
+});
+
 test('the v2 event still emits byte-for-byte what Section Map consumes today', () => {
     const mod = freshPlugin();
     global.window.highway = stubHighwayForSectionDifficulty({
