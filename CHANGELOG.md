@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Unified the main-player and Split Screen scoring paths onto one shared
+  judgment-polling/commit state machine (Stage 4-2, #164, part of #139).
+  The main player is now the default state: `_mainScore` holds the same
+  fields a per-panel split state holds, and the shared steps
+  (`_enqueueScoreEvents`, `_pollScorePending`, `_advanceScoreCursors`,
+  `_updateScoreDiscontinuity`, `_advanceScorePhrase`, `_commitScoreRatio`)
+  run against whichever state they are handed. The old per-field module
+  `let` bindings are gone -- `_mainScore` IS the storage -- so the earlier
+  sync-both-ways layer (and the class of stale-resync regressions it caused,
+  e.g. a pre-seek judgment surviving a forward seek into the commit) is
+  deleted, not worked around. The two pipelines differ only in side-channel
+  hooks: phrase-attempt scope (main always records; split only with a player
+  context), mastery streak (main only), manual-override scope (global vs
+  panel), write channel (`window.setMastery` + `lastAutoAction` vs panel
+  highway), and diagnostics (main only). Split still runs its own tick path
+  -- migrating it onto the shared machine is Stage 4-3 (#165), explicitly
+  out of scope. No behavior change: all 21 Stage 4-1 characterization tests
+  pass unchanged (one assertion updated to the new field-presence shape:
+  split states carry a null `lastAutoAction` that stays null). New structural
+  tests pin the unification itself (default-state field parity, in-place
+  reset, shared-step commit/discontinuity/transition behavior, override
+  scoping). Version 0.30.0 -> 0.30.1 (internal refactor, no scoring change).
+
 ### Added
 - Keys/piano ladders now charge for black-key / awkward-fingering content
   (#178, item 2 of the keys roadmap #175). `_score_groups_keys` previously

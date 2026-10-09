@@ -641,10 +641,12 @@ test('DIFFERENCE (channel): auto-adjust applies the same ramp steps, but main wr
     const step = mod.rampStep(mod.thresholds(), 0, 'up');
     assert.equal(main.masteryWrites[0], 50 + step);
     // ...but the channel differs: main reports it as an auto action, split has
-    // no equivalent record at all.
+    // no equivalent record at all. Split states carry a null lastAutoAction
+    // field (Stage 4-2 field parity) that the shared step never populates --
+    // the assertion is that it stays null, not that the field is absent.
     const lastMain = both.main.diag[both.main.diag.length - 1];
     assert.equal(lastMain.last_auto_action.direction, 'up');
-    assert.equal('lastAutoAction' in both.split.state, false);
+    assert.equal(both.split.state.lastAutoAction, null);
 });
 
 test('DIFFERENCE (manual override scope): drift disables auto-adjust GLOBALLY on main, but only for that panel on split', () => {

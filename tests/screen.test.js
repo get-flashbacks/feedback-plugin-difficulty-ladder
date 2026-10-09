@@ -4300,3 +4300,144 @@ test('onGenerateClick releases the _generating guard after success, so a follow-
 
     assert.equal(fetchCallCount, 2, 'the pre-try ReferenceError used to skip the finally block, leaving _generating stuck true forever');
 });
+
+// ---------------------------------------------------------------------------
+// Stage 4-2 (#164): the shared scoring state machine
+// ---------------------------------------------------------------------------
+// The main player is the default state: `commitPhraseResult` runs the shared
+// `_commitScoreRatio` against `_mainScore`, and `tickScoring` runs the shared
+// enqueue/poll/discontinuity/transition steps against it. These tests pin the
+// unification itself -- that the main path goes through the shared steps with
+// the main hooks -- so a future edit that bypasses the machine (a second
+// inline copy of the logic) fails here. Behavior parity with the split path
+// is pinned by tests/scoring_pipelines.test.js (Stage 4-1); these pin the
+// structure.
+
+test('Stage 4-2: the main default state carries every field the split initializer sets', () => {
+    const mod = freshPlugin();
+    const main = mod._mainScore();
+    const split = mod.newSplitScoreState();
+    assert.deepEqual(
+        Object.keys(main).sort(), Object.keys(split).sort(),
+        'field parity is load-bearing: a field added to one initializer and not the other is a divergence the characterization tests may not catch',
+    );
+});
+
+test('Stage 4-2: resetPerSongState resets the default state object in place', () => {
+    const mod = freshPlugin();
+    const before = mod._mainScore();
+    mod.commitPhraseResult(1.0);
+    assert.equal(before.phrasesScored, 1);
+    mod.resetPerSongState();
+    assert.equal(before.phrasesScored, 0, 'reset refreshes fields, it does not replace the object');
+    assert.equal(mod._mainScore(), before, 'no reallocation: a held reference stays valid');
+    assert.ok(before.judgedKeys instanceof Set);
+    assert.ok(before.pendingJudgments instanceof Map);
+});
+
+test('Stage 4-2: commitPhraseResult folds the ratio through the shared commit step', () => {
+    const mod = freshPlugin();
+    // A ratio committed through the public entry lands in the default state's
+    // EMA and counters -- the shared step's doing, observed through the state.
+    mod.commitPhraseResult(0.5);
+    assert.equal(mod._mainScore().emaHitRate, 0.5, 'first commit seeds the EMA with the raw ratio');
+    assert.equal(mod._mainScore().phrasesScored, 1);
+    // The shared step with the main hooks writes diagnostics' inputs onto the
+    // same state: a directed ramp step records lastAutoAction there.
+    assert.equal(mod._mainScore().lastAutoAction, null, 'warm-up commit records no auto action');
+});
+
+test('Stage 4-2: the shared commit step applies the main side channels (streak, global override, window write)', () => {
+    const mod = freshPlugin();
+    // Mastery streak: main updates it on every commit, split never does. The
+    // streak needs maxMastery reached: freshPlugin's settings default
+    // maxMastery to 100, so drive commits at 100% mastery via the highway.
+    global.window.highway = { getMastery: () => 1.0 };
+    for (let i = 1; i <= mod.MASTERY_STREAK_PHRASES; i++) mod.commitPhraseResult(mod.MASTERY_STREAK_ACCURACY);
+    assert.equal(mod.masteryStreakStatus().count, mod.MASTERY_STREAK_PHRASES);
+    // Split commits never touch the streak, even at perfect accuracy...
+    const splitState = mod.newSplitScoreState();
+    mod._commitScoreRatio(splitState, 1.0, { getMastery: () => 1.0 }, mod._splitCommitHooks(splitState));
+    assert.equal(mod.masteryStreakStatus().count, mod.MASTERY_STREAK_PHRASES, 'a split commit leaves the main streak alone');
+});
+
+test('Stage 4-2: split override via the shared step is panel-scoped, main override is global', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const mkHw = (pct) => ({ getMastery: () => pct / 100 });
+    // Warm past the cold-start guard on both states (no provider reads needed:
+    // commitSplitPhraseResult/commitPhraseResult drive the shared step directly).
+    const splitState = mod.newSplitScoreState();
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) {
+        mod.commitPhraseResult(1.0);
+        mod._commitScoreRatio(splitState, 1.0, mkHw(50), mod._splitCommitHooks(splitState));
+    }
+    // Drift the slider under the split panel only: the panel stands down...
+    mod._commitScoreRatio(splitState, 1.0, mkHw(60), mod._splitCommitHooks(splitState));
+    assert.equal(splitState.manualOverride, true);
+    assert.equal(mod.settings.autoAdjust, true, '...but the global setting stays on');
+    // ...while the same drift on the main path flips the global setting off.
+    mod.commitPhraseResult(1.0);
+    // The main commit above read mastery 0.5 (no highway in this harness), so
+    // it cannot observe drift; drive the shared step with the main hooks and
+    // a drifted highway instead.
+    mod._mainScore().lastObservedMasteryPct = 50;
+    mod._commitScoreRatio(mod._mainScore(), 1.0, mkHw(60), mod._mainCommitHooks());
+    assert.equal(mod.settings.autoAdjust, false);
+});
+
+test('Stage 4-2: the shared discontinuity step resets the passed state, not module globals', () => {
+    const mod = freshPlugin();
+    const state = mod.newSplitScoreState();
+    state.phraseTotal = 2;
+    state.phraseHits = 2;
+    state.judgedKeys = new Set(['0.1_1_2']);
+    state.noteCursor = 4;
+    state.lastScoredT = 5.0;
+    state.lastScoredWallT = 99.0;
+    // A backward jump resyncs cursors and drops the in-flight judgments
+    // (wall time barely moves, so this is not ALSO a forward jump)...
+    const out = mod._updateScoreDiscontinuity(state, 0.2, 99.05);
+    assert.deepEqual(out, { rewound: true, jumpedForward: false });
+    assert.equal(state.phraseTotal, 0);
+    assert.equal(state.noteCursor, 0);
+    assert.equal(state.judgedKeys.size, 0);
+    // ...while the main default state is untouched by a panel's seek.
+    assert.equal(mod._mainScore().phraseTotal, 0);
+    assert.equal(mod._mainScore().curPhraseIdx, -1);
+});
+
+test('Stage 4-2: the shared transition step collects the tail and reports the ratio without committing', () => {
+    const mod = freshPlugin();
+    const phrases = [
+        { start_time: 0, end_time: 1, max_difficulty: 2 },
+        { start_time: 1, end_time: 2, max_difficulty: 2 },
+    ];
+    const state = mod.newSplitScoreState();
+    const hw = {
+        getFilteredNotes: () => [{ t: 0.1, s: 1, f: 2 }],
+        getFilteredChords: () => [],
+    };
+    const provider = () => 'hit';
+    // First sighting: no commit, state arms on phrase 0.
+    const first = mod._advanceScorePhrase(hw, state, phrases, 0.8, provider, {});
+    assert.equal(first.idx, 0);
+    assert.equal(first.commitRatio, null);
+    mod._enqueueScoreEvents(hw, state, phrases[0], 0.8 - 0.6);
+    mod._pollScorePending(state, provider, 0.8, false);
+    assert.equal(state.phraseTotal, 1);
+    // Crossing into phrase 1: the tail is collected and the completed ratio
+    // reported for the CALLER to commit -- the step itself never commits.
+    const before = state.phrasesScored;
+    const crossed = mod._advanceScorePhrase(hw, state, phrases, 1.2, provider, {});
+    assert.equal(crossed.idx, 1);
+    assert.equal(crossed.commitRatio, 1);
+    assert.equal(state.phrasesScored, before, 'the transition step reports; it does not commit');
+    assert.equal(state.phraseTotal, 0, 'state is reset for the incoming phrase');
+    // A rewound crossing commits nothing, by flag rather than by caller check.
+    state.phraseTotal = 1;
+    state.phraseHits = 1;
+    state.curPhraseIdx = 0;
+    const rewound = mod._advanceScorePhrase(hw, state, phrases, 1.2, provider, { rewound: true });
+    assert.equal(rewound.commitRatio, null);
+});
