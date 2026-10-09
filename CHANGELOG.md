@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Migrated the Split Screen scoring path onto the shared implementation and
+  deleted the duplicate (Stage 4-3, #165, part of #139). Both pipelines now
+  run one parameterized `_tickScoreHighway` (guards, seek handling, phrase
+  transitions, 0.6s maturity lookback) against their own state, with per-path
+  commit side channels preserved via hooks. The split tick's ~70-line inline
+  duplicate and the split enqueue/poll/cursor helpers' second copies are
+  gone; the hook names stay as thin wrappers over the shared steps. The
+  transition step now reports the completed ledger as a snapshot
+  (`{ ratio, curPhraseIdx, phraseTotal, phraseHits, phraseJudgments }`) taken
+  before the state resets, and the shared commit reads the attempt record off
+  that snapshot -- previously the record read the live state AFTER the reset,
+  which silently dropped every tick-driven attempt (phraseTotal 0 fails the
+  record guard). This was a latent Stage 4-2 shape bug, not a behavior change
+  on main: the old split path recorded inline before resetting, so attempts
+  flowed; the snapshot restores exactly that ordering through the shared
+  step. Direct ratio commits (unit tests, settle tool) still read the ledger
+  off the state, unchanged. No behavior change: all 21 Stage 4-1
+  characterization tests and the split finalization tests pass with identical
+  committed outcomes; new test pins the attempt names the COMPLETED phrase.
+  Version 0.30.1 -> 0.30.2 (internal refactor, no scoring change).
 - Unified the main-player and Split Screen scoring paths onto one shared
   judgment-polling/commit state machine (Stage 4-2, #164, part of #139).
   The main player is now the default state: `_mainScore` holds the same
