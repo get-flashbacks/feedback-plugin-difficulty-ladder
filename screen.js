@@ -3776,6 +3776,12 @@
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
             registerSplitHighway, tickOneSplitHighway: tickOneSplitHighway,
             _splitScoreStateForHighway,
+            // Peer-surface test seam (#130): the Note Detect factory wrapper
+            // is only installed at module load in a real host (this file's
+            // CommonJS branch returns before that), so tests drive it through
+            // this export to assert the missing/minimum/current Note Detect
+            // and Split Screen degraded behavior without a browser.
+            _installSplitScreenDetectorHook: installSplitScreenDetectorHook,
             // Shared-machine surface (#164/#165): the main player's default
             // state plus the shared steps both pipelines run. Exported for
             // tests.
