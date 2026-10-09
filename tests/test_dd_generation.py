@@ -25,6 +25,21 @@ for p in (_PLUGIN_DIR, _CORE_LIB):
 import routes  # noqa: E402
 
 
+def _load_sibling(name):
+    """The host's REAL sibling loader, read out of the feedBack checkout this
+    suite already depends on — not a re-implementation. Exercises the same
+    namespaced resolution path `routes.setup()` uses in production."""
+    import importlib.util
+    host = _PLUGIN_DIR.parent / "feedBack" / "plugins" / "__init__.py"
+    spec = importlib.util.spec_from_file_location("fb_plugins_loader", host)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod._load_plugin_sibling("difficulty_ladder", _PLUGIN_DIR, name)
+
+
+scoring = _load_sibling("scoring")
+
+
 def _arrangement(notes, chords=None, sections=None, n_beats=40):
     return {
         "type": "lead", "name": "lead",
@@ -79,13 +94,13 @@ def _assert_on_tier_scale(phrase, n_levels):
 
 def test_returns_none_for_near_empty_arrangement():
     arr = _arrangement(_simple_notes(0, 1, step=0.5))  # well under MIN_EVENTS_FOR_GENERATION
-    assert routes.generate_phrases_for_arrangement(arr, n_levels=4) is None
+    assert scoring.generate_phrases_for_arrangement(arr, n_levels=4) is None
 
 
 def test_simple_phrase_gets_a_shorter_ladder_than_the_cap():
     notes = _simple_notes(0, 10, step=0.5, fret=3)  # constant fret -> near-zero score spread
     arr = _arrangement(notes)
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=6)
     assert phrases, "expected at least one phrase"
     assert len(phrases[0]["levels"]) < 6, (  # nosec B101 - pytest assertion
         "a near-constant, single-string phrase should not have a distinct level at every tier"
@@ -94,7 +109,7 @@ def test_simple_phrase_gets_a_shorter_ladder_than_the_cap():
 
 def test_canonical_section_times_create_one_phrase_per_section_including_an_empty_arrangement_section():
     arr = _arrangement(_simple_notes(0, 2, step=0.2, fret=3))
-    phrases = routes.generate_phrases_for_arrangement(
+    phrases = scoring.generate_phrases_for_arrangement(
         arr, n_levels=4, section_times=[0, 2, 6]
     ) or []
     # section_times carries one entry per section — start times mirroring
@@ -123,8 +138,8 @@ def test_dense_technical_phrase_uses_more_of_the_cap_than_a_simple_one():
     simple = _arrangement(_simple_notes(0, 10, step=0.5, fret=3))
     technical = _arrangement(_technical_notes(0, 10, step=0.1))
 
-    simple_phrases = routes.generate_phrases_for_arrangement(simple, n_levels=6)
-    technical_phrases = routes.generate_phrases_for_arrangement(technical, n_levels=6)
+    simple_phrases = scoring.generate_phrases_for_arrangement(simple, n_levels=6)
+    technical_phrases = scoring.generate_phrases_for_arrangement(technical, n_levels=6)
 
     assert simple_phrases and technical_phrases
     assert len(technical_phrases[0]["levels"]) > len(simple_phrases[0]["levels"])  # nosec B101 - pytest assertion
@@ -138,8 +153,8 @@ def test_difficulty_cost_reflects_mechanical_difficulty_of_full_phrase_content()
     simple = _arrangement(_simple_notes(0, 10, step=0.5, fret=3))
     technical = _arrangement(_technical_notes(0, 10, step=0.1))
 
-    simple_phrases = routes.generate_phrases_for_arrangement(simple, n_levels=6)
-    technical_phrases = routes.generate_phrases_for_arrangement(technical, n_levels=6)
+    simple_phrases = scoring.generate_phrases_for_arrangement(simple, n_levels=6)
+    technical_phrases = scoring.generate_phrases_for_arrangement(technical, n_levels=6)
 
     assert simple_phrases and technical_phrases
     assert "difficulty_cost" in simple_phrases[0]  # nosec B101 - pytest assertion
@@ -154,8 +169,8 @@ def test_difficulty_cost_is_independent_of_ladder_depth():
     easy = _arrangement(_simple_notes(0, 5, step=0.5, fret=0))
     hard_but_flat = _arrangement(_technical_notes(0, 2, step=0.1))
 
-    easy_phrases = routes.generate_phrases_for_arrangement(easy, n_levels=1)
-    hard_phrases = routes.generate_phrases_for_arrangement(hard_but_flat, n_levels=1)
+    easy_phrases = scoring.generate_phrases_for_arrangement(easy, n_levels=1)
+    hard_phrases = scoring.generate_phrases_for_arrangement(hard_but_flat, n_levels=1)
 
     assert easy_phrases and hard_phrases
     assert easy_phrases[0]["max_difficulty"] == 0  # nosec B101 - pytest assertion
@@ -165,7 +180,7 @@ def test_difficulty_cost_is_independent_of_ladder_depth():
 
 def test_bottom_tier_is_sparser_than_a_flat_percentile_split():
     arr = _arrangement(_technical_notes(0, 12, step=0.1))
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     levels = phrases[0]["levels"]
     top_count = len(levels[-1]["notes"]) + len(levels[-1]["chords"])
@@ -181,14 +196,14 @@ def test_downbeat_group_ranks_into_a_lower_tier_than_an_equally_hard_off_grid_gr
     downbeat is preferentially kept over an equally-hard off-grid group."""
     beats = _four_four_beats(2)
     beat_times = [b["time"] for b in beats]
-    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    tempo = scoring._TempoParams.from_beats(beat_times, beats)
     groups = [
         {"time": 0.0, "notes": [{"s": 0, "f": 5, "sus": 0}]},   # on the downbeat
         {"time": 0.35, "notes": [{"s": 0, "f": 5, "sus": 0}]},  # off-grid, identical shape
     ]
-    routes._score_groups(groups, n_strings=6, beat_times=beat_times, tempo=tempo)
+    scoring._score_groups(groups, n_strings=6, beat_times=beat_times, tempo=tempo)
     assert groups[0]["retention_score"] < groups[1]["retention_score"]  # nosec B101 - pytest assertion
-    routes._assign_tiers(groups, n_tiers=4, global_thresholds=[0.2, 0.4, 0.6], beat_times=beat_times, tempo=tempo)
+    scoring._assign_tiers(groups, n_tiers=4, global_thresholds=[0.2, 0.4, 0.6], beat_times=beat_times, tempo=tempo)
     assert groups[0]["level"] <= groups[1]["level"]  # nosec B101 - pytest assertion
 
 
@@ -204,7 +219,7 @@ def test_melody_turning_points_identifies_local_highs_and_lows_only():
         {"time": 2.5, "notes": [{"s": 5, "f": 3, "sus": 0}]},   # rising into a plateau
         {"time": 3.0, "notes": [{"s": 5, "f": 3, "sus": 0}]},   # repeated pitch, not a turn
     ]
-    turning = routes._melody_turning_points(groups, tuning=(), n_strings=6, tempo=routes._TempoParams())
+    turning = scoring._melody_turning_points(groups, tuning=(), n_strings=6, tempo=scoring._TempoParams())
     assert turning == {2, 4}  # nosec B101 - pytest assertion
 
 
@@ -222,7 +237,7 @@ def test_melody_turning_points_does_not_cross_a_chord_section_between_phrases():
         ]},
         _single(3.0, 0), _single(3.5, 3), _single(4.0, 6),  # phrase B: rising again, from f=0
     ]
-    turning = routes._melody_turning_points(groups, tuning=(), n_strings=6, tempo=routes._TempoParams())
+    turning = scoring._melody_turning_points(groups, tuning=(), n_strings=6, tempo=scoring._TempoParams())
     assert turning == set(), (  # nosec B101 - pytest assertion
         "phrase A's last note (f=6) and phrase B's first note (f=0) are "
         "both monotonic run endpoints, separated by a gap far larger than "
@@ -244,8 +259,8 @@ def test_five_string_bass_uses_bass_intervals_not_guitar_intervals():
         _single(0.5, 0, s=4),  # G open -> 20 (bass) / 19 (guitar-shaped table)
         _single(1.0, 4, s=3),  # F# -> 19
     ]
-    turning = routes._melody_turning_points(
-        groups, tuning=(), n_strings=5, tempo=routes._TempoParams(), is_bass=True,
+    turning = scoring._melody_turning_points(
+        groups, tuning=(), n_strings=5, tempo=scoring._TempoParams(), is_bass=True,
     )
     assert turning == {1}  # nosec B101 - pytest assertion
 
@@ -266,7 +281,7 @@ def test_five_string_non_bass_uses_the_guitar_shaped_row():
         _single(0.5, 0, s=4),  # G open -> 19 (guitar-shaped, correct) / 20 (bass-shaped, wrong)
         _single(1.0, 2, s=3),  # E -> 17 (both rows agree)
     ]
-    turning = routes._melody_turning_points(groups, tuning=(), n_strings=5, tempo=routes._TempoParams())
+    turning = scoring._melody_turning_points(groups, tuning=(), n_strings=5, tempo=scoring._TempoParams())
     assert turning == set(), (  # nosec B101 - pytest assertion
         "a real tie (19, 19) under the guitar-shaped row must not become "
         "a false turning point by wrongly applying the bass row"
@@ -299,8 +314,8 @@ def test_melody_turning_point_survives_thinning_over_an_equally_hard_neighbor():
         _single(0.5, 6),  # monotonic rise -> not a turn
         _single(1.0, 9),
     ]
-    routes._score_groups(turn, n_strings=6)
-    routes._score_groups(no_turn, n_strings=6)
+    scoring._score_groups(turn, n_strings=6)
+    scoring._score_groups(no_turn, n_strings=6)
     assert turn[1]["cost"] == no_turn[1]["cost"], (  # nosec B101 - pytest assertion
         "group[1] must be mechanically identical in both fixtures; only "
         "the turning-point retention nudge should tell them apart"
@@ -308,7 +323,7 @@ def test_melody_turning_point_survives_thinning_over_an_equally_hard_neighbor():
     assert turn[1]["retention_score"] < no_turn[1]["retention_score"]  # nosec B101 - pytest assertion
     assert (
         no_turn[1]["retention_score"] - turn[1]["retention_score"]
-        == pytest.approx(routes._MELODY_TURNING_POINT_RETENTION_BONUS)
+        == pytest.approx(scoring._MELODY_TURNING_POINT_RETENTION_BONUS)
     )  # nosec B101 - pytest assertion
 
 
@@ -329,13 +344,13 @@ def test_melody_turning_point_bonus_never_applies_to_a_chord_or_cluster_group():
         ]},
         _single(1.0, 3),
     ]
-    routes._score_groups(single_note_peak, n_strings=6)
-    routes._score_groups(chord_at_same_position, n_strings=6)
+    scoring._score_groups(single_note_peak, n_strings=6)
+    scoring._score_groups(chord_at_same_position, n_strings=6)
     assert single_note_peak[1]["retention_score"] < chord_at_same_position[1]["retention_score"], (  # nosec B101
         "the chord group's retention_score must not receive the "
         "single-note turning-point discount"
     )
-    turning = routes._melody_turning_points(chord_at_same_position, tuning=(), n_strings=6, tempo=routes._TempoParams())
+    turning = scoring._melody_turning_points(chord_at_same_position, tuning=(), n_strings=6, tempo=scoring._TempoParams())
     assert 1 not in turning  # nosec B101 - pytest assertion, the chord group never qualifies
 
 
@@ -354,8 +369,8 @@ def test_authored_phrase_keeps_its_first_and_last_group_at_the_bottom_tier():
         "type": "lead", "name": "lead", "notes": technical, "chords": [],
         "beats": [{"time": i * 0.5} for i in range(20)], "sections": [], "tuning": [0] * 6,
     }
-    with patch.object(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", 0.9):
-        phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6, section_times=[0, 20])
+    with patch.object(scoring, "_PHRASE_BOUNDARY_RETENTION_BONUS", 0.9):
+        phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=6, section_times=[0, 20])
     bottom = {float(n["t"]) for n in phrases[0]["levels"][0]["notes"]}
     assert float(technical[0]["t"]) in bottom  # nosec B101 - pytest assertion
     assert float(technical[-1]["t"]) in bottom  # nosec B101 - pytest assertion
@@ -384,8 +399,8 @@ def test_generated_window_bonus_applies_only_at_song_start_and_song_end():
         "beats": [{"time": i * 0.5} for i in range(140)],  # no measure data -> generated windows
         "sections": [], "tuning": [0] * 6,
     }
-    with patch.object(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", 0.9):
-        phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+    with patch.object(scoring, "_PHRASE_BOUNDARY_RETENTION_BONUS", 0.9):
+        phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=6)
     assert len(phrases) == 2  # nosec B101 - pytest assertion
     bottom0 = {float(n["t"]) for n in phrases[0]["levels"][0]["notes"]}
     bottom1 = {float(n["t"]) for n in phrases[1]["levels"][0]["notes"]}
@@ -396,7 +411,7 @@ def test_generated_window_bonus_applies_only_at_song_start_and_song_end():
 
 def test_flashy_techniques_are_gated_out_of_low_tiers():
     arr = _arrangement(_technical_notes(0, 12, step=0.1))
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=6)
     assert phrases
     levels = phrases[0]["levels"]
     bottom_notes = levels[0]["notes"]
@@ -414,7 +429,7 @@ def test_flashy_techniques_are_gated_out_of_low_tiers():
     # t=0 in a future fixture tweak wouldn't silently escape this check.
     # Every other bottom-tier note must still be gated normally.
     def _hm_pitch_preserved(n):
-        return bool(n.get("hm")) and int(n.get("f", 0)) not in routes._HARMONIC_PITCH_SAFE_FRETS
+        return bool(n.get("hm")) and int(n.get("f", 0)) not in scoring._HARMONIC_PITCH_SAFE_FRETS
 
     assert not any(
         (n.get("tr") or n.get("hm")) and not _hm_pitch_preserved(n)
@@ -430,7 +445,7 @@ def test_chords_are_thinned_below_the_top_tier_and_intact_at_the_top():
     # plenty of simple filler so the chord isn't one of only ~2 groups
     # (with too few groups, percentile bucketing is degenerate/arbitrary)
     arr = _arrangement(_simple_notes(0, 8, step=0.1), chords=[chord])
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     levels = phrases[0]["levels"]
     max_level = len(levels) - 1
@@ -468,7 +483,7 @@ def _last_window_single_group_retention(arr, target_t, bonus, *, keys=False, sec
     """
     captured = []
     scorer_attr = "_score_groups_keys" if keys else "_score_groups"
-    orig_scorer = getattr(routes, scorer_attr)
+    orig_scorer = getattr(scoring, scorer_attr)
 
     def wrapper(groups, *a, **k):
         r = orig_scorer(groups, *a, **k)
@@ -478,9 +493,9 @@ def _last_window_single_group_retention(arr, target_t, bonus, *, keys=False, sec
     out = {}
     for label, b in (("without", 0.0), ("with", bonus)):
         captured.clear()
-        with patch.object(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", b), \
-             patch.object(routes, scorer_attr, wrapper):
-            routes.generate_phrases_for_arrangement(
+        with patch.object(scoring, "_PHRASE_BOUNDARY_RETENTION_BONUS", b), \
+             patch.object(scoring, scorer_attr, wrapper):
+            scoring.generate_phrases_for_arrangement(
                 arr, n_levels=6, section_times=section_times
             )
         hit = [g for g in captured if abs(g["time"] - target_t) < 1e-9]
@@ -573,7 +588,7 @@ def _all_groups_at(arr, target_t, bonus, *, keys=False, section_times=None):
     EVERY group at `target_t` (sorted by MIDI) for both runs."""
     captured = []
     scorer_attr = "_score_groups_keys" if keys else "_score_groups"
-    orig_scorer = getattr(routes, scorer_attr)
+    orig_scorer = getattr(scoring, scorer_attr)
 
     def wrapper(groups, *a, **k):
         r = orig_scorer(groups, *a, **k)
@@ -583,9 +598,9 @@ def _all_groups_at(arr, target_t, bonus, *, keys=False, section_times=None):
     out = {}
     for label, b in (("without", 0.0), ("with", bonus)):
         captured.clear()
-        with patch.object(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", b), \
-             patch.object(routes, scorer_attr, wrapper):
-            routes.generate_phrases_for_arrangement(
+        with patch.object(scoring, "_PHRASE_BOUNDARY_RETENTION_BONUS", b), \
+             patch.object(scoring, scorer_attr, wrapper):
+            scoring.generate_phrases_for_arrangement(
                 arr, n_levels=6, section_times=section_times
             )
         hit = sorted(
@@ -733,7 +748,7 @@ def test_lower_tier_refinement_promotes_a_beat_anchor_and_continuity_bridge():
          "level": 0, "notes": [{"s": 5, "f": 12}]},
     ]
 
-    routes._refine_lower_tier_path(groups, [0.0, 0.5, 1.0], max_level=2)
+    scoring._refine_lower_tier_path(groups, [0.0, 0.5, 1.0], max_level=2)
 
     assert groups[1]["level"] == 0, (
         "the omitted beat-aligned group should bridge the otherwise 10-fret lower-tier jump"
@@ -748,7 +763,7 @@ def test_lower_tier_refinement_falls_back_to_a_beat_group_when_none_was_kept():
          "level": 2, "notes": [{"s": 5, "f": 4}]},
     ]
 
-    routes._refine_lower_tier_path(groups, [0.0, 0.5], max_level=2)
+    scoring._refine_lower_tier_path(groups, [0.0, 0.5], max_level=2)
 
     assert groups[1]["level"] == 0
 
@@ -761,7 +776,7 @@ def test_bottom_arpeggio_voice_preserves_the_root_string():
         "notes": [{"t": 0.0, "s": 5, "f": 7}, {"t": 0.04, "s": 1, "f": 3}],
     }]
 
-    notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
+    notes, chords = scoring._notes_for_level(groups, level=0, max_level=2)
 
     assert chords == []
     assert [(n["s"], n["f"]) for n in notes] == [(1, 3)]  # nosec B101 - pytest assertion
@@ -777,7 +792,7 @@ def test_bottom_arpeggio_voice_preserves_an_open_root_string():
         "notes": [{"t": 0.0, "s": 0, "f": 0}, {"t": 0.04, "s": 3, "f": 5}],
     }]
 
-    notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
+    notes, chords = scoring._notes_for_level(groups, level=0, max_level=2)
 
     assert chords == []
     assert [(n["s"], n["f"]) for n in notes] == [(0, 0)]  # nosec B101 - pytest assertion
@@ -792,23 +807,23 @@ def test_fret_jump_cost_decreases_with_more_time_available():
 
     nearby = groups(0.5)
     after_rest = groups(2.0)
-    routes._score_groups(nearby, n_strings=6)
-    routes._score_groups(after_rest, n_strings=6)
+    scoring._score_groups(nearby, n_strings=6)
+    scoring._score_groups(after_rest, n_strings=6)
 
     assert nearby[1]["cost"] > after_rest[1]["cost"]  # nosec B101 - pytest assertion
     # Movement pressure fades smoothly rather than disappearing at a fixed
     # one-second cutoff. Density also differs, so compare the isolated term.
-    tempo = routes._TempoParams()
-    assert routes._fitts_shift_bonus(13, 0.5, tempo) > routes._fitts_shift_bonus(13, 2.0, tempo) > 0  # nosec B101
+    tempo = scoring._TempoParams()
+    assert scoring._fitts_shift_bonus(13, 0.5, tempo) > scoring._fitts_shift_bonus(13, 2.0, tempo) > 0  # nosec B101
 
 
 def test_fitts_shift_cost_tracks_distance_and_tempo_relative_time():
-    tempo = routes._TempoParams(fret_jump_window_seconds=1.0)
-    assert routes._fitts_shift_bonus(7, 0.125, tempo) > routes._fitts_shift_bonus(7, 0.5, tempo)  # nosec B101
-    assert routes._fitts_shift_bonus(7, 0.5, tempo) > routes._fitts_shift_bonus(7, 2.0, tempo)  # nosec B101
-    assert routes._fitts_shift_bonus(9, 0.5, tempo) > routes._fitts_shift_bonus(3, 0.5, tempo)  # nosec B101
-    assert routes._fitts_shift_bonus(0, 0.125, tempo) == 0  # nosec B101
-    assert abs(routes._fitts_shift_bonus(8, 1.0, tempo) - 0.05) < 1e-12  # nosec B101
+    tempo = scoring._TempoParams(fret_jump_window_seconds=1.0)
+    assert scoring._fitts_shift_bonus(7, 0.125, tempo) > scoring._fitts_shift_bonus(7, 0.5, tempo)  # nosec B101
+    assert scoring._fitts_shift_bonus(7, 0.5, tempo) > scoring._fitts_shift_bonus(7, 2.0, tempo)  # nosec B101
+    assert scoring._fitts_shift_bonus(9, 0.5, tempo) > scoring._fitts_shift_bonus(3, 0.5, tempo)  # nosec B101
+    assert scoring._fitts_shift_bonus(0, 0.125, tempo) == 0  # nosec B101
+    assert abs(scoring._fitts_shift_bonus(8, 1.0, tempo) - 0.05) < 1e-12  # nosec B101
 
 
 def test_group_anchor_note_prefers_a_fretted_note_over_an_incidental_open_string():
@@ -819,12 +834,12 @@ def test_group_anchor_note_prefers_a_fretted_note_over_an_incidental_open_string
         {"s": 0, "f": 0}, {"s": 1, "f": 12}, {"s": 2, "f": 13},
         {"s": 3, "f": 13}, {"s": 4, "f": 12}, {"s": 5, "f": 12},
     ]}
-    anchor = routes._group_anchor_note(group)
+    anchor = scoring._group_anchor_note(group)
     assert anchor == {"s": 1, "f": 12}  # nosec B101 - pytest assertion
 
     # All-open group: falls back to the lowest-string note.
     open_group = {"notes": [{"s": 5, "f": 0}, {"s": 4, "f": 0}]}
-    assert routes._group_anchor_note(open_group) == {"s": 4, "f": 0}  # nosec B101 - pytest assertion
+    assert scoring._group_anchor_note(open_group) == {"s": 4, "f": 0}  # nosec B101 - pytest assertion
 
 
 def test_fret_jump_penalty_reflects_the_true_fretted_position_not_an_incidental_open_string():
@@ -841,14 +856,14 @@ def test_fret_jump_penalty_reflects_the_true_fretted_position_not_an_incidental_
 
     close_position = groups(12)   # true jump 13->12 = 1, below the penalty threshold
     far_position = groups(2)      # true jump 13->2 = 11, should trigger the penalty
-    routes._score_groups(close_position, n_strings=6)
-    routes._score_groups(far_position, n_strings=6)
+    scoring._score_groups(close_position, n_strings=6)
+    scoring._score_groups(far_position, n_strings=6)
 
     assert far_position[1]["cost"] > close_position[1]["cost"], (  # nosec B101 - pytest assertion
         "a real large hand-position jump must still be penalized even when "
         "the anchor string happens to be open in the current group"
     )
-    expected = routes._fitts_shift_bonus(11, 0.4, routes._TempoParams()) - routes._fitts_shift_bonus(1, 0.4, routes._TempoParams())
+    expected = scoring._fitts_shift_bonus(11, 0.4, scoring._TempoParams()) - scoring._fitts_shift_bonus(1, 0.4, scoring._TempoParams())
     assert abs(far_position[1]["cost"] - close_position[1]["cost"] - expected) < 1e-9, (  # nosec B101 - pytest assertion
         "an incidental open string on the anchor string must not itself "
         "read as a hand-position jump — the bonus must track the true "
@@ -860,15 +875,15 @@ def test_low_position_wide_shape_has_extra_posture_cost():
     low = [{"s": 0, "f": 1}, {"s": 1, "f": 6}]
     high = [{"s": 0, "f": 12}, {"s": 1, "f": 17}]
     narrow = [{"s": 0, "f": 1}, {"s": 1, "f": 4}]
-    assert routes._posture_score(low) > routes._posture_score(high) == 0  # nosec B101
-    assert routes._posture_score(low) > routes._posture_score(narrow) == 0  # nosec B101
+    assert scoring._posture_score(low) > scoring._posture_score(high) == 0  # nosec B101
+    assert scoring._posture_score(low) > scoring._posture_score(narrow) == 0  # nosec B101
 
     group = [{"time": 0.0, "notes": [{**n, "sus": 0} for n in low]}]
     without_posture = deepcopy(group)
-    with patch.object(routes, "_posture_score", return_value=0):
-        routes._score_groups(without_posture, n_strings=6)
-    routes._score_groups(group, n_strings=6)
-    expected_bonus = 0.35 * 0.15 * routes._posture_score(low)
+    with patch.object(scoring, "_posture_score", return_value=0):
+        scoring._score_groups(without_posture, n_strings=6)
+    scoring._score_groups(group, n_strings=6)
+    expected_bonus = 0.35 * 0.15 * scoring._posture_score(low)
     assert abs(group[0]["cost"] - without_posture[0]["cost"] - expected_bonus) < 1e-12  # nosec B101
 
 
@@ -878,26 +893,26 @@ def test_technique_coordination_bonus_scores_simultaneous_techniques():
     max-only term is unchanged (it already reports the same 0.4 for a lone
     bend either way -- the coordination bonus is the only thing that can
     tell the two chords apart)."""
-    assert routes._technique_coordination_bonus(set(), set()) == 0.0  # nosec B101
-    assert routes._technique_coordination_bonus({"bend"}, set()) == 0.0  # nosec B101
-    two_techniques = routes._technique_coordination_bonus({"bend", "palm_mute"}, set())
-    assert two_techniques == pytest.approx(routes._COORD_PER_EXTRA_CATEGORY)  # nosec B101
+    assert scoring._technique_coordination_bonus(set(), set()) == 0.0  # nosec B101
+    assert scoring._technique_coordination_bonus({"bend"}, set()) == 0.0  # nosec B101
+    two_techniques = scoring._technique_coordination_bonus({"bend", "palm_mute"}, set())
+    assert two_techniques == pytest.approx(scoring._COORD_PER_EXTRA_CATEGORY)  # nosec B101
     assert two_techniques > 0.0  # nosec B101
 
 
 def test_technique_coordination_bonus_scores_a_switch_between_groups():
-    assert routes._technique_coordination_bonus({"bend"}, {"bend"}) == 0.0  # nosec B101
-    switched = routes._technique_coordination_bonus({"palm_mute"}, {"bend"})
-    assert switched == pytest.approx(routes._COORD_SWITCH_BONUS)  # nosec B101
+    assert scoring._technique_coordination_bonus({"bend"}, {"bend"}) == 0.0  # nosec B101
+    switched = scoring._technique_coordination_bonus({"palm_mute"}, {"bend"})
+    assert switched == pytest.approx(scoring._COORD_SWITCH_BONUS)  # nosec B101
     # No previous group (start of the phrase) is not a "switch" -- there is
     # nothing to switch away from.
-    assert routes._technique_coordination_bonus({"bend"}, set()) == 0.0  # nosec B101
+    assert scoring._technique_coordination_bonus({"bend"}, set()) == 0.0  # nosec B101
 
 
 def test_technique_coordination_bonus_is_capped():
     many_categories = {"bend", "hopo", "tap", "slide", "trem", "harm_nat"}
-    capped = routes._technique_coordination_bonus(many_categories, {"vibrato"})
-    assert capped == routes._COORD_MAX_BONUS  # nosec B101
+    capped = scoring._technique_coordination_bonus(many_categories, {"vibrato"})
+    assert capped == scoring._COORD_MAX_BONUS  # nosec B101
 
 
 def test_chord_with_two_different_techniques_scores_above_either_alone():
@@ -911,9 +926,9 @@ def test_chord_with_two_different_techniques_scores_above_either_alone():
     mixed = [{"time": 0.0, "notes": [
         {"s": 0, "f": 5, "bn": 1.0, "sus": 0}, {"s": 1, "f": 5, "pm": True, "sus": 0},
     ]}]
-    routes._score_groups(single, n_strings=6)
-    routes._score_groups(mixed, n_strings=6)
-    expected_bonus = 0.30 * routes._COORD_PER_EXTRA_CATEGORY
+    scoring._score_groups(single, n_strings=6)
+    scoring._score_groups(mixed, n_strings=6)
+    expected_bonus = 0.30 * scoring._COORD_PER_EXTRA_CATEGORY
     assert abs(mixed[0]["cost"] - single[0]["cost"] - expected_bonus) < 1e-12  # nosec B101
 
 
@@ -927,16 +942,16 @@ def test_coordination_bonus_survives_an_already_saturated_technique():
     chord mixing a palm mute into an already-saturated tapped-bend must
     still cost more than the tapped-bend alone."""
     saturated_note = {"s": 0, "f": 5, "tp": True, "bn": 1.0, "bt": 3, "sus": 0}
-    assert routes._tech_score(saturated_note) == 1.0  # nosec B101 - pytest assertion
+    assert scoring._tech_score(saturated_note) == 1.0  # nosec B101 - pytest assertion
 
     alone = [{"time": 0.0, "notes": [saturated_note, {"s": 1, "f": 5, "sus": 0}]}]
     with_extra_technique = [{"time": 0.0, "notes": [
         saturated_note, {"s": 1, "f": 5, "pm": True, "sus": 0},
     ]}]
-    routes._score_groups(alone, n_strings=6)
-    routes._score_groups(with_extra_technique, n_strings=6)
+    scoring._score_groups(alone, n_strings=6)
+    scoring._score_groups(with_extra_technique, n_strings=6)
     assert with_extra_technique[0]["cost"] > alone[0]["cost"]  # nosec B101 - pytest assertion
-    expected_bonus = 0.30 * routes._COORD_PER_EXTRA_CATEGORY
+    expected_bonus = 0.30 * scoring._COORD_PER_EXTRA_CATEGORY
     assert abs(  # nosec B101 - pytest assertion
         with_extra_technique[0]["cost"] - alone[0]["cost"] - expected_bonus
     ) < 1e-12
@@ -964,14 +979,14 @@ def test_technique_switch_bonus_survives_a_defensive_empty_group():
     # any difference in the two techniques' own base difficulty.
     switch_notes = [{"s": 0, "f": 5, "pm": True, "sus": 0}]
     same_notes = [{"s": 0, "f": 5, "mt": True, "sus": 0}]
-    with patch.object(routes, "_sequential_density", return_value=0.0), \
-         patch.object(routes, "_syncopation_score", return_value=0.0):
+    with patch.object(scoring, "_sequential_density", return_value=0.0), \
+         patch.object(scoring, "_syncopation_score", return_value=0.0):
         with_gap = _string_mute_then(switch_notes, with_gap=True)
         without_gap = _string_mute_then(switch_notes, with_gap=False)
         no_switch_with_gap = _string_mute_then(same_notes, with_gap=True)
-        routes._score_groups(with_gap, n_strings=6)
-        routes._score_groups(without_gap, n_strings=6)
-        routes._score_groups(no_switch_with_gap, n_strings=6)
+        scoring._score_groups(with_gap, n_strings=6)
+        scoring._score_groups(without_gap, n_strings=6)
+        scoring._score_groups(no_switch_with_gap, n_strings=6)
 
     # The empty group is a no-op for switch detection: the trailing
     # palm-mute group costs the same whether or not it sits between it and
@@ -995,7 +1010,7 @@ def test_lower_tier_refinement_does_not_insert_a_needless_bridge_for_an_open_anc
             {"s": 0, "f": 13}, {"s": 5, "f": 0},
         ]},
     ]
-    routes._refine_lower_tier_path(groups, [], max_level=2)
+    scoring._refine_lower_tier_path(groups, [], max_level=2)
     assert groups[1]["level"] == 2
 
 
@@ -1011,7 +1026,7 @@ def test_lower_tier_refinement_still_bridges_a_genuine_fretted_anchor_jump():
         {"time": 0.5, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
          "level": 0, "notes": [{"s": 0, "f": 15}]},
     ]
-    routes._refine_lower_tier_path(groups, [], max_level=2)
+    scoring._refine_lower_tier_path(groups, [], max_level=2)
     assert groups[1]["level"] == 0, (
         "a genuine fret-2-to-fret-15 jump should still get bridged"
     )
@@ -1031,9 +1046,9 @@ def test_refinement_prioritizes_phrase_then_bar_join_over_earlier_jump():
     promoted = []
     for _ in range(3):
         kept = [g for g in groups if g["level"] == 0]
-        assert routes._promote_bridge_candidate(  # nosec B101 - pytest assertion
+        assert scoring._promote_bridge_candidate(  # nosec B101 - pytest assertion
             kept, groups, times, [], 0, 7,
-            tempo=routes._TempoParams(),
+            tempo=scoring._TempoParams(),
             phrase_boundaries=[1.2], bar_boundaries=[0.8],
         )
         promoted.append(next(g["time"] for g in groups
@@ -1055,7 +1070,7 @@ def test_unsupported_drums_skip_preserves_instrument_classification():
         "_load_manifest_and_arrangement",
         return_value=(None, None, None, "unsupported-instrument-drums"),
     ):
-        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=None)
+        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=None, scoring=scoring)
 
     assert result == {
         "ok": True,
@@ -1079,13 +1094,13 @@ with open(Path(__file__).parent / "fixtures" / "instrument_kind_cases.json") as 
     ids=[f"{c['issue']}:{c['type']!r}/{c['name']!r}" for c in _INSTRUMENT_KIND_CASES],
 )
 def test_instrument_kind_matches_shared_fixture(case):
-    assert routes._instrument_kind(case["type"], case["name"]) == case["expected"]
+    assert scoring._instrument_kind(case["type"], case["name"]) == case["expected"]
 
 
 def test_generate_phrases_for_arrangement_skips_an_unsupported_instrument_type():
     arr = _arrangement(_simple_notes(0, 10, step=0.5))
     arr["type"] = "vocals"
-    assert routes.generate_phrases_for_arrangement(arr, n_levels=4) is None
+    assert scoring.generate_phrases_for_arrangement(arr, n_levels=4) is None
 
 
 def test_generate_one_reports_unsupported_instrument_type_distinctly_from_drums():
@@ -1100,7 +1115,7 @@ def test_generate_one_reports_unsupported_instrument_type_distinctly_from_drums(
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
          patch.object(routes, "_load_manifest_and_arrangement",
                       return_value=("arrangements/vocals.json", fake_arr, {}, None)):
-        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=None)
+        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=None, scoring=scoring)
 
     assert result == {
         "ok": True,
@@ -1120,7 +1135,7 @@ def test_generate_song_breaks_out_unsupported_from_generic_skipped_count():
     with patch.object(routes.sloppak, "load_manifest", return_value=manifest), patch.object(
         routes, "_generate_one", side_effect=results
     ):
-        summary = routes._generate_song(Path("unused"), n_levels=4, force=False, log=None)
+        summary = routes._generate_song(Path("unused"), n_levels=4, force=False, log=None, scoring=scoring)
 
     assert summary["generated"] == 1
     assert summary["skipped"] == 2
@@ -1135,7 +1150,7 @@ def test_generate_song_does_not_count_already_has_phrases_as_unsupported():
     with patch.object(routes.sloppak, "load_manifest", return_value=manifest), patch.object(
         routes, "_generate_one", side_effect=results
     ):
-        summary = routes._generate_song(Path("unused"), n_levels=4, force=False, log=None)
+        summary = routes._generate_song(Path("unused"), n_levels=4, force=False, log=None, scoring=scoring)
 
     assert summary["skipped"] == 1
     assert summary["unsupported"] == 0
@@ -1173,7 +1188,7 @@ def test_generate_song_processes_every_arrangement_and_keeps_going_after_a_bad_o
     with patch.object(routes.sloppak, "load_manifest", return_value=manifest), patch.object(
         routes, "_generate_one", side_effect=results
     ):
-        summary = routes._generate_song(Path("unused"), n_levels=4, force=False, log=None)
+        summary = routes._generate_song(Path("unused"), n_levels=4, force=False, log=None, scoring=scoring)
 
     assert summary["generated"] == 1
     assert summary["skipped"] == 2
@@ -1192,7 +1207,7 @@ def test_lower_tier_refinement_does_not_bridge_a_repositioning_rest():
          "level": 0, "notes": [{"s": 5, "f": 12}]},
     ]
 
-    routes._refine_lower_tier_path(groups, [], max_level=2)
+    scoring._refine_lower_tier_path(groups, [], max_level=2)
 
     assert groups[1]["level"] == 2
 
@@ -1200,24 +1215,24 @@ def test_lower_tier_refinement_does_not_bridge_a_repositioning_rest():
 # ── Item 1: tempo-relative thresholds ────────────────────────────────────────
 
 def test_median_beat_interval_returns_none_for_too_few_beats():
-    assert routes._median_beat_interval([i * 0.5 for i in range(7)]) is None
+    assert scoring._median_beat_interval([i * 0.5 for i in range(7)]) is None
 
 
 def test_median_beat_interval_returns_none_for_out_of_band_spacing():
     # Sub-24ms spacing is far outside the ~24-400bpm sanity band — treat it
     # as corrupt/duplicate beat data, not a real (absurdly fast) tempo.
-    assert routes._median_beat_interval([i * 0.001 for i in range(20)]) is None
+    assert scoring._median_beat_interval([i * 0.001 for i in range(20)]) is None
 
 
 def test_median_beat_interval_resists_a_single_outlier():
     times = [round(i * 0.5, 6) for i in range(20)]
     times[-1] = times[-2] + 3.0  # one dropped-click-sized outlier
-    median = routes._median_beat_interval(times)
+    median = scoring._median_beat_interval(times)
     assert median is not None and abs(median - 0.5) < 1e-9
 
 
 def test_tempo_params_from_beats_derives_all_fields_from_a_clean_click_track():
-    tempo = routes._TempoParams.from_beats([i * 0.5 for i in range(20)])
+    tempo = scoring._TempoParams.from_beats([i * 0.5 for i in range(20)])
     assert abs(tempo.beat_interval - 0.5) < 1e-9
     assert abs(tempo.time_window_ms - 125.0) < 1e-9
     assert abs(tempo.beat_tolerance - 0.06) < 1e-9
@@ -1226,9 +1241,9 @@ def test_tempo_params_from_beats_derives_all_fields_from_a_clean_click_track():
 
 
 def test_tempo_params_from_beats_falls_back_to_absolute_defaults_without_enough_data():
-    tempo = routes._TempoParams.from_beats([0.0, 0.5, 1.0])  # well under the 8-beat floor
+    tempo = scoring._TempoParams.from_beats([0.0, 0.5, 1.0])  # well under the 8-beat floor
     assert tempo.beat_interval is None
-    assert tempo == routes._TempoParams()
+    assert tempo == scoring._TempoParams()
 
 
 def test_group_notes_time_window_is_tempo_configurable():
@@ -1245,8 +1260,8 @@ def test_group_notes_time_window_is_tempo_configurable():
         {"t": 0.0, "s": 0, "f": 3},
         {"t": 0.1, "s": 1, "f": 3},
     ]
-    tight = routes._group_notes(notes, [], time_window_ms=62.5)
-    loose = routes._group_notes(notes, [], time_window_ms=250.0)
+    tight = scoring._group_notes(notes, [], time_window_ms=62.5)
+    loose = scoring._group_notes(notes, [], time_window_ms=250.0)
     assert [g["type"] for g in tight] == ["note", "note"]
     assert [g["type"] for g in loose] == ["run"]
 
@@ -1265,12 +1280,12 @@ def _measure_beats(n_measures, beats_per_measure=4, step=0.5):
 
 def test_measure_aligned_windows_returns_none_below_min_downbeats():
     beats = [{"time": 0.0, "measure": 1}, {"time": 2.0, "measure": 2}]  # only 2 downbeats
-    assert routes._measure_aligned_windows(beats, duration=10.0) is None
+    assert scoring._measure_aligned_windows(beats, duration=10.0) is None
 
 
 def test_measure_aligned_windows_groups_every_n_downbeats():
     beats = [{"time": float(i * 2), "measure": i + 1} for i in range(10)]  # 10 downbeats, 2s apart
-    windows = routes._measure_aligned_windows(beats, duration=25.0, measures_per_phrase=4)
+    windows = scoring._measure_aligned_windows(beats, duration=25.0, measures_per_phrase=4)
     assert windows == [(0.0, 8.0), (8.0, 16.0), (16.0, 25.0)]
 
 
@@ -1282,7 +1297,7 @@ def test_measure_aligned_windows_treats_measure_zero_as_a_valid_downbeat():
     # produce the exact same windows as the 1-based fixture above, not
     # silently lose its first downbeat.
     beats = [{"time": float(i * 2), "measure": i} for i in range(10)]  # measures 0..9, 2s apart
-    windows = routes._measure_aligned_windows(beats, duration=25.0, measures_per_phrase=4)
+    windows = scoring._measure_aligned_windows(beats, duration=25.0, measures_per_phrase=4)
     assert windows == [(0.0, 8.0), (8.0, 16.0), (16.0, 25.0)]
 
 
@@ -1293,7 +1308,7 @@ def test_measure_aligned_fallback_groups_every_8_measures_when_no_sections():
         "notes": _simple_notes(0, 30, step=0.5, fret=3),
         "chords": [], "beats": beats, "sections": [], "tuning": [0] * 6,
     }
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     # 16 measures at 8-per-phrase should split at the 9th measure's downbeat
     # (t=16.0), not the blind 30s chunker's single (0, ~29.5) window this
@@ -1311,7 +1326,7 @@ def test_measure_aligned_fallback_is_skipped_when_beats_carry_no_downbeats():
         "notes": _simple_notes(0, 40, step=0.5, fret=3),
         "chords": [], "beats": beats, "sections": [], "tuning": [0] * 6,
     }
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     # No usable downbeats (sub-beat-only data) -> falls through to the
     # legacy 30s chunker unchanged.
@@ -1325,12 +1340,12 @@ def test_syncopation_score_zero_on_beat_max_between_beats():
     # so _syncopation_score takes its legacy nearest-beat-distance fallback
     # -- these fixtures predate the #103/B2 graded LH&L measure.
     beat_times = [0.0, 0.5, 1.0]
-    tempo = routes._TempoParams(beat_interval=0.5)
-    assert routes._syncopation_score(0, [0.5], beat_times, tempo) == 0.0
-    assert routes._syncopation_score(0, [0.75], beat_times, tempo) == 1.0
-    assert routes._syncopation_score(0, [0.5], [], tempo) == 0.0
-    assert routes._syncopation_score(
-        0, [0.5], beat_times, routes._TempoParams(beat_interval=None),
+    tempo = scoring._TempoParams(beat_interval=0.5)
+    assert scoring._syncopation_score(0, [0.5], beat_times, tempo) == 0.0
+    assert scoring._syncopation_score(0, [0.75], beat_times, tempo) == 1.0
+    assert scoring._syncopation_score(0, [0.5], [], tempo) == 0.0
+    assert scoring._syncopation_score(
+        0, [0.5], beat_times, scoring._TempoParams(beat_interval=None),
     ) == 0.0
 
 
@@ -1341,9 +1356,9 @@ def test_syncopation_term_scores_a_more_off_beat_group_higher():
     beat_times = [0.0, 0.5, 1.0, 1.5]
     near_beat = [{"time": 0.6, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
     far_from_beat = [{"time": 0.75, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
-    tempo = routes._TempoParams(beat_interval=0.5)
-    routes._score_groups(near_beat, n_strings=6, beat_times=beat_times, tempo=tempo)
-    routes._score_groups(far_from_beat, n_strings=6, beat_times=beat_times, tempo=tempo)
+    tempo = scoring._TempoParams(beat_interval=0.5)
+    scoring._score_groups(near_beat, n_strings=6, beat_times=beat_times, tempo=tempo)
+    scoring._score_groups(far_from_beat, n_strings=6, beat_times=beat_times, tempo=tempo)
     assert far_from_beat[0]["cost"] > near_beat[0]["cost"], (
         "landing further from the beat grid (more syncopated) should score "
         "harder even with identical note/fret/technique content"
@@ -1362,48 +1377,48 @@ def _four_four_beats(n_measures, beat_interval=0.5):
 
 def test_beat_grid_ranks_downbeat_above_strong_beat_above_other_beat():
     beats = _four_four_beats(3)
-    grid = dict(routes._beat_grid(beats))
+    grid = dict(scoring._beat_grid(beats))
     # Beat 1 (downbeat), beat 3 (strong beat), beats 2 and 4 (other beat) --
     # of the first 4/4 measure at 0.0/0.5/1.0/1.5.
-    assert grid[0.0] == routes._STRENGTH_DOWNBEAT  # nosec B101 - pytest assertion
-    assert grid[1.0] == routes._STRENGTH_STRONG_BEAT  # nosec B101 - pytest assertion
-    assert grid[0.5] == routes._STRENGTH_OTHER_BEAT  # nosec B101 - pytest assertion
-    assert grid[1.5] == routes._STRENGTH_OTHER_BEAT  # nosec B101 - pytest assertion
+    assert grid[0.0] == scoring._STRENGTH_DOWNBEAT  # nosec B101 - pytest assertion
+    assert grid[1.0] == scoring._STRENGTH_STRONG_BEAT  # nosec B101 - pytest assertion
+    assert grid[0.5] == scoring._STRENGTH_OTHER_BEAT  # nosec B101 - pytest assertion
+    assert grid[1.5] == scoring._STRENGTH_OTHER_BEAT  # nosec B101 - pytest assertion
 
 
 def test_beat_grid_empty_without_any_downbeat_data():
     # No `measure` key at all (matches _arrangement()'s default fixture
     # beats) -- every entry defaults to -1, so there are no downbeats.
     beats = [{"time": i * 0.5} for i in range(20)]
-    assert routes._beat_grid(beats) == []  # nosec B101 - pytest assertion
-    assert routes._beat_grid([]) == []  # nosec B101 - pytest assertion
+    assert scoring._beat_grid(beats) == []  # nosec B101 - pytest assertion
+    assert scoring._beat_grid([]) == []  # nosec B101 - pytest assertion
 
 
 def test_beat_value_falls_back_to_binary_when_no_downbeat_grid():
     """#104 acceptance criterion: a fixture with no downbeat data must
     produce output identical to the pre-B2 on/off behaviour."""
     beat_times = [0.0, 0.5, 1.0]
-    tempo = routes._TempoParams(beat_interval=0.5)  # beat_grid=() by default
+    tempo = scoring._TempoParams(beat_interval=0.5)  # beat_grid=() by default
     for t in (0.0, 0.03, 0.5, 0.75, 1.0):
-        assert routes._beat_value(t, beat_times, tempo) == float(
-            routes._is_beat_aligned(t, beat_times, tolerance=tempo.beat_tolerance)
+        assert scoring._beat_value(t, beat_times, tempo) == float(
+            scoring._is_beat_aligned(t, beat_times, tolerance=tempo.beat_tolerance)
         )
 
 
 def test_beat_value_grades_metrical_strength_with_a_downbeat_grid():
     beats = _four_four_beats(2)
     beat_times = [b["time"] for b in beats]
-    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    tempo = scoring._TempoParams.from_beats(beat_times, beats)
     assert tempo.beat_grid, "expected a non-empty grid from real measure data"  # nosec B101
-    assert routes._beat_value(0.0, beat_times, tempo) == routes._STRENGTH_DOWNBEAT  # nosec B101
-    assert routes._beat_value(1.0, beat_times, tempo) == routes._STRENGTH_STRONG_BEAT  # nosec B101
-    assert routes._beat_value(0.5, beat_times, tempo) == routes._STRENGTH_OTHER_BEAT  # nosec B101
+    assert scoring._beat_value(0.0, beat_times, tempo) == scoring._STRENGTH_DOWNBEAT  # nosec B101
+    assert scoring._beat_value(1.0, beat_times, tempo) == scoring._STRENGTH_STRONG_BEAT  # nosec B101
+    assert scoring._beat_value(0.5, beat_times, tempo) == scoring._STRENGTH_OTHER_BEAT  # nosec B101
     # Eighth subdivision: halfway between beat 1 (0.0) and beat 2 (0.5).
-    assert routes._beat_value(0.25, beat_times, tempo) == routes._STRENGTH_EIGHTH  # nosec B101
+    assert scoring._beat_value(0.25, beat_times, tempo) == scoring._STRENGTH_EIGHTH  # nosec B101
     # Off the grid entirely -- not close enough to the beat, the eighth
     # (frac 0.5) or either sixteenth (frac 0.25/0.75) point to match any of
     # them within _SUBDIVISION_TOLERANCE_FRACTION.
-    assert routes._beat_value(0.0625, beat_times, tempo) == routes._STRENGTH_OFF_GRID  # nosec B101
+    assert scoring._beat_value(0.0625, beat_times, tempo) == scoring._STRENGTH_OFF_GRID  # nosec B101
 
 
 def test_beat_strength_subdivision_uses_the_local_interval_not_the_median():
@@ -1424,11 +1439,11 @@ def test_beat_strength_subdivision_uses_the_local_interval_not_the_median():
         beats.append({"time": round(t, 6), "measure": 0 if i % 4 == 0 else -1})
         t += 0.2
     beat_times = [b["time"] for b in beats]
-    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    tempo = scoring._TempoParams.from_beats(beat_times, beats)
     assert tempo.beat_interval == pytest.approx(0.5)  # nosec B101 - the stale median
     fast_section_start = beats[16]["time"]
     eighth_point = fast_section_start + 0.1  # frac 0.5 of the local 0.2s interval
-    assert routes._beat_value(eighth_point, beat_times, tempo) == routes._STRENGTH_EIGHTH  # nosec B101
+    assert scoring._beat_value(eighth_point, beat_times, tempo) == scoring._STRENGTH_EIGHTH  # nosec B101
 
 
 def test_beat_strength_degrades_to_off_grid_across_a_missing_beat_gap():
@@ -1445,11 +1460,11 @@ def test_beat_strength_degrades_to_off_grid_across_a_missing_beat_gap():
     times = [0.0, 0.5, 1.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0]
     beats = [{"time": t, "measure": 0 if i % 4 == 0 else -1} for i, t in enumerate(times)]
     beat_times = [b["time"] for b in beats]
-    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    tempo = scoring._TempoParams.from_beats(beat_times, beats)
     assert tempo.beat_interval == pytest.approx(0.5)  # nosec B101 - pytest assertion
     # 1.625 would be a true sixteenth point (frac 0.75 of a 0.5s beat
     # starting at 1.0) on the original pulse, now inside the 1.5s gap.
-    assert routes._beat_value(1.625, beat_times, tempo) == routes._STRENGTH_OFF_GRID  # nosec B101
+    assert scoring._beat_value(1.625, beat_times, tempo) == scoring._STRENGTH_OFF_GRID  # nosec B101
 
 
 def test_syncopation_score_penalizes_a_silent_stronger_position():
@@ -1460,32 +1475,32 @@ def test_syncopation_score_penalizes_a_silent_stronger_position():
     followed by a note ON beat 3."""
     beats = _four_four_beats(2)
     beat_times = [b["time"] for b in beats]
-    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    tempo = scoring._TempoParams.from_beats(beat_times, beats)
     # Beat 2 is at 0.5; the eighth after it (weak) is at 0.75; beat 3
     # (strong) is at 1.0.
     held_through_beat_three = [0.75, 2.0]  # next onset well past beat 3
     followed_by_beat_three = [0.75, 1.0]  # next onset lands ON beat 3
-    held_score = routes._syncopation_score(0, held_through_beat_three, beat_times, tempo)
-    covered_score = routes._syncopation_score(0, followed_by_beat_three, beat_times, tempo)
+    held_score = scoring._syncopation_score(0, held_through_beat_three, beat_times, tempo)
+    covered_score = scoring._syncopation_score(0, followed_by_beat_three, beat_times, tempo)
     assert held_score > 0.0  # nosec B101 - pytest assertion
-    assert held_score == pytest.approx(routes._STRENGTH_STRONG_BEAT - routes._STRENGTH_EIGHTH)  # nosec B101
+    assert held_score == pytest.approx(scoring._STRENGTH_STRONG_BEAT - scoring._STRENGTH_EIGHTH)  # nosec B101
     assert covered_score == 0.0  # nosec B101 - pytest assertion
 
 
 def test_syncopation_score_zero_when_already_on_the_strongest_position():
     beats = _four_four_beats(2)
     beat_times = [b["time"] for b in beats]
-    tempo = routes._TempoParams.from_beats(beat_times, beats)
+    tempo = scoring._TempoParams.from_beats(beat_times, beats)
     times_sorted = [0.0, 2.0]  # a downbeat, nothing stronger exists
-    assert routes._syncopation_score(0, times_sorted, beat_times, tempo) == 0.0  # nosec B101
+    assert scoring._syncopation_score(0, times_sorted, beat_times, tempo) == 0.0  # nosec B101
 
 
 def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None, tuning=()):
     """Independent oracle for the current fretted retention formula."""
-    tempo = tempo or routes._TempoParams()
+    tempo = tempo or scoring._TempoParams()
     legacy = deepcopy(groups)
     times_sorted = [float(g["time"]) for g in legacy]
-    turning_points = routes._melody_turning_points(legacy, tuning, n_strings, tempo)
+    turning_points = scoring._melody_turning_points(legacy, tuning, n_strings, tempo)
     prev_categories = set()
     for gi, group in enumerate(legacy):
         notes = group["notes"]
@@ -1494,10 +1509,10 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None, t
             continue
         avg_fret = sum(n.get("f", 0) for n in notes) / len(notes)
         count_ratio = min(1.0, (len(notes) - 1) / max(n_strings - 1, 1))
-        spread_ratio = routes._string_span_score(notes, n_strings)
+        spread_ratio = scoring._string_span_score(notes, n_strings)
         string_shape = (
-            routes._STRING_SPREAD_BLEND * spread_ratio
-            + (1.0 - routes._STRING_SPREAD_BLEND) * count_ratio
+            scoring._STRING_SPREAD_BLEND * spread_ratio
+            + (1.0 - scoring._STRING_SPREAD_BLEND) * count_ratio
         )
         frets = [int(n.get("f", 0)) for n in notes if int(n.get("f", 0)) > 0]
         posture = 0.0
@@ -1506,28 +1521,28 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None, t
             low_position = min(1.0, max(0.0, (9 - min(frets)) / 8.0))
             posture = stretch * low_position
         fretting = min(1.0,
-            0.4 * routes._fret_score(avg_fret)
-            + 0.35 * routes._span_score(notes)
+            0.4 * scoring._fret_score(avg_fret)
+            + 0.35 * scoring._span_score(notes)
             + 0.25 * string_shape
             + 0.15 * posture
         )
-        group_categories = set().union(*(routes._technique_categories(n) for n in notes))
+        group_categories = set().union(*(scoring._technique_categories(n) for n in notes))
         # Not re-clamped to 1.0, matching _score_groups -- see its inline
         # comment on why re-clamping here would swallow the coordination
         # bonus whenever the hardest note's own _tech_score already
         # saturates at 1.0.
         technique = (
-            max(routes._tech_score(n) for n in notes)
-            + routes._technique_coordination_bonus(group_categories, prev_categories)
+            max(scoring._tech_score(n) for n in notes)
+            + scoring._technique_coordination_bonus(group_categories, prev_categories)
         )
         if group_categories:
             prev_categories = group_categories
-        raw_density = routes._sequential_density(times_sorted, gi, tempo)
-        syncopation = routes._syncopation_score(gi, times_sorted, beat_times, tempo)
+        raw_density = scoring._sequential_density(times_sorted, gi, tempo)
+        syncopation = scoring._syncopation_score(gi, times_sorted, beat_times, tempo)
         density = min(
             1.0,
-            (1.0 - routes._SYNCOPATION_DENSITY_WEIGHT) * raw_density
-            + routes._SYNCOPATION_DENSITY_WEIGHT * syncopation,
+            (1.0 - scoring._SYNCOPATION_DENSITY_WEIGHT) * raw_density
+            + scoring._SYNCOPATION_DENSITY_WEIGHT * syncopation,
         )
         max_sus = max(float(n.get("sus", 0)) for n in notes)
         sustain_ease = min(1.0, max_sus / tempo.sustain_ease_norm_seconds)
@@ -1535,12 +1550,12 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None, t
             0.35 * fretting + 0.30 * technique + 0.20 * density
             + 0.15 * (1.0 - sustain_ease)
         )
-        group["score"] -= 0.12 * routes._beat_value(group["time"], beat_times, tempo)
+        group["score"] -= 0.12 * scoring._beat_value(group["time"], beat_times, tempo)
         if gi in turning_points:
-            group["score"] -= routes._MELODY_TURNING_POINT_RETENTION_BONUS
+            group["score"] -= scoring._MELODY_TURNING_POINT_RETENTION_BONUS
         if gi:
-            previous = routes._group_anchor_note(legacy[gi - 1])
-            current = routes._group_anchor_note(group)
+            previous = scoring._group_anchor_note(legacy[gi - 1])
+            current = scoring._group_anchor_note(group)
             if previous and current:
                 available = float(group["time"]) - float(legacy[gi - 1]["time"])
                 fret_jump = abs(int(current.get("f", 0)) - int(previous.get("f", 0)))
@@ -1551,9 +1566,9 @@ def _reference_fretted_scores(groups, n_strings, beat_times=(), *, tempo=None, t
                 if available <= tempo.fret_jump_window_seconds:
                     string_jump = abs(int(current.get("s", 0)) - int(previous.get("s", 0)))
                     group["score"] += min(
-                        routes._STRING_JUMP_MAX_BONUS,
-                        max(0, string_jump - routes._STRING_JUMP_THRESHOLD)
-                        * routes._STRING_JUMP_COEF,
+                        scoring._STRING_JUMP_MAX_BONUS,
+                        max(0, string_jump - scoring._STRING_JUMP_THRESHOLD)
+                        * scoring._STRING_JUMP_COEF,
                     )
         group["score"] = max(0.0, min(1.0, group["score"]))
     return [g["score"] for g in legacy]
@@ -1570,12 +1585,12 @@ def _legacy_keys_scores(groups, *, tempo=None):
 
     It deliberately does NOT model #177's per-hand leap term. That term is
     additive on top of this base and is pinned separately against
-    `routes._keys_leap_bonus` in
+    `scoring._keys_leap_bonus` in
     `test_keys_cost_exactly_matches_legacy_formula`; folding it in here would
     make this oracle depend on the very implementation it exists to
     independently check. The name stays accurate: the oracle IS the legacy
     (base) formula."""
-    tempo = tempo or routes._TempoParams()
+    tempo = tempo or scoring._TempoParams()
     legacy = deepcopy(groups)
     total = len(legacy)
     times_sorted = [float(g["time"]) for g in legacy]
@@ -1584,11 +1599,11 @@ def _legacy_keys_scores(groups, *, tempo=None):
         if not notes:
             group["score"] = 0.0
             continue
-        midis = [routes._note_midi_keys(n) for n in notes]
+        midis = [scoring._note_midi_keys(n) for n in notes]
         poly = min(1.0, (len(notes) - 1) / 4.0)
         span = max(midis) - min(midis) if len(midis) > 1 else 0
         span_score = min(1.0, span / 12.0)
-        density = routes._sequential_density(times_sorted, gi, tempo)
+        density = scoring._sequential_density(times_sorted, gi, tempo)
         speed = 0.0
         if gi + 1 < total:
             dt = float(legacy[gi + 1]["time"]) - float(group["time"])
@@ -1610,16 +1625,16 @@ def test_fretted_cost_is_intrinsic_while_beat_value_changes_retention_rank():
     ]
     beat_times = [0.0]
 
-    routes._score_groups(groups, n_strings=6, beat_times=beat_times)
+    scoring._score_groups(groups, n_strings=6, beat_times=beat_times)
 
     assert groups[0]["cost"] == groups[1]["cost"]  # nosec B101 - pytest assertion
     assert [g["value"] for g in groups] == [1.0, 0.0]  # nosec B101 - pytest assertion
     assert groups[0]["retention_score"] < groups[1]["retention_score"]  # nosec B101 - pytest assertion
 
-    thresholds = routes._tier_thresholds(
+    thresholds = scoring._tier_thresholds(
         [g["retention_score"] for g in groups], n_tiers=2,
     )
-    routes._assign_tiers(groups, 2, thresholds, beat_times)
+    scoring._assign_tiers(groups, 2, thresholds, beat_times)
     assert [g["level"] for g in groups] == [0, 1]  # nosec B101 - pytest assertion
 
 
@@ -1637,7 +1652,7 @@ def test_fretted_retention_discount_precedes_clamp():
     )
 
     reference_scores = _reference_fretted_scores(groups, n_strings=6, beat_times=[0.7])
-    routes._score_groups(groups, n_strings=6, beat_times=[0.7])
+    scoring._score_groups(groups, n_strings=6, beat_times=[0.7])
 
     scored = groups[-1]
     assert scored["cost"] > 1.0  # nosec B101 - pytest assertion
@@ -1662,7 +1677,7 @@ def test_fretted_retention_score_matches_movement_reference_formula(sustain):
     beat_times = [0.0, 0.1]
     expected = _reference_fretted_scores(groups, n_strings=6, beat_times=beat_times)
 
-    routes._score_groups(groups, n_strings=6, beat_times=beat_times)
+    scoring._score_groups(groups, n_strings=6, beat_times=beat_times)
 
     assert [g["retention_score"] for g in groups] == expected  # nosec B101 - pytest assertion
     assert groups[-1] == {  # nosec B101 - pytest assertion
@@ -1677,7 +1692,7 @@ def test_fretted_malformed_sustain_keeps_error_behavior():
     with pytest.raises(ValueError):
         _reference_fretted_scores(groups, n_strings=6)
     with pytest.raises(ValueError):
-        routes._score_groups(deepcopy(groups), n_strings=6)
+        scoring._score_groups(deepcopy(groups), n_strings=6)
 
 
 def test_keys_cost_and_retention_score_remain_identical_with_no_value():
@@ -1686,7 +1701,7 @@ def test_keys_cost_and_retention_score_remain_identical_with_no_value():
         "notes": [{"s": 2, "f": 0, "sus": 0}, {"s": 2, "f": 12, "sus": 0}],
     }]
 
-    routes._score_groups_keys(groups)
+    scoring._score_groups_keys(groups)
 
     assert groups[0]["value"] == 0.0  # nosec B101 - pytest assertion
     assert groups[0]["cost"] == groups[0]["retention_score"]  # nosec B101 - pytest assertion
@@ -1705,7 +1720,7 @@ def test_keys_cost_exactly_matches_legacy_formula(sustain):
     # `retention_score`), AGAINST WHAT anchor (the mean of the group's MIDI
     # pitches) and AGAINST WHOM (the previous group of the same hand). It
     # does NOT pin the unit's shape or magnitude -- it calls the same
-    # `routes._keys_leap_bonus` production calls, so any change to the helper
+    # `scoring._keys_leap_bonus` production calls, so any change to the helper
     # moves the expectation with it. Those are pinned separately, by hand, in
     # `test_keys_leap_bonus_matches_its_documented_formula`. The anchor choice
     # (mean, not max or min) is what this test catches: it is the sole catcher
@@ -1718,14 +1733,14 @@ def test_keys_cost_exactly_matches_legacy_formula(sustain):
         ]},
         {"time": 0.2, "notes": [{"s": 3, "f": 7, "sus": sustain}]},
     ]
-    tempo = routes._TempoParams()
+    tempo = scoring._TempoParams()
     base = _legacy_keys_scores(groups)
     expected = list(base)
     # Anchor = mean of the group's MIDI pitches (`s * 24 + f`); group 1 sits
     # at (48 + 60) / 2 and group 2 (one note, unsplit hand) at 79.
     anchors = [
         (
-            sum(routes._note_midi_keys(n) for n in g["notes"]) / len(g["notes"])
+            sum(scoring._note_midi_keys(n) for n in g["notes"]) / len(g["notes"])
             if g["notes"] else None
         )
         for g in groups
@@ -1734,7 +1749,7 @@ def test_keys_cost_exactly_matches_legacy_formula(sustain):
     # hand, so only group 2 carries a leap: 0.1s after its predecessor, well
     # inside the default 1.0s movement window.
     assert anchors[1] is not None  # nosec B101 - pytest assertion
-    expected[2] += routes._keys_leap_bonus(
+    expected[2] += scoring._keys_leap_bonus(
         abs(anchors[2] - anchors[1]),
         float(groups[2]["time"]) - float(groups[1]["time"]),
         tempo,
@@ -1743,7 +1758,7 @@ def test_keys_cost_exactly_matches_legacy_formula(sustain):
     # would silently degrade into re-pinning the base formula alone.
     assert expected[2] > base[2]  # nosec B101 - pytest assertion
 
-    routes._score_groups_keys(groups, tempo=tempo)
+    scoring._score_groups_keys(groups, tempo=tempo)
 
     assert [g["cost"] for g in groups] == expected  # nosec B101 - pytest assertion
     assert [g["retention_score"] for g in groups] == expected  # nosec B101 - pytest assertion
@@ -1756,7 +1771,7 @@ def test_keys_malformed_sustain_keeps_legacy_error_behavior():
     with pytest.raises(ValueError):
         _legacy_keys_scores(groups)
     with pytest.raises(ValueError):
-        routes._score_groups_keys(deepcopy(groups))
+        scoring._score_groups_keys(deepcopy(groups))
 
 
 def test_movement_cost_generates_nested_ladder_fixture():
@@ -1766,7 +1781,7 @@ def test_movement_cost_generates_nested_ladder_fixture():
     ]
     arr = _arrangement(notes, n_beats=10)
 
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=3)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=3)
 
     assert phrases is not None  # nosec B101 - pytest assertion
     # #103/B3: this arrangement's single fallback window (no sections, no
@@ -1790,8 +1805,8 @@ def test_movement_cost_generates_nested_ladder_fixture():
 def test_string_spread_increases_fretting_score():
     narrow = [{"time": 0.0, "notes": [{"s": 0, "f": 5, "sus": 0}, {"s": 1, "f": 5, "sus": 0}]}]
     wide = [{"time": 0.0, "notes": [{"s": 0, "f": 5, "sus": 0}, {"s": 5, "f": 5, "sus": 0}]}]
-    routes._score_groups(narrow, n_strings=6)
-    routes._score_groups(wide, n_strings=6)
+    scoring._score_groups(narrow, n_strings=6)
+    scoring._score_groups(wide, n_strings=6)
     assert wide[0]["cost"] > narrow[0]["cost"], (
         "a wider string spread (1<->6) should score harder than an adjacent-"
         "string group, even though both groups touch 2 strings"
@@ -1808,8 +1823,8 @@ def test_string_jump_bonus_isolated_from_fret_jump():
     small_skip = groups(4)  # string jump 4->5 = 1, below the threshold (3)
     big_skip = groups(0)    # string jump 0->5 = 5, above the threshold
 
-    routes._score_groups(small_skip, n_strings=6)
-    routes._score_groups(big_skip, n_strings=6)
+    scoring._score_groups(small_skip, n_strings=6)
+    scoring._score_groups(big_skip, n_strings=6)
 
     assert big_skip[1]["cost"] > small_skip[1]["cost"]
     assert abs(big_skip[1]["cost"] - small_skip[1]["cost"] - 0.06) < 1e-9  # min(0.08, (5-3)*0.03)
@@ -1828,7 +1843,7 @@ def test_lower_tier_refinement_bridges_a_string_skip_even_when_the_fret_jump_is_
         {"time": 0.5, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
          "level": 0, "notes": [{"s": 5, "f": 5}]},
     ]
-    routes._refine_lower_tier_path(groups, [], max_level=2)
+    scoring._refine_lower_tier_path(groups, [], max_level=2)
     assert groups[1]["level"] == 0, (
         "a hand-shape-changing string skip should get bridged even when the "
         "fret distance alone is small"
@@ -1851,7 +1866,7 @@ def test_lower_tier_refinement_bridges_a_pure_string_skip_with_zero_fret_movemen
         {"time": 0.5, "cost": 0.1, "value": 0.0, "retention_score": 0.1,
          "level": 0, "notes": [{"s": 5, "f": 5}]},
     ]
-    routes._refine_lower_tier_path(groups, [], max_level=2)
+    scoring._refine_lower_tier_path(groups, [], max_level=2)
     assert groups[1]["level"] == 0, (
         "a pure string skip (0->5, identical fret throughout) should still "
         "get bridged by an intermediate string position"
@@ -1869,7 +1884,7 @@ def test_fretted_chord_widens_through_three_tiers_before_the_top():
     max_level = 5
     counts = []
     for level in range(max_level + 1):
-        notes, chords = routes._notes_for_level(groups, level, max_level)
+        notes, chords = scoring._notes_for_level(groups, level, max_level)
         counts.append(len(notes) + sum(len(c.get("notes", [])) for c in chords))
     assert counts == sorted(counts), "chord note count must never decrease as the tier increases"
     assert len(set(counts[:-1])) >= 3, (
@@ -1885,7 +1900,7 @@ def test_pick_partial_voicing_prefers_fret_proximity_over_positional_order():
     close = {"s": 2, "f": 11}  # 1 fret from root
     far = {"s": 1, "f": 2}     # 8 frets from root
     ranked = [root, far, close]  # naive positional order would pick root+far
-    picked = routes._pick_partial_voicing(ranked, 2)
+    picked = scoring._pick_partial_voicing(ranked, 2)
     assert picked == [root, close], (
         "partial voicing should keep the fret-close note, not the first "
         "positional one, so the reduced voicing isn't still a hard stretch"
@@ -1897,7 +1912,7 @@ def test_pick_partial_voicing_prefers_an_open_string_when_spans_tie():
     open_string = {"s": 2, "f": 0}    # free -- contributes no span
     fretted_tie = {"s": 1, "f": 10}   # same fret as root -> also zero added span
     ranked = [root, open_string, fretted_tie]
-    picked = routes._pick_partial_voicing(ranked, 2)
+    picked = scoring._pick_partial_voicing(ranked, 2)
     assert picked[0] == root
     assert picked[1] == open_string, (
         "an open string should be preferred over a same-span fretted "
@@ -1910,8 +1925,8 @@ def test_pick_partial_voicing_prefers_an_open_string_when_spans_tie():
 def test_pinch_harmonic_scores_higher_than_natural_harmonic():
     natural = [{"time": 0.0, "notes": [{"s": 2, "f": 5, "sus": 0, "hm": True}]}]
     pinch = [{"time": 0.0, "notes": [{"s": 2, "f": 5, "sus": 0, "hp": True}]}]
-    routes._score_groups(natural, n_strings=6)
-    routes._score_groups(pinch, n_strings=6)
+    scoring._score_groups(natural, n_strings=6)
+    scoring._score_groups(pinch, n_strings=6)
     assert pinch[0]["cost"] > natural[0]["cost"], (
         "a pinch harmonic requires more precise thumb-touch timing than a "
         "natural harmonic and should score harder, not the same"
@@ -1921,8 +1936,8 @@ def test_pinch_harmonic_scores_higher_than_natural_harmonic():
 def test_slap_scores_higher_than_pop():
     pop = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "plk": True}]}]
     slap = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "slp": True}]}]
-    routes._score_groups(pop, n_strings=6)
-    routes._score_groups(slap, n_strings=6)
+    scoring._score_groups(pop, n_strings=6)
+    scoring._score_groups(slap, n_strings=6)
     assert slap[0]["cost"] > pop[0]["cost"], (
         "slap's percussive thumb strike is the harder half of the "
         "slap-and-pop pairing and should score harder than pop alone"
@@ -1935,8 +1950,8 @@ def test_bass_slap_and_pop_previously_scored_as_a_plain_note():
     # picked note (technique contributed nothing at all).
     plain = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
     slap = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "slp": True}]}]
-    routes._score_groups(plain, n_strings=6)
-    routes._score_groups(slap, n_strings=6)
+    scoring._score_groups(plain, n_strings=6)
+    scoring._score_groups(slap, n_strings=6)
     assert slap[0]["cost"] > plain[0]["cost"]
 
 
@@ -1945,21 +1960,21 @@ def test_pinch_harmonic_gated_out_later_than_natural_harmonic():
     # gate applies (see test_natural_harmonic_is_kept_where_stripping_would_change_its_pitch).
     note_hm = {"t": 0.0, "s": 2, "f": 12, "sus": 0, "hm": True}
     note_hp = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "hp": True}
-    assert "hm" not in routes._prune_techniques(note_hm, diff_percent=0.70)
-    assert "hp" not in routes._prune_techniques(note_hp, diff_percent=0.90), (
+    assert "hm" not in scoring._prune_techniques(note_hm, diff_percent=0.70)
+    assert "hp" not in scoring._prune_techniques(note_hp, diff_percent=0.90), (
         "pinch harmonic should still be stripped at a diff_percent that "
         "already keeps a natural harmonic"
     )
-    assert routes._prune_techniques(note_hp, diff_percent=0.96).get("hp") is True
+    assert scoring._prune_techniques(note_hp, diff_percent=0.96).get("hp") is True
 
 
 def test_bass_slap_and_pop_are_gated_and_pruned():
     note_slp = {"t": 0.0, "s": 3, "f": 0, "sus": 0, "slp": True}
     note_plk = {"t": 0.0, "s": 3, "f": 0, "sus": 0, "plk": True}
-    assert "slp" not in routes._prune_techniques(note_slp, diff_percent=0.5)
-    assert routes._prune_techniques(note_slp, diff_percent=0.95).get("slp") is True
-    assert "plk" not in routes._prune_techniques(note_plk, diff_percent=0.5)
-    assert routes._prune_techniques(note_plk, diff_percent=0.85).get("plk") is True
+    assert "slp" not in scoring._prune_techniques(note_slp, diff_percent=0.5)
+    assert scoring._prune_techniques(note_slp, diff_percent=0.95).get("slp") is True
+    assert "plk" not in scoring._prune_techniques(note_plk, diff_percent=0.5)
+    assert scoring._prune_techniques(note_plk, diff_percent=0.85).get("plk") is True
 
 
 # ── Follow-up 2: palm mute / string mute / vibrato / fret-hand mute ────────
@@ -1974,7 +1989,7 @@ def test_palm_mute_string_mute_and_vibrato_now_contribute_to_the_score():
     string_muted = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "mt": True}]}]
     vibrato = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "vb": True}]}]
     for group in (plain, palm_muted, string_muted, vibrato):
-        routes._score_groups(group, n_strings=6)
+        scoring._score_groups(group, n_strings=6)
     assert palm_muted[0]["cost"] > plain[0]["cost"]
     assert string_muted[0]["cost"] > plain[0]["cost"]
     assert vibrato[0]["cost"] > plain[0]["cost"]
@@ -1986,13 +2001,13 @@ def test_fret_hand_mute_now_scored_and_gated():
     # hard the passage was.
     plain = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0}]}]
     fret_hand_muted = [{"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0, "fhm": True}]}]
-    routes._score_groups(plain, n_strings=6)
-    routes._score_groups(fret_hand_muted, n_strings=6)
+    scoring._score_groups(plain, n_strings=6)
+    scoring._score_groups(fret_hand_muted, n_strings=6)
     assert fret_hand_muted[0]["cost"] > plain[0]["cost"]
 
     note = {"t": 0.0, "s": 2, "f": 3, "sus": 0, "fhm": True}
-    assert "fhm" not in routes._prune_techniques(note, diff_percent=0.5)
-    assert routes._prune_techniques(note, diff_percent=0.80).get("fhm") is True
+    assert "fhm" not in scoring._prune_techniques(note, diff_percent=0.5)
+    assert scoring._prune_techniques(note, diff_percent=0.80).get("fhm") is True
 
 
 def test_pm_mt_vb_fhm_gated_out_of_low_tiers_end_to_end():
@@ -2009,7 +2024,7 @@ def test_pm_mt_vb_fhm_gated_out_of_low_tiers_end_to_end():
 
     for key in ("pm", "mt", "vb", "fhm"):
         arr = arr_with_technique(key)
-        phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+        phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=6)
         assert phrases
         bottom_notes = phrases[0]["levels"][0]["notes"]
         assert not any(n.get(key) for n in bottom_notes), (
@@ -2033,7 +2048,7 @@ def test_bend_intent_scoring_reflects_relative_difficulty():
     pre_bend_release = group(3)
     round_trip = group(4)
     for g in (plain, release, pre_bend, pre_bend_release, round_trip):
-        routes._score_groups(g, n_strings=6)
+        scoring._score_groups(g, n_strings=6)
 
     assert release[0]["cost"] == plain[0]["cost"], (
         "a release isn't meaningfully harder than a plain bend-up and should "
@@ -2062,8 +2077,8 @@ def test_bend_curve_with_shaping_scores_higher_than_a_trivial_two_point_curve():
     shaped = group([
         {"t": 0, "v": 0}, {"t": 0.1, "v": 0.5}, {"t": 0.2, "v": 1.0}, {"t": 0.3, "v": 0.7},
     ])
-    routes._score_groups(trivial, n_strings=6)
-    routes._score_groups(shaped, n_strings=6)
+    scoring._score_groups(trivial, n_strings=6)
+    scoring._score_groups(shaped, n_strings=6)
     assert shaped[0]["cost"] > trivial[0]["cost"], (
         "a bend curve beyond a trivial two-point ramp signals deliberate "
         "mid-bend shaping and should score harder"
@@ -2075,15 +2090,15 @@ def test_bend_intent_downgraded_below_its_gate_but_release_is_spared():
     note_pre_bend = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 2}
     note_release = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 1}
 
-    below_bt_gate = routes._prune_techniques(note_round_trip, diff_percent=0.60)
+    below_bt_gate = scoring._prune_techniques(note_round_trip, diff_percent=0.60)
     assert below_bt_gate["bt"] == 0, "round-trip should downgrade to a plain bend-up below its gate"  # nosec B101 - pytest assertion
     assert below_bt_gate["bn"] == 1.0, "bn itself survives above its own (earlier) gate"
     assert below_bt_gate["f"] == 5, "both are struck unbent, so the fret is unchanged"  # nosec B101 - pytest assertion
 
-    above_bt_gate = routes._prune_techniques(note_pre_bend, diff_percent=0.70)
+    above_bt_gate = scoring._prune_techniques(note_pre_bend, diff_percent=0.70)
     assert above_bt_gate["bt"] == 2
 
-    release_below_bt_gate = routes._prune_techniques(note_release, diff_percent=0.60)
+    release_below_bt_gate = scoring._prune_techniques(note_release, diff_percent=0.60)
     assert release_below_bt_gate["bt"] == 1, (
         "release is not meaningfully harder than a plain bend and should not "
         "be downgraded by the bt gate"
@@ -2095,12 +2110,12 @@ def test_bend_curve_stripped_below_its_gate_bn_and_bt_survive():
         "t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 0,
         "bnv": [{"t": 0, "v": 0}, {"t": 0.25, "v": 1.0}],
     }
-    below_bnv_gate = routes._prune_techniques(note, diff_percent=0.75)
+    below_bnv_gate = scoring._prune_techniques(note, diff_percent=0.75)
     assert "bnv" not in below_bnv_gate
     assert below_bnv_gate["bn"] == 1.0
     assert below_bnv_gate["bt"] == 0
 
-    above_bnv_gate = routes._prune_techniques(note, diff_percent=0.85)
+    above_bnv_gate = scoring._prune_techniques(note, diff_percent=0.85)
     assert above_bnv_gate["bnv"] == note["bnv"]
 
 
@@ -2110,7 +2125,7 @@ def test_stripped_bend_does_not_leave_a_stale_bt_or_bnv_behind():
         "bn": 1.5, "bt": 4,
         "bnv": [{"t": 0, "v": 0}, {"t": 0.1, "v": 1.5}, {"t": 0.2, "v": 0}],
     }
-    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    pruned = scoring._prune_techniques(note, diff_percent=0.30)
     assert pruned["bn"] == 0
     assert pruned["bt"] == 0, "a round-trip flag on a bn=0 note is nonsensical and must not survive"  # nosec B101 - pytest assertion
     assert "bnv" not in pruned, "a stale bend curve must not survive when the bend itself is gone"
@@ -2125,7 +2140,7 @@ def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spar
     # a meaningful description of anything -- there's no bend left to
     # release -- so it must be cleared too, not just the harder intents.
     note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 1}
-    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    pruned = scoring._prune_techniques(note, diff_percent=0.30)
     assert pruned["bn"] == 0
     assert pruned["bt"] == 0, (
         "a release flag on a bn=0 note is nonsensical and must not survive, "
@@ -2207,7 +2222,7 @@ def _client_for(tmp_path):
     routes.setup(app, {
         "log": logging.getLogger("dd-test"),
         "get_dlc_dir": lambda: tmp_path,
-        "load_sibling": lambda _name: None,  # no-op until scoring.py exists
+        "load_sibling": _load_sibling,
     })
     return TestClient(app)
 
@@ -2336,14 +2351,14 @@ def test_generate_one_scores_the_manifest_tuning_but_persists_the_embedded_one(t
     manifest_path.write_text(yaml.safe_dump(manifest))
 
     seen_tuning = []
-    real_generate = routes.generate_phrases_for_arrangement
+    real_generate = scoring.generate_phrases_for_arrangement
 
     def _spy_generate(arr_arg, **kwargs):
         seen_tuning.append(arr_arg.get("tuning"))
         return real_generate(arr_arg, **kwargs)
 
-    with patch.object(routes, "generate_phrases_for_arrangement", side_effect=_spy_generate):
-        result = routes._generate_one(pack_dir, 0, n_levels=4, force=False, log=_TEST_LOG)
+    with patch.object(scoring, "generate_phrases_for_arrangement", side_effect=_spy_generate):
+        result = routes._generate_one(pack_dir, 0, n_levels=4, force=False, log=_TEST_LOG, scoring=scoring)
 
     assert result["ok"] is True  # nosec B101 - pytest assertion
     assert result.get("phrases", 0) > 0, (  # nosec B101 - pytest assertion
@@ -2366,7 +2381,7 @@ def test_generate_one_resolves_is_bass_from_the_manifest_type_override():
     -- reading only the embedded arr (the previous version of this fix)
     missed exactly this case."""
     seen_is_bass = []
-    real_generate = routes.generate_phrases_for_arrangement
+    real_generate = scoring.generate_phrases_for_arrangement
 
     def _spy_generate(arr_arg, *, is_bass=None, **kwargs):
         seen_is_bass.append(is_bass)
@@ -2384,9 +2399,9 @@ def test_generate_one_resolves_is_bass_from_the_manifest_type_override():
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
          patch.object(routes, "_load_manifest_and_arrangement",
                       return_value=("arrangements/lead.json", fake_arr, fake_entry, None)), \
-         patch.object(routes, "generate_phrases_for_arrangement", side_effect=_spy_generate), \
+         patch.object(scoring, "generate_phrases_for_arrangement", side_effect=_spy_generate), \
          patch.object(routes, "_write_member_bytes"):
-        routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG)
+        routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG, scoring=scoring)
 
     assert seen_is_bass == [True]  # nosec B101 - pytest assertion
 
@@ -2409,8 +2424,8 @@ def test_generate_one_ignores_a_malformed_manifest_tuning_instead_of_crashing(ma
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
          patch.object(routes, "_load_manifest_and_arrangement",
                       return_value=("arrangements/lead.json", fake_arr, fake_entry, None)), \
-         patch.object(routes, "generate_phrases_for_arrangement", return_value=None):
-        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG)
+         patch.object(scoring, "generate_phrases_for_arrangement", return_value=None):
+        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG, scoring=scoring)
 
     assert result["ok"] is True  # nosec B101 - pytest assertion
 
@@ -2432,8 +2447,8 @@ def test_generate_one_ignores_a_non_string_manifest_type_override():
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
          patch.object(routes, "_load_manifest_and_arrangement",
                       return_value=("arrangements/lead.json", fake_arr, fake_entry, None)), \
-         patch.object(routes, "generate_phrases_for_arrangement", return_value=None):
-        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG)
+         patch.object(scoring, "generate_phrases_for_arrangement", return_value=None):
+        result = routes._generate_one(Path("unused"), 0, n_levels=4, force=False, log=_TEST_LOG, scoring=scoring)
 
     assert result["ok"] is True  # nosec B101 - pytest assertion
 
@@ -2518,7 +2533,7 @@ def test_is_bass_arrangement_coerces_non_string_type_instead_of_raising(bad_type
     lib/sloppak.py's load_song() str()'s a truthy manifest override
     before comparing it, and this helper must match that instead of
     crashing."""
-    assert routes._is_bass_arrangement(bad_type, "Lead") in (True, False)  # nosec B101
+    assert scoring._is_bass_arrangement(bad_type, "Lead") in (True, False)  # nosec B101
 
 
 def test_chord_preview_ignores_a_non_string_manifest_type_override(tmp_path):
@@ -2681,7 +2696,7 @@ def test_generate_song_uses_canonical_song_timeline_over_arrangement_sections(tm
     ]
     pack_dir = _write_pack(tmp_path, "song.feedpak", arrangements, song_timeline_sections=[0, 5])
 
-    summary = routes._generate_song(pack_dir, n_levels=4, force=True, log=_TEST_LOG)
+    summary = routes._generate_song(pack_dir, n_levels=4, force=True, log=_TEST_LOG, scoring=scoring)
     assert summary["generated"] == 2
 
     lead_bounds = _phrase_boundaries(pack_dir, "arrangements/lead.json")
@@ -2702,7 +2717,7 @@ def test_generate_library_route_matches_generate_song_phrase_boundaries(tmp_path
         ("arrangements/bass.json", _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0}, {"time": 6}])),
     ]
     single_song = _write_pack(tmp_path, "single.feedpak", arrangements, song_timeline_sections=[0, 5])
-    single_summary = routes._generate_song(single_song, n_levels=4, force=True, log=_TEST_LOG)
+    single_summary = routes._generate_song(single_song, n_levels=4, force=True, log=_TEST_LOG, scoring=scoring)
     assert single_summary["generated"] == 2
 
     dlc_root = tmp_path / "dlc"
@@ -2791,7 +2806,7 @@ def test_generate_song_records_unexpected_error_and_generates_remaining_arrangem
     pack_dir = _write_pack(tmp_path, "song.feedpak", arrangements, song_timeline_sections=[0, 5])
     (pack_dir / "arrangements/bad.json").write_text("{not valid json")
 
-    summary = routes._generate_song(pack_dir, n_levels=4, force=True, log=_TEST_LOG)
+    summary = routes._generate_song(pack_dir, n_levels=4, force=True, log=_TEST_LOG, scoring=scoring)
 
     assert summary["generated"] == 1
     assert summary["failed"] == 1
@@ -2812,14 +2827,14 @@ def test_prune_note_for_level_clears_ln_when_slide_is_gated_out():
     # must go with it (otherwise the highway would suppress the next note's
     # gem for a slide that no longer exists at this tier).
     note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "sl": 9, "ln": True}
-    pruned = routes._prune_note_for_level(note, diff_percent=0.5)
+    pruned = scoring._prune_note_for_level(note, diff_percent=0.5)
     assert pruned["sl"] == -1
     assert "ln" not in pruned
 
 
 def test_prune_note_for_level_keeps_ln_when_slide_survives():
     note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "sl": 9, "ln": True}
-    pruned = routes._prune_note_for_level(note, diff_percent=0.9)  # above the 0.85 gate
+    pruned = scoring._prune_note_for_level(note, diff_percent=0.9)  # above the 0.85 gate
     assert pruned["sl"] == 9
     assert pruned["ln"] is True
 
@@ -2829,13 +2844,13 @@ def test_prune_note_for_level_leaves_letring_only_ln_to_the_target_check():
     # _prune_note_for_level must not touch it (target survival is
     # _clear_orphaned_link_next's job).
     note = {"t": 0.0, "s": 2, "f": 5, "sus": 1.0, "ln": True}
-    pruned = routes._prune_note_for_level(note, diff_percent=0.1)
+    pruned = scoring._prune_note_for_level(note, diff_percent=0.1)
     assert pruned["ln"] is True
 
 
 def test_clear_orphaned_link_next_drops_ln_with_no_target_on_same_string():
     notes = [{"t": 0.0, "s": 2, "f": 5, "ln": True}]
-    routes._clear_orphaned_link_next(notes)
+    scoring._clear_orphaned_link_next(notes)
     assert "ln" not in notes[0]
 
 
@@ -2844,7 +2859,7 @@ def test_clear_orphaned_link_next_keeps_ln_when_target_follows_on_same_string():
         {"t": 0.0, "s": 2, "f": 5, "ln": True},
         {"t": 0.5, "s": 2, "f": 7},
     ]
-    routes._clear_orphaned_link_next(notes)
+    scoring._clear_orphaned_link_next(notes)
     assert notes[0]["ln"] is True
 
 
@@ -2853,7 +2868,7 @@ def test_clear_orphaned_link_next_ignores_a_later_note_on_a_different_string():
         {"t": 0.0, "s": 2, "f": 5, "ln": True},
         {"t": 0.5, "s": 3, "f": 7},  # different string -- not a valid target
     ]
-    routes._clear_orphaned_link_next(notes)
+    scoring._clear_orphaned_link_next(notes)
     assert "ln" not in notes[0]
 
 
@@ -2870,7 +2885,7 @@ def test_notes_for_level_drops_ln_when_arpeggio_truncation_removes_the_target():
             {"t": 0.2, "s": 2, "f": 12, "sus": 0},
         ],
     }]
-    notes, _chords = routes._notes_for_level(groups, level=0, max_level=3)
+    notes, _chords = scoring._notes_for_level(groups, level=0, max_level=3)
     assert len(notes) == 1
     assert "ln" not in notes[0], "target was truncated away -- ln must not survive"
 
@@ -2887,14 +2902,14 @@ def test_notes_for_level_keeps_ln_when_arpeggio_target_survives():
     }]
     # level=2 of max_level=4 keeps 2 of the 3 notes -- the linked target
     # (t=0.1) survives alongside the anchor note.
-    notes, _chords = routes._notes_for_level(groups, level=2, max_level=4)
+    notes, _chords = scoring._notes_for_level(groups, level=2, max_level=4)
     assert [n["t"] for n in notes] == [0.0, 0.1]
     assert notes[0]["ln"] is True
 
 
 def test_notes_for_anchors_includes_chord_constituents_at_chord_onset():
     chord = {"t": 1.0, "notes": [{"s": 5, "f": 3}, {"s": 4, "f": 5}]}
-    combined = routes._notes_for_anchors([{"t": 0.5, "f": 2}], [chord])
+    combined = scoring._notes_for_anchors([{"t": 0.5, "f": 2}], [chord])
     assert {"t": 0.5, "f": 2} in combined
     assert {"t": 1.0, "f": 3} in combined
     assert {"t": 1.0, "f": 5} in combined
@@ -2910,7 +2925,7 @@ def test_chord_only_top_tier_gets_anchors():
         for t in (0.0, 0.5, 1.0, 1.5)
     ]
     arr = _arrangement([], chords=chords)
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     top = phrases[0]["levels"][-1]
     assert top["notes"] == []
@@ -2921,9 +2936,9 @@ def test_chord_only_top_tier_gets_anchors():
 def test_generated_anchors_are_time_monotonic_with_chord_constituents():
     chord = {"t": 4.0, "notes": [{"s": 5, "f": 8}, {"s": 4, "f": 10}]}
     notes = _simple_notes(0, 4, step=0.5, fret=3)
-    combined = routes._notes_for_anchors(notes, [chord])
+    combined = scoring._notes_for_anchors(notes, [chord])
     beat_times = [i * 0.5 for i in range(12)]
-    anchors = routes._generate_anchors(combined, beat_times)
+    anchors = scoring._generate_anchors(combined, beat_times)
     assert anchors
     times = [a["time"] for a in anchors]
     assert times == sorted(times), "anchors must be strictly time-ordered"
@@ -2935,28 +2950,28 @@ def test_generated_anchors_are_time_monotonic_with_chord_constituents():
 # ---------------------------------------------------------------------------
 
 def test_valid_section_times_drops_non_finite_and_non_numeric():
-    assert routes._valid_section_times(
+    assert scoring._valid_section_times(
         [0, float("nan"), float("inf"), float("-inf"), "not-a-number", None, 5]
     ) == [0.0, 5.0]
 
 
 def test_valid_section_times_clamps_negatives_to_zero():
-    assert routes._valid_section_times([-5, 2, -1]) == [0.0, 2.0]
+    assert scoring._valid_section_times([-5, 2, -1]) == [0.0, 2.0]
 
 
 def test_valid_section_times_dedupes_and_sorts():
-    assert routes._valid_section_times([3, 0, 3, 0, 6]) == [0.0, 3.0, 6.0]
+    assert scoring._valid_section_times([3, 0, 3, 0, 6]) == [0.0, 3.0, 6.0]
 
 
 def test_valid_section_times_preserves_a_real_pickup_offset():
     # A pickup (anacrusis) section legitimately starts after t=0 -- only
     # genuinely negative/non-finite input gets clamped/dropped.
-    assert routes._valid_section_times([0.3, 4.0, 8.0]) == [0.3, 4.0, 8.0]
+    assert scoring._valid_section_times([0.3, 4.0, 8.0]) == [0.3, 4.0, 8.0]
 
 
 def test_generate_phrases_survives_malformed_canonical_section_times():
     arr = _arrangement(_simple_notes(0, 10, step=0.5))
-    phrases = routes.generate_phrases_for_arrangement(
+    phrases = scoring.generate_phrases_for_arrangement(
         arr, n_levels=4, section_times=[0, float("nan"), 0, -3, 5, float("inf")]
     )
     assert phrases
@@ -2974,7 +2989,7 @@ def test_generate_phrases_own_sections_reject_degenerate_duplicate_boundary():
         _simple_notes(0, 10, step=0.5),
         sections=[{"time": 0}, {"time": 3}, {"time": 3}, {"time": 6}],
     )
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     for p in phrases:
         assert p["end_time"] > p["start_time"]
@@ -2982,7 +2997,7 @@ def test_generate_phrases_own_sections_reject_degenerate_duplicate_boundary():
 
 def test_generate_phrases_with_a_pickup_first_section():
     arr = _arrangement(_simple_notes(0, 10, step=0.5), sections=[{"time": 0.3}, {"time": 5}])
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     assert phrases[0]["start_time"] == 0.3
     assert phrases[0]["end_time"] == 5.0
@@ -2994,7 +3009,7 @@ def test_anchors_never_precede_their_own_phrase():
     # clamped to the phrase start, not emitted at the earlier beat time.
     notes = [{"t": 2.05, "s": 2, "f": 5, "sus": 0}]
     beat_times = [1.98, 2.48, 2.98]
-    anchors = routes._generate_anchors(notes, beat_times, phrase_start=2.0, phrase_end=2.5)
+    anchors = scoring._generate_anchors(notes, beat_times, phrase_start=2.0, phrase_end=2.5)
     assert anchors
     assert all(a["time"] >= 2.0 for a in anchors)
 
@@ -3002,7 +3017,7 @@ def test_anchors_never_precede_their_own_phrase():
 def test_anchors_excluded_when_beat_window_is_entirely_outside_the_phrase():
     notes = [{"t": 2.05, "s": 2, "f": 5, "sus": 0}]
     beat_times = [1.98, 2.48]
-    anchors = routes._generate_anchors(notes, beat_times, phrase_start=5.0, phrase_end=6.0)
+    anchors = scoring._generate_anchors(notes, beat_times, phrase_start=5.0, phrase_end=6.0)
     assert anchors == []
 
 
@@ -3011,7 +3026,7 @@ def test_generated_anchors_stay_within_their_phrase_across_the_full_pipeline():
         _technical_notes(0, 12, step=0.1),
         sections=[{"time": 0}, {"time": 4}, {"time": 8}],
     )
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     for p in phrases:
         for lvl in p["levels"]:
@@ -3022,7 +3037,7 @@ def test_generated_anchors_stay_within_their_phrase_across_the_full_pipeline():
 def test_duration_includes_chord_constituent_sustain():
     chord = {"t": 5.0, "notes": [{"s": 5, "f": 3, "sus": 3.0}, {"s": 4, "f": 5, "sus": 0.5}]}
     arr = _arrangement(_simple_notes(0, 5, step=0.5), chords=[chord])
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, section_times=[0, 5])
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4, section_times=[0, 5])
     assert phrases
     last = phrases[-1]
     # duration must reflect the chord's longest constituent sustain (3.0s),
@@ -3037,13 +3052,13 @@ def test_duration_includes_chord_constituent_sustain():
 def test_canonical_note_for_compare_drops_prune_sentinel_defaults():
     pruned = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "sl": -1, "slu": -1, "bn": 0, "bt": 0}
     raw = {"t": 0.0, "s": 2, "f": 5, "sus": 0}
-    assert routes._canonical_note_for_compare(pruned) == routes._canonical_note_for_compare(raw)
+    assert scoring._canonical_note_for_compare(pruned) == scoring._canonical_note_for_compare(raw)
 
 
 def test_canonical_note_for_compare_keeps_a_real_slide_destination():
     with_slide = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "sl": 9}
     without = {"t": 0.0, "s": 2, "f": 5, "sus": 0}
-    assert routes._canonical_note_for_compare(with_slide) != routes._canonical_note_for_compare(without)
+    assert scoring._canonical_note_for_compare(with_slide) != scoring._canonical_note_for_compare(without)
 
 
 def test_collapse_identical_levels_merges_duplicate_adjacent_tiers():
@@ -3053,7 +3068,7 @@ def test_collapse_identical_levels_merges_duplicate_adjacent_tiers():
         {"difficulty": 1, "notes": [{"t": 0, "s": 2, "f": 3}], "chords": [], "anchors": [], "handshapes": []},
         {"difficulty": 2, "notes": [{"t": 0, "s": 2, "f": 5}], "chords": [], "anchors": [], "handshapes": []},
     ]
-    collapsed = routes._collapse_identical_levels(levels)
+    collapsed = scoring._collapse_identical_levels(levels)
     assert len(collapsed) == 2
     # Tier numbers are kept, not renumbered: the second level's content
     # starts at tier 2, and a reader needs that to map the slider correctly.
@@ -3068,7 +3083,7 @@ def test_collapse_identical_levels_keeps_distinct_tiers_untouched():
         {"difficulty": 0, "notes": [{"t": 0}], "chords": [], "anchors": [], "handshapes": []},
         {"difficulty": 1, "notes": [{"t": 0}, {"t": 1}], "chords": [], "anchors": [], "handshapes": []},
     ]
-    collapsed = routes._collapse_identical_levels(levels)
+    collapsed = scoring._collapse_identical_levels(levels)
     assert len(collapsed) == 2
 
 
@@ -3079,12 +3094,12 @@ def test_repetitive_fretted_phrase_collapses_duplicate_tiers():
     # tiers may describe the same notes.
     notes = [{"t": round(i * 0.25, 3), "s": 2, "f": 3, "sus": 0} for i in range(60)]
     arr = _arrangement(notes, n_beats=60)
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=6)
     assert phrases
     levels = phrases[0]["levels"]
     for a, b in pairwise(levels):
-        a_notes = [routes._canonical_note_for_compare(n) for n in a["notes"]]
-        b_notes = [routes._canonical_note_for_compare(n) for n in b["notes"]]
+        a_notes = [scoring._canonical_note_for_compare(n) for n in a["notes"]]
+        b_notes = [scoring._canonical_note_for_compare(n) for n in b["notes"]]
         assert a_notes != b_notes or a["chords"] != b["chords"]
     _assert_on_tier_scale(phrases[0], n_levels=6)
 
@@ -3099,7 +3114,7 @@ def test_keys_fixed_depth_collapses_duplicate_tiers():
         "type": "keys", "name": "keys", "notes": notes, "chords": [],
         "beats": [{"time": i * 0.5} for i in range(40)], "sections": [], "tuning": [],
     }
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases
     levels = phrases[0]["levels"]
     for a, b in pairwise(levels):
@@ -3115,14 +3130,14 @@ def test_shallow_phrase_reports_actual_depth_not_the_requested_cap():
     # little content to fill out a deep ladder.
     notes = _simple_notes(0, 4, step=0.5, fret=3)  # 8 events, right at the floor
     arr = _arrangement(notes)
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=8)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=8)
     assert phrases
     assert len(phrases[0]["levels"]) < 8  # nosec B101 - pytest assertion
 
 
 def test_empty_section_phrase_still_reports_zero_depth_after_collapse():
     arr = _arrangement(_simple_notes(0, 2, step=0.2, fret=3))
-    phrases = routes.generate_phrases_for_arrangement(
+    phrases = scoring.generate_phrases_for_arrangement(
         arr, n_levels=4, section_times=[0, 2, 6]
     ) or []
     empty_phrase = phrases[2]
@@ -3147,11 +3162,11 @@ def test_generate_one_reports_requested_cap_separately_from_actual_depth():
     with patch.object(routes, "_lock_for_pack", return_value=_Lock()), \
          patch.object(routes, "_load_manifest_and_arrangement",
                       return_value=("arrangements/lead.json", fake_arr, {}, None)), \
-         patch.object(routes, "_instrument_kind", return_value="fretted"), \
-         patch.object(routes, "generate_phrases_for_arrangement", return_value=fake_phrases), \
+         patch.object(scoring, "_instrument_kind", return_value="fretted"), \
+         patch.object(scoring, "generate_phrases_for_arrangement", return_value=fake_phrases), \
          patch.object(routes, "_write_member_bytes"):
         result = routes._generate_one(
-            Path("unused"), 0, n_levels=6, force=False, log=_TEST_LOG
+            Path("unused"), 0, n_levels=6, force=False, log=_TEST_LOG, scoring=scoring
         )
 
     assert result["requested_levels"] == 6
@@ -3165,11 +3180,11 @@ def test_generate_one_reports_requested_cap_separately_from_actual_depth():
 # ---------------------------------------------------------------------------
 
 def test_sequential_density_scores_compressed_pattern_higher_than_stretched():
-    tempo = routes._TempoParams(beat_interval=0.5)
+    tempo = scoring._TempoParams(beat_interval=0.5)
     compressed_times = [round(i * 0.1, 3) for i in range(11)]  # 11 onsets in ~1 second
     stretched_times = [round(i * 2.0, 3) for i in range(11)]   # 11 onsets over ~20 seconds
-    compressed_density = routes._sequential_density(compressed_times, 5, tempo)
-    stretched_density = routes._sequential_density(stretched_times, 5, tempo)
+    compressed_density = scoring._sequential_density(compressed_times, 5, tempo)
+    stretched_density = scoring._sequential_density(stretched_times, 5, tempo)
     assert compressed_density > stretched_density
 
 
@@ -3181,12 +3196,12 @@ def test_sequential_density_normalizes_equivalent_patterns_across_bpm():
     # would pass this assertion even if tempo normalization were broken
     # (e.g. a fixed-size window ignoring beat_interval entirely), since
     # both sides would coincidentally hit the same ceiling regardless.
-    slow_tempo = routes._TempoParams(beat_interval=1.0)  # 60 BPM
-    fast_tempo = routes._TempoParams(beat_interval=0.5)  # 120 BPM
+    slow_tempo = scoring._TempoParams(beat_interval=1.0)  # 60 BPM
+    fast_tempo = scoring._TempoParams(beat_interval=0.5)  # 120 BPM
     slow_times = [round(i * 1.0, 3) for i in range(9)]   # one onset per beat at 60 BPM
     fast_times = [round(i * 0.5, 3) for i in range(9)]   # one onset per beat at 120 BPM
-    slow_density = routes._sequential_density(slow_times, 4, slow_tempo)
-    fast_density = routes._sequential_density(fast_times, 4, fast_tempo)
+    slow_density = scoring._sequential_density(slow_times, 4, slow_tempo)
+    fast_density = scoring._sequential_density(fast_times, 4, fast_tempo)
     assert 0 < slow_density < 1, "test fixture must not saturate, or it can't detect broken normalization"
     assert slow_density == fast_density
 
@@ -3197,19 +3212,19 @@ def test_sequential_density_window_scales_with_tempo_not_a_fixed_index_count():
     # (_DENSITY_WINDOW_BEATS), not a fixed number of neighboring groups
     # (the pre-#71 approach), so a handful of onsets at a slow tempo can
     # still saturate density the same way many onsets do at a fast tempo.
-    slow_tempo = routes._TempoParams(beat_interval=2.0)  # 30 BPM -- a wide window in seconds
+    slow_tempo = scoring._TempoParams(beat_interval=2.0)  # 30 BPM -- a wide window in seconds
     times = [0.0, 2.0, 4.0]  # one onset per beat, only 3 total onsets
     # The middle onset's window (±2 beats = ±4s) covers all three onsets.
-    density = routes._sequential_density(times, 1, slow_tempo)
-    assert density == min(1.0, 3 / routes._DENSITY_SATURATION_ONSETS)
+    density = scoring._sequential_density(times, 1, slow_tempo)
+    assert density == min(1.0, 3 / scoring._DENSITY_SATURATION_ONSETS)
 
 
 def test_compressed_fretted_notes_score_higher_density_than_stretched():
-    tempo = routes._TempoParams(beat_interval=0.5)
+    tempo = scoring._TempoParams(beat_interval=0.5)
     compressed = [{"time": round(i * 0.1, 3), "notes": [{"s": 2, "f": 3, "sus": 0}]} for i in range(11)]
     stretched = [{"time": round(i * 2.0, 3), "notes": [{"s": 2, "f": 3, "sus": 0}]} for i in range(11)]
-    routes._score_groups(compressed, n_strings=6, tempo=tempo)
-    routes._score_groups(stretched, n_strings=6, tempo=tempo)
+    scoring._score_groups(compressed, n_strings=6, tempo=tempo)
+    scoring._score_groups(stretched, n_strings=6, tempo=tempo)
     # A middle group (unaffected by start/end edge effects) scores
     # meaningfully higher when packed into ~1 second than spread across
     # ~20 seconds -- previously both scored identically (issue #71).
@@ -3217,11 +3232,11 @@ def test_compressed_fretted_notes_score_higher_density_than_stretched():
 
 
 def test_compressed_keys_notes_score_higher_density_than_stretched():
-    tempo = routes._TempoParams(beat_interval=0.5)
+    tempo = scoring._TempoParams(beat_interval=0.5)
     compressed = [{"time": round(i * 0.1, 3), "notes": [{"s": 2, "f": 0, "sus": 0}]} for i in range(11)]
     stretched = [{"time": round(i * 2.0, 3), "notes": [{"s": 2, "f": 0, "sus": 0}]} for i in range(11)]
-    routes._score_groups_keys(compressed, tempo=tempo)
-    routes._score_groups_keys(stretched, tempo=tempo)
+    scoring._score_groups_keys(compressed, tempo=tempo)
+    scoring._score_groups_keys(stretched, tempo=tempo)
     assert compressed[5]["cost"] > stretched[5]["cost"]
 
 
@@ -3235,7 +3250,7 @@ def test_wide_chord_does_not_inflate_density_beyond_a_single_note_group():
     # structurally invisible to it -- extracting the times from a
     # 6-note-wide chord group gives the exact same density as a run of
     # single-note groups at the same onsets.
-    tempo = routes._TempoParams(beat_interval=0.5)
+    tempo = scoring._TempoParams(beat_interval=0.5)
     single_note_times = [0.0, 0.5, 1.0]
     wide_chord_groups = [
         {"time": 0.0, "notes": [{"s": 2, "f": 3, "sus": 0}]},
@@ -3244,8 +3259,8 @@ def test_wide_chord_does_not_inflate_density_beyond_a_single_note_group():
     ]
     wide_chord_times = [g["time"] for g in wide_chord_groups]
     assert wide_chord_times == single_note_times
-    single_density = routes._sequential_density(single_note_times, 1, tempo)
-    chord_density = routes._sequential_density(wide_chord_times, 1, tempo)
+    single_density = scoring._sequential_density(single_note_times, 1, tempo)
+    chord_density = scoring._sequential_density(wide_chord_times, 1, tempo)
     assert single_density == chord_density
 
 
@@ -3259,7 +3274,7 @@ def test_global_link_next_survivors_marks_notes_with_a_later_same_string_note():
         {"time": 0.0, "notes": [{"t": 0.0, "s": 2, "ln": True}]},
         {"time": 5.0, "notes": [{"t": 5.0, "s": 2}]},  # same string, later -- a genuine target
     ]
-    survivors = routes._global_link_next_survivors(groups_all)
+    survivors = scoring._global_link_next_survivors(groups_all)
     assert id(groups_all[0]["notes"][0]) in survivors
     assert id(groups_all[1]["notes"][0]) not in survivors  # last note on its string has no target
 
@@ -3273,9 +3288,9 @@ def test_notes_for_level_keeps_top_tier_ln_when_target_is_in_the_next_phrase():
         {"time": 0.0, "type": "note", "notes": [{"t": 0.0, "s": 2, "f": 5, "ln": True}], "level": 0},
         {"time": 5.0, "type": "note", "notes": [{"t": 5.0, "s": 2, "f": 7}], "level": 0},
     ]
-    keep_ids = routes._global_link_next_survivors(groups_all)
+    keep_ids = scoring._global_link_next_survivors(groups_all)
     phrase_a_groups = [groups_all[0]]  # phrase A's window excludes phrase B's group
-    notes, _chords = routes._notes_for_level(
+    notes, _chords = scoring._notes_for_level(
         phrase_a_groups, level=0, max_level=0, link_next_keep_ids=keep_ids,
     )
     assert notes[0]["ln"] is True
@@ -3285,8 +3300,8 @@ def test_notes_for_level_still_drops_ln_with_no_target_anywhere_even_with_keep_i
     groups_all = [
         {"time": 0.0, "type": "note", "notes": [{"t": 0.0, "s": 2, "f": 5, "ln": True}], "level": 0},
     ]
-    keep_ids = routes._global_link_next_survivors(groups_all)
-    notes, _chords = routes._notes_for_level(
+    keep_ids = scoring._global_link_next_survivors(groups_all)
+    notes, _chords = scoring._notes_for_level(
         groups_all, level=0, max_level=0, link_next_keep_ids=keep_ids,
     )
     assert "ln" not in notes[0]
@@ -3304,11 +3319,11 @@ def test_notes_for_level_keep_ids_never_matches_a_pruned_lower_tier_copy():
             {"t": 0.1, "s": 2, "f": 9, "sus": 0},
         ],
     }]
-    keep_ids = routes._global_link_next_survivors(groups_all)
+    keep_ids = scoring._global_link_next_survivors(groups_all)
     # level=0 of max_level=3 truncates the arpeggio down to just the anchor
     # note, dropping its target -- a lower-tier copy, so keep_ids must not
     # rescue it.
-    notes, _chords = routes._notes_for_level(
+    notes, _chords = scoring._notes_for_level(
         groups_all, level=0, max_level=3, link_next_keep_ids=keep_ids,
     )
     assert len(notes) == 1
@@ -3324,7 +3339,7 @@ def test_generate_phrases_preserves_ln_across_a_phrase_boundary():
         if n["t"] == 4.5:
             n["ln"] = True
     arr = _arrangement(notes, sections=[{"time": 0}, {"time": 5}])
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=2)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=2)
     assert phrases
     first_phrase = phrases[0]
     top_level = first_phrase["levels"][-1]
@@ -3382,7 +3397,7 @@ def test_classify_cluster_with_no_evidence_is_a_run_not_an_arpeggio():
         {"t": 0.0, "s": 0, "f": 3, "sus": 0},
         {"t": 0.02, "s": 1, "f": 5, "sus": 0},
     ]
-    assert routes._classify_cluster(cluster) == "run"
+    assert scoring._classify_cluster(cluster) == "run"
 
 
 def test_classify_cluster_with_overlapping_sustain_is_an_arpeggio():
@@ -3392,7 +3407,7 @@ def test_classify_cluster_with_overlapping_sustain_is_an_arpeggio():
         {"t": 0.0, "s": 0, "f": 3, "sus": 0.3},
         {"t": 0.05, "s": 1, "f": 5, "sus": 0},
     ]
-    assert routes._classify_cluster(cluster) == "arpeggio"
+    assert scoring._classify_cluster(cluster) == "arpeggio"
 
 
 def test_classify_cluster_covered_by_authored_hand_shape_is_an_arpeggio():
@@ -3403,7 +3418,7 @@ def test_classify_cluster_covered_by_authored_hand_shape_is_an_arpeggio():
         {"t": 1.05, "s": 4, "f": 0, "sus": 0},
     ]
     hand_shapes = [{"chord_id": 0, "start_time": 0.9, "end_time": 1.2, "arp": True}]
-    assert routes._classify_cluster(cluster, hand_shapes=hand_shapes) == "arpeggio"
+    assert scoring._classify_cluster(cluster, hand_shapes=hand_shapes) == "arpeggio"
 
 
 def test_classify_cluster_outside_hand_shape_window_is_unaffected():
@@ -3412,7 +3427,7 @@ def test_classify_cluster_outside_hand_shape_window_is_unaffected():
         {"t": 2.05, "s": 4, "f": 0, "sus": 0},
     ]
     hand_shapes = [{"chord_id": 0, "start_time": 0.9, "end_time": 1.2, "arp": True}]
-    assert routes._classify_cluster(cluster, hand_shapes=hand_shapes) == "run"
+    assert scoring._classify_cluster(cluster, hand_shapes=hand_shapes) == "run"
 
 
 def test_classify_cluster_matching_chord_template_shape_is_an_arpeggio():
@@ -3428,7 +3443,7 @@ def test_classify_cluster_matching_chord_template_shape_is_an_arpeggio():
         {"t": 0.06, "s": 4, "f": 1, "sus": 0},
     ]
     chord_templates = [{"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
-    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "arpeggio"
+    assert scoring._classify_cluster(cluster, chord_templates=chord_templates) == "arpeggio"
 
 
 def test_classify_cluster_partial_chord_template_mismatch_stays_a_run():
@@ -3439,7 +3454,7 @@ def test_classify_cluster_partial_chord_template_mismatch_stays_a_run():
         {"t": 0.03, "s": 2, "f": 9, "sus": 0},  # doesn't match the template's fret 2
     ]
     chord_templates = [{"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
-    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "run"
+    assert scoring._classify_cluster(cluster, chord_templates=chord_templates) == "run"
 
 
 def test_classify_cluster_rejects_a_coincidental_partial_chord_template_match():
@@ -3454,11 +3469,11 @@ def test_classify_cluster_rejects_a_coincidental_partial_chord_template_match():
         {"t": 0.02, "s": 2, "f": 2, "sus": 0},
     ]
     chord_templates = [{"name": "C", "frets": [-1, 3, 2, 0, 1, 0]}]
-    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "run"
+    assert scoring._classify_cluster(cluster, chord_templates=chord_templates) == "run"
 
 
 def test_classify_cluster_single_note_is_plain_note():
-    assert routes._classify_cluster([{"t": 0.0, "s": 0, "f": 3}]) == "note"
+    assert scoring._classify_cluster([{"t": 0.0, "s": 0, "f": 3}]) == "note"
 
 
 def test_classify_cluster_works_for_unusual_tunings_with_more_strings():
@@ -3472,7 +3487,7 @@ def test_classify_cluster_works_for_unusual_tunings_with_more_strings():
         {"t": 0.02, "s": 3, "f": 2, "sus": 0},
     ]
     chord_templates = [{"name": "fixture-2-string-shape", "frets": [-1, -1, -1, 2, -1, -1, 0]}]
-    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "arpeggio"
+    assert scoring._classify_cluster(cluster, chord_templates=chord_templates) == "arpeggio"
 
 
 def test_classify_cluster_rejects_a_small_fraction_of_a_larger_unusual_tuning_template():
@@ -3487,7 +3502,7 @@ def test_classify_cluster_rejects_a_small_fraction_of_a_larger_unusual_tuning_te
         "name": "fixture-5-string-shape",
         "frets": [-1, 1, 2, 2, 3, -1, 0],
     }]
-    assert routes._classify_cluster(cluster, chord_templates=chord_templates) == "run"
+    assert scoring._classify_cluster(cluster, chord_templates=chord_templates) == "run"
 
 
 def test_group_notes_threads_hand_shapes_and_chord_templates_into_classification():
@@ -3496,7 +3511,7 @@ def test_group_notes_threads_hand_shapes_and_chord_templates_into_classification
         {"t": 0.05, "s": 4, "f": 0, "sus": 0},
     ]
     hand_shapes = [{"chord_id": 0, "start_time": 0.0, "end_time": 0.3, "arp": True}]
-    groups = routes._group_notes(
+    groups = scoring._group_notes(
         notes, [], time_window_ms=150, hand_shapes=hand_shapes, chord_templates=[],
     )
     assert [g["type"] for g in groups] == ["arpeggio"]
@@ -3511,7 +3526,7 @@ def test_notes_for_level_preserves_a_melodic_run_instead_of_collapsing_to_one_no
     ns = [{"t": i * 0.02, "s": i % 6, "f": i + 1, "sus": 0} for i in range(6)]
     groups = [{"type": "run", "level": 0, "time": 0.0, "chord": None, "notes": ns}]
 
-    notes, chords = routes._notes_for_level(groups, level=0, max_level=3)
+    notes, chords = scoring._notes_for_level(groups, level=0, max_level=3)
 
     assert chords == []
     assert len(notes) > 1, "a melodic run must not collapse to a single presumed-anchor note"
@@ -3524,7 +3539,7 @@ def test_notes_for_level_run_thinning_preserves_contour_not_just_a_prefix():
     ns = [{"t": i * 0.02, "s": 0, "f": i, "sus": 0} for i in range(9)]
     groups = [{"type": "run", "level": 1, "time": 0.0, "chord": None, "notes": ns}]
 
-    notes, chords = routes._notes_for_level(groups, level=1, max_level=3)
+    notes, chords = scoring._notes_for_level(groups, level=1, max_level=3)
 
     frets = sorted(n["f"] for n in notes)
     assert frets[0] == 0, "the run's first note should survive thinning"
@@ -3535,14 +3550,14 @@ def test_notes_for_level_run_at_top_tier_keeps_every_note_untouched():
     ns = [{"t": i * 0.02, "s": i % 6, "f": i + 1, "sus": 0} for i in range(4)]
     groups = [{"type": "run", "level": 0, "time": 0.0, "chord": None, "notes": ns}]
 
-    notes, chords = routes._notes_for_level(groups, level=2, max_level=2)
+    notes, chords = scoring._notes_for_level(groups, level=2, max_level=2)
 
     assert len(notes) == len(ns)
 
 
 def test_evenly_sample_keeps_first_and_last_and_spreads_the_middle():
     ns = list(range(10))
-    kept = routes._evenly_sample(ns, 3)
+    kept = scoring._evenly_sample(ns, 3)
     assert kept[0] == 0
     assert kept[-1] == 9
     assert len(kept) == 3
@@ -3550,12 +3565,12 @@ def test_evenly_sample_keeps_first_and_last_and_spreads_the_middle():
 
 def test_evenly_sample_returns_everything_when_keep_n_covers_the_whole_list():
     ns = [1, 2, 3]
-    assert routes._evenly_sample(ns, 5) == ns
+    assert scoring._evenly_sample(ns, 5) == ns
 
 
 def test_evenly_sample_returns_first_item_when_keep_n_is_one():
     ns = [1, 2, 3, 4]
-    assert routes._evenly_sample(ns, 1) == [1]
+    assert scoring._evenly_sample(ns, 1) == [1]
 
 
 def test_group_anchor_note_picks_the_lowest_string_index_not_a_claimed_harmonic_root():
@@ -3569,7 +3584,7 @@ def test_group_anchor_note_picks_the_lowest_string_index_not_a_claimed_harmonic_
         {"s": 5, "f": 3},
         {"s": 1, "f": 7},  # lowest string index in this group
     ]}
-    anchor = routes._group_anchor_note(group, prefer_fretted=False)
+    anchor = scoring._group_anchor_note(group, prefer_fretted=False)
     assert (anchor["s"], anchor["f"]) == (1, 7)  # nosec B101 - pytest assertion
 
 
@@ -3582,7 +3597,7 @@ def test_notes_for_level_linked_arpeggio_via_hand_shape_still_reduces_to_one_not
         "type": "arpeggio", "level": 0, "time": 0.0, "chord": None,
         "notes": [{"t": 0.0, "s": 1, "f": 7}, {"t": 0.04, "s": 5, "f": 3}],
     }]
-    notes, chords = routes._notes_for_level(groups, level=0, max_level=2)
+    notes, chords = scoring._notes_for_level(groups, level=0, max_level=2)
     assert [(n["s"], n["f"]) for n in notes] == [(1, 7)]  # nosec B101 - pytest assertion
 
 
@@ -3608,7 +3623,7 @@ def _easy_then_hard(hard_notes):
 def test_easy_phrase_is_complete_at_a_lower_tier_than_a_hard_phrase():
     hard = [{"t": 16 + i * 0.125, "s": 3 + (i % 3), "f": 14 + (i % 5), "sus": 0, "ho": i % 2 == 1}
             for i in range(128)]
-    phrases = routes.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
     easy_phrase, hard_phrase = phrases
     for p in phrases:
         _assert_on_tier_scale(p, n_levels=4)
@@ -3627,7 +3642,7 @@ def test_uniformly_hard_phrase_gets_a_full_ladder():
     # spacing). Depth used to come from score SPREAD, so this got the
     # shortest ladder; the per-phrase floor now thins it evenly instead.
     hard = [{"t": 16 + i * 0.125, "s": 4, "f": 17, "sus": 0, "tp": True} for i in range(128)]
-    phrases = routes.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(_easy_then_hard(hard), n_levels=4)
     hard_phrase = phrases[1]
     assert [lvl["difficulty"] for lvl in hard_phrase["levels"]] == [0, 1, 2, 3]  # nosec B101 - pytest assertion
     bottom_times = [n["t"] for n in hard_phrase["levels"][0]["notes"]]
@@ -3638,7 +3653,7 @@ def test_uniformly_hard_phrase_gets_a_full_ladder():
 
 def test_all_multi_level_phrases_share_the_requested_tier_scale():
     arr = _arrangement(_technical_notes(0, 30, step=0.1), sections=[{"time": 0}, {"time": 10}, {"time": 20}])
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=5)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=5)
     assert phrases  # nosec B101 - pytest assertion
     for p in phrases:
         _assert_on_tier_scale(p, n_levels=5)
@@ -3655,7 +3670,7 @@ def test_tier_levels_are_nested():
         {"t": 16.0625 + i * 1.0, "notes": [{"s": 0, "f": 3}, {"s": 1, "f": 5}, {"s": 2, "f": 5}, {"s": 3, "f": 4}]}
         for i in range(12)
     ]
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
 
     def played(lvl):
         keys = {(n["t"], n["s"]) for n in lvl["notes"]}
@@ -3673,12 +3688,12 @@ def test_keys_phrases_use_the_tier_scale_too():
         "type": "keys", "name": "keys", "notes": notes, "chords": [],
         "beats": _tiered_beats(64), "sections": [], "tuning": [],
     }
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases  # nosec B101 - pytest assertion
     for p in phrases:
         _assert_on_tier_scale(p, n_levels=4)
         identities = [
-            {(n["t"], routes._note_midi_keys(n)) for n in lvl["notes"]}
+            {(n["t"], scoring._note_midi_keys(n)) for n in lvl["notes"]}
             for lvl in p["levels"]
         ]
         for lower, higher in pairwise(identities):
@@ -3699,8 +3714,8 @@ def test_keys_octave_dedup_keeps_easier_tier_midi_representatives():
 
     reduced = []
     for level in range(3):
-        level_notes, _ = routes._notes_for_level_keys(groups, level, max_level=3)
-        reduced.append({(n["t"], routes._note_midi_keys(n)) for n in level_notes})
+        level_notes, _ = scoring._notes_for_level_keys(groups, level, max_level=3)
+        reduced.append({(n["t"], scoring._note_midi_keys(n)) for n in level_notes})
 
     assert reduced[0] == {(1.0, 52), (1.0, 83)}  # nosec B101 - pytest assertion
     assert reduced[0] <= reduced[1] <= reduced[2]  # nosec B101 - pytest assertion
@@ -3715,10 +3730,10 @@ def test_keys_reduced_tier_collapses_a_simple_octave_double():
         "retention_score": 0.5, "level": 0,
     }]
 
-    reduced, _ = routes._notes_for_level_keys(groups, level=0, max_level=3)
+    reduced, _ = scoring._notes_for_level_keys(groups, level=0, max_level=3)
 
     assert len(reduced) == 1  # nosec B101 - pytest assertion
-    assert routes._note_midi_keys(reduced[0]) in {60, 72}  # nosec B101 - pytest assertion
+    assert scoring._note_midi_keys(reduced[0]) in {60, 72}  # nosec B101 - pytest assertion
 
 
 def test_keys_reduced_tier_preserves_ranked_pitch_order():
@@ -3730,13 +3745,13 @@ def test_keys_reduced_tier_preserves_ranked_pitch_order():
         "retention_score": 0.5, "level": 0,
     }]
 
-    reduced, _ = routes._notes_for_level_keys(groups, level=1, max_level=3)
+    reduced, _ = scoring._notes_for_level_keys(groups, level=1, max_level=3)
 
-    assert [routes._note_midi_keys(n) for n in reduced] == midis  # nosec B101
+    assert [scoring._note_midi_keys(n) for n in reduced] == midis  # nosec B101
 
 
 def test_spread_key_orders_positions_evenly():
-    assert [routes._spread_key(i) for i in range(4)] == [0.0, 0.5, 0.25, 0.75]  # nosec B101 - pytest assertion
+    assert [scoring._spread_key(i) for i in range(4)] == [0.0, 0.5, 0.25, 0.75]  # nosec B101 - pytest assertion
 
 
 # ---------------------------------------------------------------------------
@@ -3755,19 +3770,19 @@ def _chord_group(level=0):
 
 
 def test_bottom_tier_reduces_chords_to_the_root_at_the_default_four_tiers():
-    notes, chords = routes._notes_for_level(_chord_group(), level=0, max_level=3)
+    notes, chords = scoring._notes_for_level(_chord_group(), level=0, max_level=3)
     assert chords == []  # nosec B101 - pytest assertion
     assert [(n["s"], n["f"]) for n in notes] == [(0, 3)], "root = lowest string (a G chord's low G)"  # nosec B101 - pytest assertion
 
 
 def test_second_tier_keeps_a_partial_voicing_built_on_the_root():
-    notes, _ = routes._notes_for_level(_chord_group(), level=1, max_level=3)
+    notes, _ = scoring._notes_for_level(_chord_group(), level=1, max_level=3)
     assert len(notes) == 2  # nosec B101 - pytest assertion
     assert (0, 3) in [(n["s"], n["f"]) for n in notes]  # nosec B101 - pytest assertion
 
 
 def test_root_only_is_not_used_when_the_bottom_tier_covers_more_than_a_quarter():
-    notes, _ = routes._notes_for_level(_chord_group(), level=0, max_level=2)
+    notes, _ = scoring._notes_for_level(_chord_group(), level=0, max_level=2)
     assert len(notes) == 2  # nosec B101 - pytest assertion
 
 
@@ -3778,7 +3793,7 @@ def test_root_only_is_not_used_when_the_bottom_tier_covers_more_than_a_quarter()
 def test_stripped_pre_bend_is_fretted_at_the_bent_pitch():
     note = {"t": 0.0, "s": 2, "f": 7, "sus": 0.5, "bn": 2.0, "bt": 2,
             "bnv": [{"t": 0, "v": 2.0}, {"t": 0.5, "v": 2.0}]}
-    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    pruned = scoring._prune_techniques(note, diff_percent=0.30)
     assert (pruned["f"], pruned["bn"], pruned["bt"]) == (9, 0, 0)  # nosec B101 - pytest assertion
     assert "bnv" not in pruned  # nosec B101 - pytest assertion
 
@@ -3787,19 +3802,19 @@ def test_pre_bend_below_its_intent_gate_is_fretted_not_turned_into_a_bend_up():
     # A bend-up is struck at the unbent fret, which is a whole step flat of a
     # pre-bend's onset -- so the intent downgrade frets the peak instead.
     note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 1.0, "bt": 2}
-    pruned = routes._prune_techniques(note, diff_percent=0.60)
+    pruned = scoring._prune_techniques(note, diff_percent=0.60)
     assert (pruned["f"], pruned["bn"], pruned["bt"]) == (6, 0, 0)  # nosec B101 - pytest assertion
 
 
 def test_pre_bend_release_is_fretted_at_its_onset_pitch():
     note = {"t": 0.0, "s": 2, "f": 5, "sus": 0, "bn": 2.0, "bt": 3}
-    pruned = routes._prune_techniques(note, diff_percent=0.60)
+    pruned = scoring._prune_techniques(note, diff_percent=0.60)
     assert (pruned["f"], pruned["bn"], pruned["bt"]) == (7, 0, 0)  # nosec B101 - pytest assertion
 
 
 def test_bend_up_keeps_its_fret_when_stripped():
     note = {"t": 0.0, "s": 2, "f": 7, "sus": 0, "bn": 2.0}
-    pruned = routes._prune_techniques(note, diff_percent=0.30)
+    pruned = scoring._prune_techniques(note, diff_percent=0.30)
     assert (pruned["f"], pruned["bn"]) == (7, 0)  # nosec B101 - pytest assertion
 
 
@@ -3808,11 +3823,11 @@ def test_struck_at_peak_bend_without_a_fretted_equivalent_is_kept_as_authored():
     quarter_tone = {"t": 0.0, "s": 2, "f": 5, "sus": 0.4, "bn": 0.5, "bt": 3, "bnv": curve}
     past_last_fret = {"t": 0.0, "s": 2, "f": 23, "sus": 0, "bn": 2.0, "bt": 2}
     for note in (quarter_tone, past_last_fret):
-        pruned = routes._prune_techniques(note, diff_percent=0.30)
+        pruned = scoring._prune_techniques(note, diff_percent=0.30)
         assert (pruned["f"], pruned["bn"], pruned["bt"]) == (note["f"], note["bn"], note["bt"])  # nosec B101 - pytest assertion
     # "As authored" includes the curve: the bnv gate (0.80) must not strip it
     # from a bend that was deliberately kept.
-    assert routes._prune_techniques(quarter_tone, diff_percent=0.30)["bnv"] == curve  # nosec B101 - pytest assertion
+    assert scoring._prune_techniques(quarter_tone, diff_percent=0.30)["bnv"] == curve  # nosec B101 - pytest assertion
 
 
 def test_natural_harmonic_is_kept_where_stripping_would_change_its_pitch():
@@ -3820,10 +3835,10 @@ def test_natural_harmonic_is_kept_where_stripping_would_change_its_pitch():
     # would be a different note entirely.
     for fret in (5, 7, 4):
         note = {"t": 0.0, "s": 2, "f": fret, "sus": 0, "hm": True}
-        assert routes._prune_techniques(note, diff_percent=0.30).get("hm") is True  # nosec B101 - pytest assertion
+        assert scoring._prune_techniques(note, diff_percent=0.30).get("hm") is True  # nosec B101 - pytest assertion
     for fret in (12, 19, 24):
         note = {"t": 0.0, "s": 2, "f": fret, "sus": 0, "hm": True}
-        assert "hm" not in routes._prune_techniques(note, diff_percent=0.30)  # nosec B101 - pytest assertion
+        assert "hm" not in scoring._prune_techniques(note, diff_percent=0.30)  # nosec B101 - pytest assertion
 
 
 def test_explicit_false_flags_do_not_keep_a_duplicate_tier_alive():
@@ -3832,12 +3847,12 @@ def test_explicit_false_flags_do_not_keep_a_duplicate_tier_alive():
     # tier and the untouched top tier compared as different.
     pruned = {"t": 0, "s": 0, "f": 0, "sus": 0.6, "sl": -1, "slu": -1, "bn": 0.0}
     source = dict(pruned, ho=False, po=False, pm=False, tp=False)
-    assert routes._canonical_note_for_compare(pruned) == routes._canonical_note_for_compare(source)  # nosec B101 - pytest assertion
+    assert scoring._canonical_note_for_compare(pruned) == scoring._canonical_note_for_compare(source)  # nosec B101 - pytest assertion
     levels = [
         {"difficulty": 0, "notes": [pruned], "chords": [], "anchors": [], "handshapes": []},
         {"difficulty": 1, "notes": [source], "chords": [], "anchors": [], "handshapes": []},
     ]
-    assert [lvl["difficulty"] for lvl in routes._collapse_identical_levels(levels)] == [0]  # nosec B101 - pytest assertion
+    assert [lvl["difficulty"] for lvl in scoring._collapse_identical_levels(levels)] == [0]  # nosec B101 - pytest assertion
 
 
 @pytest.mark.skip(
@@ -3923,8 +3938,7 @@ def test_missing_arrangement_type_detects_unsupported_by_name_issue_102():
         routes, "_lock_for_pack", return_value=_Lock()
     ), patch.object(routes, "sloppak") as mock_sloppak, patch.object(
         routes, "_load_manifest_and_arrangement", side_effect=_mock_load_manifest
-    ), patch.object(
-        routes, "generate_phrases_for_arrangement", return_value=[
+    ), patch.object(scoring, "generate_phrases_for_arrangement", return_value=[
             {"difficulty": 0, "notes": [], "chords": [], "anchors": [], "handshapes": []}
         ]
     ):
@@ -3934,7 +3948,7 @@ def test_missing_arrangement_type_detects_unsupported_by_name_issue_102():
         for i in range(7):
             result = routes._generate_one(
                 Path("test.feedpak"), i, n_levels=4, force=False,
-                log=logging.getLogger(__name__)
+                log=logging.getLogger(__name__), scoring=scoring
             )
             results[i] = result
 
@@ -3964,7 +3978,7 @@ def test_missing_arrangement_type_detects_unsupported_by_name_issue_102():
 
 def _pc_group(pc, sus=0.25, s=0):
     """A single-note group whose approximate pitch class (see
-    `routes._approx_pitch`) is exactly `pc`, given the default tuning=()
+    `scoring._approx_pitch`) is exactly `pc`, given the default tuning=()
     and n_strings=6 -- string 0's base offset is 0, so pitch == fret."""
     return {"time": 0.0, "type": "note", "notes": [{"s": s, "f": pc, "sus": sus}]}
 
@@ -3974,8 +3988,8 @@ def test_estimate_key_detects_c_major_from_a_matching_pitch_class_profile():
     C-major profile (via each pitch class's `sus` duration) must recover
     tonic=C (0), is_major=True, with a correlation near 1.0 -- the
     textbook case the whole algorithm is built to solve."""
-    groups = [_pc_group(pc, sus=routes._KS_MAJOR_PROFILE[pc]) for pc in range(12)]
-    tonic_pc, is_major, corr = routes._estimate_key(groups, tuning=(), n_strings=6, is_bass=False)
+    groups = [_pc_group(pc, sus=scoring._KS_MAJOR_PROFILE[pc]) for pc in range(12)]
+    tonic_pc, is_major, corr = scoring._estimate_key(groups, tuning=(), n_strings=6, is_bass=False)
     assert tonic_pc == 0  # nosec B101 - pytest assertion
     assert is_major is True  # nosec B101 - pytest assertion
     assert corr > 0.99  # nosec B101 - pytest assertion
@@ -3985,16 +3999,16 @@ def test_estimate_key_detects_a_minor_from_a_matching_pitch_class_profile():
     """Same as above but for the minor profile, rotated to tonic=A (9) --
     confirms both mode AND rotation are being searched, not just mode."""
     tonic = 9
-    rotated_minor = [routes._KS_MINOR_PROFILE[(pc - tonic) % 12] for pc in range(12)]
+    rotated_minor = [scoring._KS_MINOR_PROFILE[(pc - tonic) % 12] for pc in range(12)]
     groups = [_pc_group(pc, sus=rotated_minor[pc]) for pc in range(12)]
-    tonic_pc, is_major, corr = routes._estimate_key(groups, tuning=(), n_strings=6, is_bass=False)
+    tonic_pc, is_major, corr = scoring._estimate_key(groups, tuning=(), n_strings=6, is_bass=False)
     assert tonic_pc == tonic  # nosec B101 - pytest assertion
     assert is_major is False  # nosec B101 - pytest assertion
     assert corr > 0.99  # nosec B101 - pytest assertion
 
 
 def test_estimate_key_returns_none_for_an_empty_group_set():
-    assert routes._estimate_key([], tuning=(), n_strings=6, is_bass=False) is None  # nosec B101 - pytest assertion
+    assert scoring._estimate_key([], tuning=(), n_strings=6, is_bass=False) is None  # nosec B101 - pytest assertion
 
 
 def test_estimate_key_correlation_is_low_for_a_flat_chromatic_histogram():
@@ -4004,16 +4018,16 @@ def test_estimate_key_correlation_is_low_for_a_flat_chromatic_histogram():
     profile, so callers gate on `_KEY_FIT_MIN_CORRELATION` and disable the
     key-stability weighting rather than trusting a meaningless best-fit."""
     groups = [_pc_group(pc, sus=1.0) for pc in range(12)]
-    _tonic_pc, _is_major, corr = routes._estimate_key(groups, tuning=(), n_strings=6, is_bass=False)
-    assert corr < routes._KEY_FIT_MIN_CORRELATION  # nosec B101 - pytest assertion
+    _tonic_pc, _is_major, corr = scoring._estimate_key(groups, tuning=(), n_strings=6, is_bass=False)
+    assert corr < scoring._KEY_FIT_MIN_CORRELATION  # nosec B101 - pytest assertion
 
 
 def test_pitch_class_stability_rank_orders_tonic_above_triad_above_scale_above_chromatic():
     # Key of C major: tonic=0, triad={0,4,7}, scale adds {2,5,9,11}, chromatic={1,3,6,8,10}
-    tonic_rank = routes._pitch_class_stability_rank(0, tonic_pc=0, is_major=True)
-    triad_rank = routes._pitch_class_stability_rank(4, tonic_pc=0, is_major=True)
-    scale_rank = routes._pitch_class_stability_rank(2, tonic_pc=0, is_major=True)
-    chromatic_rank = routes._pitch_class_stability_rank(1, tonic_pc=0, is_major=True)
+    tonic_rank = scoring._pitch_class_stability_rank(0, tonic_pc=0, is_major=True)
+    triad_rank = scoring._pitch_class_stability_rank(4, tonic_pc=0, is_major=True)
+    scale_rank = scoring._pitch_class_stability_rank(2, tonic_pc=0, is_major=True)
+    chromatic_rank = scoring._pitch_class_stability_rank(1, tonic_pc=0, is_major=True)
     assert tonic_rank > triad_rank > scale_rank > chromatic_rank  # nosec B101 - pytest assertion
 
 
@@ -4021,8 +4035,8 @@ def test_pitch_class_stability_rank_gives_a_chord_tone_bonus_over_a_passing_tone
     """A scale tone that is ALSO part of the chord currently sounding must
     rank above the same scale tone when no chord context is given --
     #103/B7's "chord notes ranked above passing notes" acceptance criterion."""
-    passing = routes._pitch_class_stability_rank(2, tonic_pc=0, is_major=True, chord_pcs=None)
-    chord_tone = routes._pitch_class_stability_rank(2, tonic_pc=0, is_major=True, chord_pcs={0, 2, 7})
+    passing = scoring._pitch_class_stability_rank(2, tonic_pc=0, is_major=True, chord_pcs=None)
+    chord_tone = scoring._pitch_class_stability_rank(2, tonic_pc=0, is_major=True, chord_pcs={0, 2, 7})
     assert chord_tone > passing  # nosec B101 - pytest assertion
 
 
@@ -4037,36 +4051,36 @@ def test_key_stability_bonus_weight_is_below_beat_strength_weight():
     melody bonus does) -- see
     test_key_stability_bonus_does_not_collapse_a_tier_on_diatonic_material
     for the end-to-end structural guarantee (PR #125 review)."""
-    assert routes._KEY_STABILITY_RETENTION_BONUS < 0.12  # nosec B101 - pytest assertion
-    assert routes._KEY_STABILITY_RETENTION_BONUS < routes._MELODY_TURNING_POINT_RETENTION_BONUS  # nosec B101 - pytest assertion
+    assert scoring._KEY_STABILITY_RETENTION_BONUS < 0.12  # nosec B101 - pytest assertion
+    assert scoring._KEY_STABILITY_RETENTION_BONUS < scoring._MELODY_TURNING_POINT_RETENTION_BONUS  # nosec B101 - pytest assertion
 
 
 def test_group_key_stability_bonus_is_larger_for_a_tonic_note_than_a_chromatic_one():
     tonic_group = _pc_group(0)
     chromatic_group = _pc_group(1)
-    tonic_bonus = routes._group_key_stability_bonus(
+    tonic_bonus = scoring._group_key_stability_bonus(
         tonic_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
     )
-    chromatic_bonus = routes._group_key_stability_bonus(
+    chromatic_bonus = scoring._group_key_stability_bonus(
         chromatic_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
     )
     assert tonic_bonus > chromatic_bonus  # nosec B101 - pytest assertion
-    assert tonic_bonus <= routes._KEY_STABILITY_RETENTION_BONUS  # nosec B101 - pytest assertion
+    assert tonic_bonus <= scoring._KEY_STABILITY_RETENTION_BONUS  # nosec B101 - pytest assertion
     assert chromatic_bonus == 0.0  # nosec B101 - pytest assertion
 
 
 def test_parse_chord_root_pitch_class_handles_plain_and_slash_chords():
-    assert routes._parse_chord_root_pitch_class("Am7") == 9  # nosec B101 - pytest assertion
-    assert routes._parse_chord_root_pitch_class("G/B") == 7  # nosec B101 - pytest assertion
-    assert routes._parse_chord_root_pitch_class("C#maj7") == 1  # nosec B101 - pytest assertion
-    assert routes._parse_chord_root_pitch_class("Bbdim") == 10  # nosec B101 - pytest assertion
+    assert scoring._parse_chord_root_pitch_class("Am7") == 9  # nosec B101 - pytest assertion
+    assert scoring._parse_chord_root_pitch_class("G/B") == 7  # nosec B101 - pytest assertion
+    assert scoring._parse_chord_root_pitch_class("C#maj7") == 1  # nosec B101 - pytest assertion
+    assert scoring._parse_chord_root_pitch_class("Bbdim") == 10  # nosec B101 - pytest assertion
 
 
 def test_parse_chord_root_pitch_class_returns_none_when_unparseable():
-    assert routes._parse_chord_root_pitch_class(None) is None  # nosec B101 - pytest assertion
-    assert routes._parse_chord_root_pitch_class("") is None  # nosec B101 - pytest assertion
-    assert routes._parse_chord_root_pitch_class(42) is None  # nosec B101 - pytest assertion
-    assert routes._parse_chord_root_pitch_class("Weird Shape") is None  # nosec B101 - pytest assertion
+    assert scoring._parse_chord_root_pitch_class(None) is None  # nosec B101 - pytest assertion
+    assert scoring._parse_chord_root_pitch_class("") is None  # nosec B101 - pytest assertion
+    assert scoring._parse_chord_root_pitch_class(42) is None  # nosec B101 - pytest assertion
+    assert scoring._parse_chord_root_pitch_class("Weird Shape") is None  # nosec B101 - pytest assertion
 
 
 def test_find_note_by_pitch_class_prefers_the_lowest_matching_string():
@@ -4075,14 +4089,14 @@ def test_find_note_by_pitch_class_prefers_the_lowest_matching_string():
         {"s": 0, "f": 9},  # pc 9 (A)
         {"s": 1, "f": 4},  # pc 5+4=9 (A) -- same pc as string 0's note, higher string
     ]
-    found = routes._find_note_by_pitch_class(notes, root_pc=9, tuning=(), n_strings=6, is_bass=False)
+    found = scoring._find_note_by_pitch_class(notes, root_pc=9, tuning=(), n_strings=6, is_bass=False)
     assert found == {"s": 0, "f": 9}  # nosec B101 - pytest assertion
 
 
 def test_find_note_by_pitch_class_returns_none_when_no_note_matches_or_root_is_none():
     notes = [{"s": 0, "f": 1}, {"s": 1, "f": 2}]
-    assert routes._find_note_by_pitch_class(notes, root_pc=None, tuning=(), n_strings=6, is_bass=False) is None  # nosec B101 - pytest assertion
-    assert routes._find_note_by_pitch_class(notes, root_pc=11, tuning=(), n_strings=6, is_bass=False) is None  # nosec B101 - pytest assertion
+    assert scoring._find_note_by_pitch_class(notes, root_pc=None, tuning=(), n_strings=6, is_bass=False) is None  # nosec B101 - pytest assertion
+    assert scoring._find_note_by_pitch_class(notes, root_pc=11, tuning=(), n_strings=6, is_bass=False) is None  # nosec B101 - pytest assertion
 
 
 def test_cluster_matches_chord_shape_returns_the_matched_template_not_just_true():
@@ -4091,9 +4105,9 @@ def test_cluster_matches_chord_shape_returns_the_matched_template_not_just_true(
     back-compat with the old boolean contract) rather than a bare True."""
     cluster = [{"s": 0, "f": 0}, {"s": 1, "f": 2}]
     templates = [{"name": "Am", "frets": [0, 2, -1, -1, -1, -1]}]
-    matched = routes._cluster_matches_chord_shape(cluster, templates)
+    matched = scoring._cluster_matches_chord_shape(cluster, templates)
     assert matched == templates[0]  # nosec B101 - pytest assertion
-    assert routes._cluster_matches_chord_shape(cluster, []) is None  # nosec B101 - pytest assertion
+    assert scoring._cluster_matches_chord_shape(cluster, []) is None  # nosec B101 - pytest assertion
 
 
 def test_notes_for_level_chord_reduction_prefers_the_parsed_root_over_lowest_string():
@@ -4123,14 +4137,14 @@ def test_notes_for_level_chord_reduction_prefers_the_parsed_root_over_lowest_str
             "time": 0.0, "cost": 0.0, "value": 0.0, "retention_score": 0.0, "level": 0,
         }
 
-    notes_with_root, _chords = routes._notes_for_level(
+    notes_with_root, _chords = scoring._notes_for_level(
         [_chord_group(chord_id=0)], level=0, max_level=3, chord_templates=templates,
         tuning=(), n_strings=6, is_bass=False,
     )
     assert any(n.get("s") == 3 for n in notes_with_root)  # nosec B101 - pytest assertion
     assert not any(n.get("s") == 0 for n in notes_with_root)  # nosec B101 - pytest assertion
 
-    notes_without_templates, _chords2 = routes._notes_for_level(
+    notes_without_templates, _chords2 = scoring._notes_for_level(
         [_chord_group(chord_id=0)], level=0, max_level=3,
     )
     assert any(n.get("s") == 0 for n in notes_without_templates)  # nosec B101 - pytest assertion
@@ -4145,13 +4159,13 @@ def test_notes_for_level_arpeggio_reduction_prefers_the_parsed_root_over_lowest_
         "chord_template_name": "C",
         "time": 0.0, "cost": 0.0, "value": 0.0, "retention_score": 0.0, "level": 0,
     }
-    notes_with_root, _chords = routes._notes_for_level(
+    notes_with_root, _chords = scoring._notes_for_level(
         [group], level=0, max_level=3, tuning=(), n_strings=6, is_bass=False,
     )
     assert notes_with_root and notes_with_root[0].get("s") == 3  # nosec B101 - pytest assertion
 
     group_no_name = dict(group, chord_template_name=None)
-    notes_fallback, _chords2 = routes._notes_for_level(
+    notes_fallback, _chords2 = scoring._notes_for_level(
         [group_no_name], level=0, max_level=3, tuning=(), n_strings=6, is_bass=False,
     )
     assert notes_fallback and notes_fallback[0].get("s") == 0  # nosec B101 - pytest assertion
@@ -4185,9 +4199,9 @@ def test_key_stability_bonus_does_not_collapse_a_tier_on_diatonic_material():
         t += 0.22 if i % 2 else 0.31
     arr = _arrangement(notes, n_beats=200)
 
-    phrases_on = routes.generate_phrases_for_arrangement(arr, n_levels=4)
-    with patch.object(routes, "_KEY_STABILITY_RETENTION_BONUS", 0.0):
-        phrases_off = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases_on = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
+    with patch.object(scoring, "_KEY_STABILITY_RETENTION_BONUS", 0.0):
+        phrases_off = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
 
     assert phrases_on and phrases_off  # nosec B101 - pytest assertion
     for on, off in zip(phrases_on, phrases_off):
@@ -4214,11 +4228,11 @@ def test_group_key_stability_bonus_uses_the_arrangements_chord_track_for_non_cho
     # NOT in the C-major triad {0, 4, 7}.
     note_group = _pc_group(2, s=0)
     chord_windows_present = [(0.0, 1.0, {0, 2, 7})]  # a Dsus2-ish sonority sounding here
-    bonus_with_chord_context = routes._group_key_stability_bonus(
+    bonus_with_chord_context = scoring._group_key_stability_bonus(
         note_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
         chord_windows=chord_windows_present,
     )
-    bonus_without_chord_context = routes._group_key_stability_bonus(
+    bonus_without_chord_context = scoring._group_key_stability_bonus(
         note_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
         chord_windows=None,
     )
@@ -4227,14 +4241,14 @@ def test_group_key_stability_bonus_uses_the_arrangements_chord_track_for_non_cho
 
 def test_chord_pcs_at_time_finds_the_covering_window_or_none():
     windows = [(0.0, 1.0, {0, 4, 7}), (2.0, 3.0, {2, 5, 9})]
-    assert routes._chord_pcs_at_time(windows, 0.5) == {0, 4, 7}  # nosec B101 - pytest assertion
-    assert routes._chord_pcs_at_time(windows, 2.5) == {2, 5, 9}  # nosec B101 - pytest assertion
-    assert routes._chord_pcs_at_time(windows, 1.5) is None  # nosec B101 - pytest assertion
+    assert scoring._chord_pcs_at_time(windows, 0.5) == {0, 4, 7}  # nosec B101 - pytest assertion
+    assert scoring._chord_pcs_at_time(windows, 2.5) == {2, 5, 9}  # nosec B101 - pytest assertion
+    assert scoring._chord_pcs_at_time(windows, 1.5) is None  # nosec B101 - pytest assertion
 
 
 def test_chord_pitch_class_windows_covers_each_chords_sustain():
     chords = [{"t": 0.0, "notes": [{"s": 0, "f": 0, "sus": 0.5}, {"s": 1, "f": 4, "sus": 0.2}]}]
-    windows = routes._chord_pitch_class_windows(chords, tuning=(), n_strings=6, is_bass=False)
+    windows = scoring._chord_pitch_class_windows(chords, tuning=(), n_strings=6, is_bass=False)
     assert len(windows) == 1  # nosec B101 - pytest assertion
     start, end, pcs = windows[0]
     assert start == 0.0  # nosec B101 - pytest assertion
@@ -4255,8 +4269,8 @@ def test_estimate_key_detects_c_major_from_keys_midi_pitch():
     is_major=True, from a histogram that IS the Krumhansl & Kessler
     C-major profile built out of real MIDI keys notes -- the textbook case
     the whole algorithm is built to solve, now over absolute pitch."""
-    groups = [_keys_pc_group(0.0, 60 + pc, sus=routes._KS_MAJOR_PROFILE[pc]) for pc in range(12)]
-    tonic_pc, is_major, corr = routes._estimate_key(groups, tuning=(), n_strings=6, is_bass=False, is_keys=True)
+    groups = [_keys_pc_group(0.0, 60 + pc, sus=scoring._KS_MAJOR_PROFILE[pc]) for pc in range(12)]
+    tonic_pc, is_major, corr = scoring._estimate_key(groups, tuning=(), n_strings=6, is_bass=False, is_keys=True)
     assert tonic_pc == 0  # nosec B101 - pytest assertion
     assert is_major is True  # nosec B101 - pytest assertion
     assert corr > 0.99  # nosec B101 - pytest assertion
@@ -4267,8 +4281,8 @@ def test_estimate_key_correlation_is_low_for_a_flat_chromatic_keys_histogram():
     keys weighting -- a flat chromatic keys section must correlate poorly
     against every key profile, so callers disable the weighting there."""
     groups = [_keys_pc_group(0.0, 60 + pc, sus=1.0) for pc in range(12)]
-    _tonic_pc, _is_major, corr = routes._estimate_key(groups, tuning=(), n_strings=6, is_bass=False, is_keys=True)
-    assert corr < routes._KEY_FIT_MIN_CORRELATION  # nosec B101 - pytest assertion
+    _tonic_pc, _is_major, corr = scoring._estimate_key(groups, tuning=(), n_strings=6, is_bass=False, is_keys=True)
+    assert corr < scoring._KEY_FIT_MIN_CORRELATION  # nosec B101 - pytest assertion
 
 
 def test_keys_key_stability_bonus_is_larger_for_a_tonic_note_than_a_chromatic_one():
@@ -4277,16 +4291,16 @@ def test_keys_key_stability_bonus_is_larger_for_a_tonic_note_than_a_chromatic_on
     `_KEYS_KEY_STABILITY_RETENTION_BONUS` rather than the fretted one."""
     tonic_group = _keys_pc_group(0.0, 60)  # C
     chromatic_group = _keys_pc_group(0.0, 61)  # C#
-    tonic_bonus = routes._group_key_stability_bonus(
+    tonic_bonus = scoring._group_key_stability_bonus(
         tonic_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
-        is_keys=True, retention_bonus=routes._KEYS_KEY_STABILITY_RETENTION_BONUS,
+        is_keys=True, retention_bonus=scoring._KEYS_KEY_STABILITY_RETENTION_BONUS,
     )
-    chromatic_bonus = routes._group_key_stability_bonus(
+    chromatic_bonus = scoring._group_key_stability_bonus(
         chromatic_group, tonic_pc=0, is_major=True, tuning=(), n_strings=6, is_bass=False,
-        is_keys=True, retention_bonus=routes._KEYS_KEY_STABILITY_RETENTION_BONUS,
+        is_keys=True, retention_bonus=scoring._KEYS_KEY_STABILITY_RETENTION_BONUS,
     )
     assert tonic_bonus > chromatic_bonus  # nosec B101 - pytest assertion
-    assert tonic_bonus <= routes._KEYS_KEY_STABILITY_RETENTION_BONUS  # nosec B101 - pytest assertion
+    assert tonic_bonus <= scoring._KEYS_KEY_STABILITY_RETENTION_BONUS  # nosec B101 - pytest assertion
     assert chromatic_bonus == 0.0  # nosec B101 - pytest assertion
 
 
@@ -4305,7 +4319,7 @@ def test_keys_key_stability_coefficient_sits_below_the_keys_beat_coefficient():
     magnitude is pinned by
     `test_keys_key_stability_out_of_key_tone_drops_before_a_chord_tone`,
     which this deliberately does not duplicate."""
-    assert routes._KEYS_KEY_STABILITY_RETENTION_BONUS < routes._KEYS_BEAT_VALUE_COEF  # nosec B101 - pytest assertion
+    assert scoring._KEYS_KEY_STABILITY_RETENTION_BONUS < scoring._KEYS_BEAT_VALUE_COEF  # nosec B101 - pytest assertion
 
 
 def test_keys_key_stability_out_of_key_tone_drops_before_a_chord_tone():
@@ -4332,9 +4346,9 @@ def test_keys_key_stability_out_of_key_tone_drops_before_a_chord_tone():
     beats = [{"time": round(i * 0.5, 3), "measure": 0 if i % 4 == 0 else -1} for i in range(40)]
     arr = _keys_arrangement(notes, beats)
 
-    phrases_on = routes.generate_phrases_for_arrangement(arr, n_levels=4)
-    with patch.object(routes, "_KEYS_KEY_STABILITY_RETENTION_BONUS", 0.0):
-        phrases_off = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases_on = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
+    with patch.object(scoring, "_KEYS_KEY_STABILITY_RETENTION_BONUS", 0.0):
+        phrases_off = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
 
     assert phrases_on and phrases_off  # nosec B101 - pytest assertion
     on_levels = phrases_on[0]["levels"]
@@ -4369,9 +4383,9 @@ def test_keys_key_stability_does_not_collapse_a_tier_on_diatonic_material():
     beats = [{"time": round(i * 0.5, 3), "measure": 0 if i % 4 == 0 else -1} for i in range(60)]
     arr = _keys_arrangement(notes, beats)
 
-    phrases_on = routes.generate_phrases_for_arrangement(arr, n_levels=4)
-    with patch.object(routes, "_KEYS_KEY_STABILITY_RETENTION_BONUS", 0.0):
-        phrases_off = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases_on = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
+    with patch.object(scoring, "_KEYS_KEY_STABILITY_RETENTION_BONUS", 0.0):
+        phrases_off = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
 
     assert phrases_on and phrases_off  # nosec B101 - pytest assertion
     for on, off in zip(phrases_on, phrases_off):
@@ -4398,9 +4412,9 @@ def test_keys_key_stability_leaves_atonal_input_unaffected():
     beats = [{"time": round(i * 0.5, 3), "measure": 0 if i % 4 == 0 else -1} for i in range(60)]
     arr = _keys_arrangement(notes, beats)
 
-    phrases_on = routes.generate_phrases_for_arrangement(arr, n_levels=4)
-    with patch.object(routes, "_KEYS_KEY_STABILITY_RETENTION_BONUS", 0.0):
-        phrases_off = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases_on = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
+    with patch.object(scoring, "_KEYS_KEY_STABILITY_RETENTION_BONUS", 0.0):
+        phrases_off = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
 
     assert phrases_on and phrases_off  # nosec B101 - pytest assertion
     assert phrases_on == phrases_off  # nosec B101 - the guard disabled the bonus, so nothing moved
@@ -4423,10 +4437,10 @@ _STAGED_TEMPLATES = [{"name": "G", "frets": [3, 2, 0, 0, 0, 3]}, {"name": "C", "
 
 def test_resolvable_chord_identity_requires_a_named_template():
     named = _identified_chord_group(0.0, 0)
-    assert routes._resolvable_chord_identity(named, _STAGED_TEMPLATES) == "G"  # nosec B101 - pytest assertion
+    assert scoring._resolvable_chord_identity(named, _STAGED_TEMPLATES) == "G"  # nosec B101 - pytest assertion
     unmatched = _identified_chord_group(0.0, 99)  # out of range
-    assert routes._resolvable_chord_identity(unmatched, _STAGED_TEMPLATES) is None  # nosec B101 - pytest assertion
-    assert routes._resolvable_chord_identity(unmatched, []) is None  # nosec B101 - pytest assertion
+    assert scoring._resolvable_chord_identity(unmatched, _STAGED_TEMPLATES) is None  # nosec B101 - pytest assertion
+    assert scoring._resolvable_chord_identity(unmatched, []) is None  # nosec B101 - pytest assertion
 
 
 def test_staged_chord_drop_ids_keeps_only_the_landmark_occurrence():
@@ -4438,7 +4452,7 @@ def test_staged_chord_drop_ids_keeps_only_the_landmark_occurrence():
     g2 = _identified_chord_group(1.0, 0, sus=0.5)  # landmark: longest sustain
     g3 = _identified_chord_group(2.0, 0, sus=0.1)  # resolution: last chord group
     phrase_groups = [g1, g2, g3]
-    drop_ids = routes._staged_chord_drop_ids(phrase_groups, _STAGED_TEMPLATES)
+    drop_ids = scoring._staged_chord_drop_ids(phrase_groups, _STAGED_TEMPLATES)
     assert drop_ids == {id(g1)}  # nosec B101 - pytest assertion
 
 
@@ -4450,7 +4464,7 @@ def test_staged_chord_drop_ids_never_touches_unidentified_chords():
     unmatched = _identified_chord_group(0.0, 99)  # unresolvable identity
     landmark = _identified_chord_group(1.0, 0, sus=0.5)
     last_group = _identified_chord_group(2.0, 0, sus=0.1)  # protected: phrase's final chord group
-    drop_ids = routes._staged_chord_drop_ids([unmatched, landmark, last_group], _STAGED_TEMPLATES)
+    drop_ids = scoring._staged_chord_drop_ids([unmatched, landmark, last_group], _STAGED_TEMPLATES)
     assert id(unmatched) not in drop_ids  # nosec B101 - pytest assertion
     assert drop_ids == set()  # nosec B101 - landmark kept by sustain, last_group kept as resolution
 
@@ -4458,7 +4472,7 @@ def test_staged_chord_drop_ids_never_touches_unidentified_chords():
 def test_notes_for_level_drops_groups_in_chord_stage_drop_ids():
     g1 = _identified_chord_group(0.0, 0)
     g2 = _identified_chord_group(1.0, 0)
-    notes, chords = routes._notes_for_level(
+    notes, chords = scoring._notes_for_level(
         [g1, g2], level=0, max_level=3, chord_stage_drop_ids={id(g1)},
     )
     all_times = {n["t"] for n in notes} | {c["t"] for c in chords}
@@ -4476,8 +4490,8 @@ def test_generate_phrases_staged_chords_default_off_is_unaffected():
     ]
     arr = _arrangement(notes, chords=chords, n_beats=120)
     arr["templates"] = _STAGED_TEMPLATES
-    default_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
-    explicit_off_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=False)
+    default_phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
+    explicit_off_phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=False)
     assert default_phrases == explicit_off_phrases  # nosec B101 - pytest assertion
 
 
@@ -4506,9 +4520,9 @@ def test_generate_phrases_staged_chords_collapses_repeated_identity_at_bottom_ti
         lvl = phrase["levels"][lvl_idx]
         return {c["t"] for c in lvl["chords"]} | {n["t"] for n in lvl["notes"]}
 
-    with patch.object(routes, "_assign_tiers", lambda *a, **k: None):
-        off_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=False)
-        on_phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=True)
+    with patch.object(scoring, "_assign_tiers", lambda *a, **k: None):
+        off_phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=False)
+        on_phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4, staged_chords=True)
 
     off_phrase = next(p for p in off_phrases if p["levels"][0]["chords"] or p["levels"][0]["notes"])
     on_phrase = next(p for p in on_phrases if p["levels"][0]["chords"] or p["levels"][0]["notes"])
@@ -4525,9 +4539,9 @@ def test_resolvable_chord_identity_rejects_a_non_string_name_instead_of_raising(
     _staged_chord_drop_ids's best_by_identity (PR #127 review)."""
     bad_templates = [{"name": ["G"], "frets": [3, 2, 0, 0, 0, 3]}]
     g = _identified_chord_group(0.0, 0)
-    assert routes._resolvable_chord_identity(g, bad_templates) is None  # nosec B101 - pytest assertion
+    assert scoring._resolvable_chord_identity(g, bad_templates) is None  # nosec B101 - pytest assertion
     # Must not raise when actually used downstream, either.
-    assert routes._staged_chord_drop_ids([g], bad_templates) == set()  # nosec B101 - pytest assertion
+    assert scoring._staged_chord_drop_ids([g], bad_templates) == set()  # nosec B101 - pytest assertion
 
 
 def test_staged_chord_drop_ids_only_considers_bottom_tier_occurrences():
@@ -4554,7 +4568,7 @@ def test_staged_chord_drop_ids_only_considers_bottom_tier_occurrences():
     g2["level"] = 1
     g3 = _identified_chord_group(2.0, 0, sus=0.05)
     g3["level"] = 2
-    drop_ids = routes._staged_chord_drop_ids([g1, g2, g3], _STAGED_TEMPLATES)
+    drop_ids = scoring._staged_chord_drop_ids([g1, g2, g3], _STAGED_TEMPLATES)
     # g2 and g3 must never be considered (neither is competing for a
     # level-0 slot), and the bottom tier must keep g1 -- its only
     # level-0 occurrence of this identity.
@@ -4608,7 +4622,7 @@ def test_staged_chord_drop_ids_never_lets_a_notes_empty_group_win_the_landmark()
     groups = [empty, real, c_landmark, trailing, trailing_empty]
     for g in groups:
         g["level"] = 0
-    drop_ids = routes._staged_chord_drop_ids(groups, _STAGED_TEMPLATES)
+    drop_ids = scoring._staged_chord_drop_ids(groups, _STAGED_TEMPLATES)
     assert id(real) not in drop_ids  # nosec B101 - the note-bearing occurrence must survive
     assert id(trailing) not in drop_ids  # nosec B101 - protected as the phrase's last NOTE-BEARING chord group
 
@@ -4626,11 +4640,11 @@ def test_score_groups_keys_applies_beat_value_discount():
     takes beat_times and applies the same _beat_value discount the fretted
     path already had."""
     beat_times = [0.0, 0.5, 1.0, 1.5]
-    tempo = routes._TempoParams.from_beats(beat_times, [{"time": t, "measure": 0} for t in beat_times])
+    tempo = scoring._TempoParams.from_beats(beat_times, [{"time": t, "measure": 0} for t in beat_times])
     on_beat = [_keys_single(0.0, 60)]  # exact downbeat
     off_beat = [_keys_single(0.65, 60)]  # off the beat grid entirely
-    routes._score_groups_keys(on_beat, beat_times, tempo=tempo)
-    routes._score_groups_keys(off_beat, beat_times, tempo=tempo)
+    scoring._score_groups_keys(on_beat, beat_times, tempo=tempo)
+    scoring._score_groups_keys(off_beat, beat_times, tempo=tempo)
     assert on_beat[0]["retention_score"] < off_beat[0]["retention_score"]  # nosec B101 - pytest assertion
 
 
@@ -4640,7 +4654,7 @@ def test_melody_turning_points_keys_finds_a_local_peak():
         _keys_single(0.3, 67),  # local high
         _keys_single(0.6, 60),
     ]
-    turning = routes._melody_turning_points_keys(groups, routes._TempoParams())
+    turning = scoring._melody_turning_points_keys(groups, scoring._TempoParams())
     assert turning == {1}  # nosec B101 - pytest assertion
 
 
@@ -4652,8 +4666,8 @@ def test_keys_voice_priority_full_add_order_for_five_voices():
     inward order this function implements (PR #126 review)."""
     ranked = [52, 59, 64, 67, 71]
     notes = [{"s": m // 24, "f": m % 24} for m in ranked]
-    priority = routes._keys_voice_priority(notes)
-    assert [routes._note_midi_keys(n) for n in priority] == [52, 71, 59, 67, 64]  # nosec B101 - pytest assertion
+    priority = scoring._keys_voice_priority(notes)
+    assert [scoring._note_midi_keys(n) for n in priority] == [52, 71, 59, 67, 64]  # nosec B101 - pytest assertion
 
 
 def test_notes_for_level_keys_budget_grows_smoothly_for_a_wide_chord():
@@ -4674,8 +4688,8 @@ def test_notes_for_level_keys_budget_grows_smoothly_for_a_wide_chord():
     }]
     tiers = []
     for level in range(4):
-        reduced, _ = routes._notes_for_level_keys(groups, level, max_level=3)
-        tiers.append({routes._note_midi_keys(n) for n in reduced})
+        reduced, _ = scoring._notes_for_level_keys(groups, level, max_level=3)
+        tiers.append({scoring._note_midi_keys(n) for n in reduced})
     assert tiers[0] == {48, 66}  # nosec B101 - outer voices only
     assert tiers[-1] == set(midis)  # nosec B101 - full voicing only at the top tier
     assert tiers[-2] != tiers[-1]  # nosec B101 - the off-by-one regression: tier below top must NOT already be full
@@ -4693,8 +4707,8 @@ def test_notes_for_level_keys_small_chord_keeps_pitch_order():
         "time": 0.0, "cost": 0.5, "value": 0.0,
         "retention_score": 0.5, "level": 0,
     }]
-    reduced, _ = routes._notes_for_level_keys(groups, level=1, max_level=3)
-    assert [routes._note_midi_keys(n) for n in reduced] == midis  # nosec B101 - pytest assertion
+    reduced, _ = scoring._notes_for_level_keys(groups, level=1, max_level=3)
+    assert [scoring._note_midi_keys(n) for n in reduced] == midis  # nosec B101 - pytest assertion
 
 
 def test_score_groups_keys_cost_field_is_unaffected_by_beat_or_turning_bonuses():
@@ -4705,13 +4719,13 @@ def test_score_groups_keys_cost_field_is_unaffected_by_beat_or_turning_bonuses()
     formula oracle test, whose fixture has zero single-note groups and so
     can't exercise the turning-point path at all."""
     beat_times = [0.0, 0.5, 1.0, 1.5, 2.0]
-    tempo = routes._TempoParams.from_beats(beat_times, [{"time": t, "measure": 0} for t in beat_times])
+    tempo = scoring._TempoParams.from_beats(beat_times, [{"time": t, "measure": 0} for t in beat_times])
     groups = [
         _keys_single(0.0, 60),
         _keys_single(0.5, 67),  # local high -> turning point, and on-beat
         _keys_single(1.0, 60),
     ]
-    routes._score_groups_keys(groups, beat_times, tempo=tempo)
+    scoring._score_groups_keys(groups, beat_times, tempo=tempo)
     without_beat_or_turning = [
         _keys_single(0.0, 60), _keys_single(0.5, 67), _keys_single(1.0, 60),
     ]
@@ -4719,7 +4733,7 @@ def test_score_groups_keys_cost_field_is_unaffected_by_beat_or_turning_bonuses()
     # neighboring groups -- are identical), but no beat_times, so the beat
     # discount and turning-point bonus can't apply. If `cost` differs here,
     # one of those terms leaked into it.
-    routes._score_groups_keys(without_beat_or_turning, (), tempo=routes._TempoParams())
+    scoring._score_groups_keys(without_beat_or_turning, (), tempo=scoring._TempoParams())
     assert groups[1]["cost"] == without_beat_or_turning[1]["cost"]  # nosec B101 - pytest assertion
     assert groups[1]["retention_score"] != groups[1]["cost"]  # nosec B101 - beat+turning did discount retention_score
 
@@ -4740,11 +4754,11 @@ def test_generate_phrases_keys_multi_note_chords_nest_end_to_end():
         "type": "keys", "name": "keys", "notes": [], "chords": chords,
         "beats": _tiered_beats(40), "sections": [], "tuning": [],
     }
-    phrases = routes.generate_phrases_for_arrangement(arr, n_levels=4)
+    phrases = scoring.generate_phrases_for_arrangement(arr, n_levels=4)
     assert phrases  # nosec B101 - pytest assertion
     for p in phrases:
         identities = [
-            {(n["t"], routes._note_midi_keys(n)) for n in lvl["notes"]}
+            {(n["t"], scoring._note_midi_keys(n)) for n in lvl["notes"]}
             for lvl in p["levels"]
         ]
         for lower, higher in pairwise(identities):
@@ -4770,8 +4784,8 @@ def test_notes_for_level_keys_nesting_survives_an_octave_adjacent_interior_pair(
     }]
     tiers = []
     for level in range(5):
-        reduced, _ = routes._notes_for_level_keys(groups, level, max_level=4)
-        tiers.append({routes._note_midi_keys(n) for n in reduced})
+        reduced, _ = scoring._notes_for_level_keys(groups, level, max_level=4)
+        tiers.append({scoring._note_midi_keys(n) for n in reduced})
     for lower, higher in pairwise(tiers):
         assert lower <= higher  # nosec B101 - real superset nesting, no dropped-then-reappeared voice
 
@@ -4804,36 +4818,36 @@ def _two_hand_keys_arrangement(bars=4):
 
 def test_keys_cluster_spanning_both_hands_splits_into_two_groups():
     notes = [_midi_note(1.0, 48), _midi_note(1.0, 72)]
-    groups = routes._group_notes_keys(notes, [])
+    groups = scoring._group_notes_keys(notes, [])
     assert [len(g["notes"]) for g in groups] == [1, 1]  # nosec B101 - pytest assertion
     assert [g["melody"] for g in groups] == [False, True]  # nosec B101 - pytest assertion
 
 
 def test_keys_single_hand_chord_is_not_split():
     notes = [_midi_note(1.0, m) for m in (60, 64, 67, 72)]
-    groups = routes._group_notes_keys(notes, [])
+    groups = scoring._group_notes_keys(notes, [])
     assert len(groups) == 1 and len(groups[0]["notes"]) == 4  # nosec B101 - pytest assertion
 
 
 def test_keys_bottom_tier_carries_the_melody_not_accompaniment_filler():
     arr, spb = _two_hand_keys_arrangement()
-    phrases = routes.generate_phrases_for_arrangement(
+    phrases = scoring.generate_phrases_for_arrangement(
         arr, n_levels=4, section_times=[i * 4 * spb for i in range(4)],
     )
     assert phrases  # nosec B101 - pytest assertion
     for p in phrases:
         bottom = p["levels"][0]["notes"]
-        assert any(routes._note_midi_keys(n) >= 60 for n in bottom)  # nosec B101 - pytest assertion
+        assert any(scoring._note_midi_keys(n) >= 60 for n in bottom)  # nosec B101 - pytest assertion
 
 
 def test_keys_two_hand_tiers_stay_nested():
     arr, spb = _two_hand_keys_arrangement()
-    phrases = routes.generate_phrases_for_arrangement(
+    phrases = scoring.generate_phrases_for_arrangement(
         arr, n_levels=5, section_times=[i * 4 * spb for i in range(4)],
     )
     for p in phrases:
         identities = [
-            {(n["t"], routes._note_midi_keys(n)) for n in lvl["notes"]}
+            {(n["t"], scoring._note_midi_keys(n)) for n in lvl["notes"]}
             for lvl in p["levels"]
         ]
         for lower, higher in pairwise(identities):
@@ -4848,7 +4862,7 @@ def test_keys_melody_register_ignores_the_lower_hand_of_split_onsets():
     for i in range(6):
         notes += [_midi_note(i * 1.0, 40), _midi_note(i * 1.0, 76)]
     notes += [_midi_note(i * 1.0 + 0.5, 50) for i in range(6)]
-    groups = routes._group_notes_keys(notes, [])
+    groups = scoring._group_notes_keys(notes, [])
     fillers = [g for g in groups if g["notes"][0]["s"] * 24 + g["notes"][0]["f"] == 50]
     assert fillers and not any(g["melody"] for g in fillers)  # nosec B101 - pytest assertion
 
@@ -4856,13 +4870,13 @@ def test_keys_melody_register_ignores_the_lower_hand_of_split_onsets():
 def test_keys_turning_points_ignore_cross_hand_neighbours_at_one_onset():
     arr, _ = _two_hand_keys_arrangement()
     beats = [b["time"] for b in arr["beats"]]
-    tempo = routes._TempoParams.from_beats(beats, arr["beats"])
-    groups = routes._group_notes_keys(arr["notes"], [])
+    tempo = scoring._TempoParams.from_beats(beats, arr["beats"])
+    groups = scoring._group_notes_keys(arr["notes"], [])
     onset_sizes = {}
     for g in groups:
         onset_sizes[g["time"]] = onset_sizes.get(g["time"], 0) + 1
     split_idx = {i for i, g in enumerate(groups) if onset_sizes[g["time"]] > 1}
-    turning = routes._melody_turning_points_keys(groups, tempo)
+    turning = scoring._melody_turning_points_keys(groups, tempo)
     assert not (turning & split_idx)  # nosec B101 - pytest assertion
 
 
@@ -4872,14 +4886,14 @@ def test_fretted_turning_points_still_count_a_note_sharing_an_onset_with_a_chord
     # neighbours and can be a turning point.
     def g(t, notes):
         return {"type": "note" if len(notes) == 1 else "chord", "notes": notes, "time": t}
-    tempo = routes._TempoParams()
+    tempo = scoring._TempoParams()
     groups = [
         g(0.0, [{"t": 0.0, "s": 2, "f": 3}]),
         g(0.2, [{"t": 0.2, "s": 2, "f": 9}]),
         g(0.2, [{"t": 0.2, "s": 1, "f": 3}, {"t": 0.2, "s": 0, "f": 3}]),
         g(0.4, [{"t": 0.4, "s": 2, "f": 4}]),
     ]
-    turning = routes._melody_turning_points(groups, (0,) * 6, 6, tempo)
+    turning = scoring._melody_turning_points(groups, (0,) * 6, 6, tempo)
     assert 1 in turning  # nosec B101 - pytest assertion
 
 
@@ -4893,19 +4907,19 @@ def test_keys_melody_bonus_keeps_cheap_melody_notes_distinguishable(monkeypatch)
     # are white, but 78 F# and 80 G# are black), so the black-key term would
     # charge the melody notes unevenly and break the ordering this pins.
     # Zeroed so the comparison measures the melody bonus alone.
-    monkeypatch.setattr(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
+    monkeypatch.setattr(scoring, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
     sustains = [0.4, 0.8, 1.2, 1.6, 2.0, 2.4]
     notes = [_midi_note(i * 2.0, 72 + (i % 5) * 2, sustains[i % len(sustains)]) for i in range(12)]
     notes += [_midi_note(i * 2.0, 48, 3.0) for i in range(12)]
     beats = [{"time": round(i * 0.5, 3), "measure": i // 4 if i % 4 == 0 else -1} for i in range(60)]
     beat_times = [b["time"] for b in beats]
-    tempo = routes._TempoParams.from_beats(beat_times, beats)
-    with_bonus = routes._group_notes_keys(notes, [])
-    routes._score_groups_keys(with_bonus, beat_times, tempo=tempo)
+    tempo = scoring._TempoParams.from_beats(beat_times, beats)
+    with_bonus = scoring._group_notes_keys(notes, [])
+    scoring._score_groups_keys(with_bonus, beat_times, tempo=tempo)
     without = deepcopy(with_bonus)
     for g in without:
         g["melody"] = False
-    routes._score_groups_keys(without, beat_times, tempo=tempo)
+    scoring._score_groups_keys(without, beat_times, tempo=tempo)
 
     pairs = [(w, o) for w, o in zip(with_bonus, without) if w["melody"] and o["retention_score"] > 0.0]
     assert len(pairs) >= 3  # nosec B101 - pytest assertion
@@ -4928,12 +4942,12 @@ def test_keys_chordal_right_hand_still_reaches_the_bottom_tier():
         notes += [_midi_note(t, m + (i % 5) * 2, 0.3) for m in (72, 76, 79)]
     arr = {"type": "keys", "name": "Keys", "notes": notes, "chords": [],
            "beats": beats, "sections": []}
-    phrases = routes.generate_phrases_for_arrangement(
+    phrases = scoring.generate_phrases_for_arrangement(
         arr, n_levels=4, section_times=[i * 4.0 for i in range(5)],
     )
     assert phrases  # nosec B101 - pytest assertion
     for p in phrases:
-        assert any(routes._note_midi_keys(n) >= 60 for n in p["levels"][0]["notes"])  # nosec B101 - pytest assertion
+        assert any(scoring._note_midi_keys(n) >= 60 for n in p["levels"][0]["notes"])  # nosec B101 - pytest assertion
 
 
 def test_keys_split_onset_parts_share_one_density_and_speed(monkeypatch):
@@ -4954,13 +4968,13 @@ def test_keys_split_onset_parts_share_one_density_and_speed(monkeypatch):
         notes += [_midi_note(t, 48, 0.1), _midi_note(t, 72 + i, 0.1)]
     beats = [{"time": round(b * 0.5, 3)} for b in range(20)]
     beat_times = [b["time"] for b in beats]
-    tempo = routes._TempoParams.from_beats(beat_times, beats)
-    real_max_bonus = routes._KEYS_LEAP_MAX_BONUS
+    tempo = scoring._TempoParams.from_beats(beat_times, beats)
+    real_max_bonus = scoring._KEYS_LEAP_MAX_BONUS
 
     def scored(leap_bonus):
-        monkeypatch.setattr(routes, "_KEYS_LEAP_MAX_BONUS", leap_bonus)
-        groups = routes._group_notes_keys(notes, [])
-        routes._score_groups_keys(groups, beat_times, tempo=tempo)
+        monkeypatch.setattr(scoring, "_KEYS_LEAP_MAX_BONUS", leap_bonus)
+        groups = scoring._group_notes_keys(notes, [])
+        scoring._score_groups_keys(groups, beat_times, tempo=tempo)
         return groups
 
     without_leap = scored(0.0)
@@ -4973,7 +4987,7 @@ def test_keys_split_onset_parts_share_one_density_and_speed(monkeypatch):
     # previous group (1 semitone, 0.15s earlier) while the lower hand, which
     # never moves, earned none.
     with_leap = scored(real_max_bonus)
-    leap = routes._keys_leap_bonus(1.0, 0.15, tempo)
+    leap = scoring._keys_leap_bonus(1.0, 0.15, tempo)
     assert leap > 0.0  # nosec B101 - pytest assertion
     assert with_leap[2]["cost"] == pytest.approx(without_leap[2]["cost"])  # nosec B101 - pytest assertion
     assert with_leap[3]["cost"] == pytest.approx(without_leap[3]["cost"] + leap)  # nosec B101 - pytest assertion
@@ -4989,13 +5003,13 @@ def test_keys_split_onset_parts_share_one_density_and_speed(monkeypatch):
     # onset's pair of groups is therefore the only way to hand the scorer the
     # opposite order, and it is also exactly the situation `speed`'s comment
     # describes.
-    ordered = routes._group_notes_keys(notes, [])
-    routes._score_groups_keys(ordered, beat_times, tempo=tempo)
+    ordered = scoring._group_notes_keys(notes, [])
+    scoring._score_groups_keys(ordered, beat_times, tempo=tempo)
     # Build the second group list independently so scoring doesn't mutate
     # shared dict objects (which would make the comparison vacuous).
-    ordered2 = routes._group_notes_keys(notes, [])
+    ordered2 = scoring._group_notes_keys(notes, [])
     swapped_order = [g for pair in zip(ordered2[::2], ordered2[1::2]) for g in reversed(pair)]
-    routes._score_groups_keys(swapped_order, beat_times, tempo=tempo)
+    scoring._score_groups_keys(swapped_order, beat_times, tempo=tempo)
     assert [g["hand"] for g in ordered] == ["lower", "upper"] * 8  # nosec B101 - pytest assertion
     assert [g["hand"] for g in swapped_order] == ["upper", "lower"] * 8  # nosec B101 - really reversed
     assert [g["time"] for g in swapped_order] == [g["time"] for g in ordered]  # nosec B101 - same onsets
@@ -5023,11 +5037,11 @@ def test_keys_authored_note_over_authored_chord_keeps_turning_point_candidacy():
     notes = [_midi_note(0.0, 72), _midi_note(0.3, 76), _midi_note(0.6, 74)]
     chords = [{"t": 0.3, "id": 0, "notes": [_midi_note(0.3, 48), _midi_note(0.3, 52)]}]
     beats = [{"time": round(b * 0.5, 3)} for b in range(10)]
-    tempo = routes._TempoParams.from_beats([b["time"] for b in beats], beats)
-    groups = routes._group_notes_keys(notes, chords)
+    tempo = scoring._TempoParams.from_beats([b["time"] for b in beats], beats)
+    groups = scoring._group_notes_keys(notes, chords)
     idx = next(i for i, g in enumerate(groups) if g["time"] == 0.3 and len(g["notes"]) == 1)
     assert not groups[idx].get("hand_split")  # nosec B101 - pytest assertion
-    assert idx in routes._melody_turning_points_keys(groups, tempo)  # nosec B101 - pytest assertion
+    assert idx in scoring._melody_turning_points_keys(groups, tempo)  # nosec B101 - pytest assertion
 
 
 # ── Keys: bottom-tier density floor (#181) ─────────────────
@@ -5045,17 +5059,17 @@ def _tier0_keys_groups(arr):
     (groups, beat_times, tempo) so the tier pipeline
     below them can be unit-tested directly."""
     beat_times = [b["time"] for b in arr["beats"]]
-    tempo = routes._TempoParams.from_beats(beat_times, arr["beats"])
-    groups = routes._group_notes_keys(arr["notes"], arr["chords"])
-    routes._score_groups_keys(groups, beat_times, tempo=tempo)
+    tempo = scoring._TempoParams.from_beats(beat_times, arr["beats"])
+    groups = scoring._group_notes_keys(arr["notes"], arr["chords"])
+    scoring._score_groups_keys(groups, beat_times, tempo=tempo)
     return groups, beat_times, tempo
 
 
 def _assign_keys_tiers(groups, beat_times, tempo, n_levels=4):
-    thresholds = routes._tier_thresholds(
+    thresholds = scoring._tier_thresholds(
         [g["retention_score"] for g in groups], n_levels,
     )
-    routes._assign_tiers(groups, n_levels, thresholds, beat_times, tempo=tempo)
+    scoring._assign_tiers(groups, n_levels, thresholds, beat_times, tempo=tempo)
 
 
 def _keys_beats_without_downbeats(n_measures, beat_interval):
@@ -5083,7 +5097,7 @@ def test_keys_tier0_floor_denses_the_measured_degenerate_fixture():
         base = 60 + (q * 2) % 5
         for iv in (0, 4, 7, 12):
             notes.append(_midi_note(q * spb, base + iv, 0.35))
-    phrases = routes.generate_phrases_for_arrangement(
+    phrases = scoring.generate_phrases_for_arrangement(
         _keys_arrangement(notes, _four_four_beats(2, spb)),
         n_levels=4, section_times=[0.0],
     )
@@ -5120,9 +5134,9 @@ def test_keys_tier0_floor_covers_every_strong_beat_position():
         _keys_arrangement(notes, _four_four_beats(2, spb)),
     )
     _assign_keys_tiers(groups, beat_times, tempo)
-    routes._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
+    scoring._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
     strong = [t for t, strength in tempo.beat_grid
-              if strength >= routes._STRENGTH_STRONG_BEAT
+              if strength >= scoring._STRENGTH_STRONG_BEAT
               and 0.0 <= t < 8 * spb]
     assert len(strong) == 4  # nosec B101 - the fixture's 2 bars of 4/4
     tier0_times = {g["time"] for g in groups if g["level"] == 0}
@@ -5130,7 +5144,7 @@ def test_keys_tier0_floor_covers_every_strong_beat_position():
         assert pos in tier0_times  # nosec B101 - pytest assertion
     # The backstop's documented share: at least 1/n_levels of
     # the phrase's notes.
-    assert len(routes._notes_for_level_keys(groups, 0, 3)[0]) >= -(-len(notes) // 4)
+    assert len(scoring._notes_for_level_keys(groups, 0, 3)[0]) >= -(-len(notes) // 4)
 
 
 def test_keys_tier0_floor_never_creates_an_identical_tier_pair():
@@ -5164,9 +5178,9 @@ def test_keys_tier0_floor_never_creates_an_identical_tier_pair():
             _keys_arrangement(notes, _four_four_beats(2, spb)),
         )
         _assign_keys_tiers(groups, beat_times, tempo)
-        pre = routes._keys_identical_tier_pairs(groups, 3)
-        routes._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
-        assert routes._keys_identical_tier_pairs(groups, 3) <= pre
+        pre = scoring._keys_identical_tier_pairs(groups, 3)
+        scoring._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
+        assert scoring._keys_identical_tier_pairs(groups, 3) <= pre
 
 
 def test_keys_tier0_floor_guard_keeps_the_ladder_over_density():
@@ -5187,7 +5201,7 @@ def test_keys_tier0_floor_guard_keeps_the_ladder_over_density():
     )
     _assign_keys_tiers(groups, beat_times, tempo)
     before = [g["level"] for g in groups]
-    routes._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
+    scoring._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
     assert [g["level"] for g in groups] == before
 
 
@@ -5209,8 +5223,8 @@ def test_keys_tier0_floor_backstops_density_without_a_graded_grid():
     )
     assert not tempo.beat_grid  # nosec B101 - pytest assertion
     _assign_keys_tiers(groups, beat_times, tempo)
-    routes._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
-    assert len(routes._notes_for_level_keys(groups, 0, 3)[0]) >= -(-len(notes) // 4)
+    scoring._keys_tier0_floor(groups, 0.0, 8 * spb, beat_times, tempo, 4)
+    assert len(scoring._notes_for_level_keys(groups, 0, 3)[0]) >= -(-len(notes) // 4)
 
 
 def test_keys_tier0_floor_caps_the_backstop_at_the_emittable_count():
@@ -5239,7 +5253,7 @@ def test_keys_tier0_floor_caps_the_backstop_at_the_emittable_count():
         base = 58 + (q * 3) % 6
         for iv in (0, 2, 4, 7, 12):
             notes.append(_midi_note(q * spb, base + iv, 0.35))
-    phrases = routes.generate_phrases_for_arrangement(
+    phrases = scoring.generate_phrases_for_arrangement(
         _keys_arrangement(notes, _four_four_beats(2, spb)),
         n_levels=4, section_times=[0.0],
     )
@@ -5261,7 +5275,7 @@ def test_keys_tier0_floor_leaves_an_already_dense_bottom_tier_alone(monkeypatch)
     mixed), so the black-key term would lift the black notes off 0.0 and
     break the all-tier-0 premise. Zeroed so the premise holds; removing
     the zeroing must fail (the term genuinely moves the fixture)."""
-    monkeypatch.setattr(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
+    monkeypatch.setattr(scoring, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
     spb = 0.4
     notes = [_midi_note(bar * 4 * spb, 60 + bar % 5, 2.0) for bar in range(8)]
     groups, beat_times, tempo = _tier0_keys_groups(
@@ -5270,7 +5284,7 @@ def test_keys_tier0_floor_leaves_an_already_dense_bottom_tier_alone(monkeypatch)
     _assign_keys_tiers(groups, beat_times, tempo)
     before = [g["level"] for g in groups]
     assert set(before) == {0}  # nosec B101 - pytest assertion
-    routes._keys_tier0_floor(groups, 0.0, 32 * spb, beat_times, tempo, 4)
+    scoring._keys_tier0_floor(groups, 0.0, 32 * spb, beat_times, tempo, 4)
     assert [g["level"] for g in groups] == before
 
 
@@ -5286,17 +5300,17 @@ def test_fretted_single_onset_window_discounts_both_boundary_groups(monkeypatch)
            "beats": [{"time": i * 0.5} for i in range(12)], "sections": [], "tuning": [0] * 6}
 
     def tail_retention(bonus):
-        monkeypatch.setattr(routes, "_PHRASE_BOUNDARY_RETENTION_BONUS", bonus)
+        monkeypatch.setattr(scoring, "_PHRASE_BOUNDARY_RETENTION_BONUS", bonus)
         seen = []
-        real = routes._assign_tiers
+        real = scoring._assign_tiers
 
         def spy(groups, *a, **k):
             seen.append({g["notes"][0]["f"]: g["retention_score"] for g in groups})
             return real(groups, *a, **k)
 
-        monkeypatch.setattr(routes, "_assign_tiers", spy)
-        routes.generate_phrases_for_arrangement(arr, n_levels=4, section_times=[0.0, 2.0, 4.0])
-        monkeypatch.setattr(routes, "_assign_tiers", real)
+        monkeypatch.setattr(scoring, "_assign_tiers", spy)
+        scoring.generate_phrases_for_arrangement(arr, n_levels=4, section_times=[0.0, 2.0, 4.0])
+        monkeypatch.setattr(scoring, "_assign_tiers", real)
         return seen[-1]
 
     bonus = 0.05
@@ -5343,9 +5357,9 @@ def _scored_keys_groups(arr):
     """`_group_notes_keys` + `_score_groups_keys` through the arrangement's
     own beat grid -- the same two calls the generator itself makes."""
     beat_times = [b["time"] for b in arr["beats"]]
-    tempo = routes._TempoParams.from_beats(beat_times, arr["beats"])
-    groups = routes._group_notes_keys(arr["notes"], arr["chords"])
-    routes._score_groups_keys(groups, beat_times, tempo=tempo)
+    tempo = scoring._TempoParams.from_beats(beat_times, arr["beats"])
+    groups = scoring._group_notes_keys(arr["notes"], arr["chords"])
+    scoring._score_groups_keys(groups, beat_times, tempo=tempo)
     return groups
 
 
@@ -5354,7 +5368,7 @@ def _assert_keys_tiers_nested(phrases):
     states it: every tier's note identities are a subset of the next tier's."""
     for p in phrases:
         identities = [
-            {(n["t"], routes._note_midi_keys(n)) for n in lvl["notes"]}
+            {(n["t"], scoring._note_midi_keys(n)) for n in lvl["notes"]}
             for lvl in p["levels"]
         ]
         for lower, higher in pairwise(identities):
@@ -5375,7 +5389,7 @@ def test_keys_leap_term_scores_a_leaping_passage_harder_than_a_stepwise_one(monk
     # retention 0.1259 vs 0.1448; every group past each hand's first costs
     # strictly more when it leaps (+0.0280 charged for the two-octave move
     # against +0.0054 for the whole tone).
-    monkeypatch.setattr(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
+    monkeypatch.setattr(scoring, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
     stepwise = _keys_register_pairs([40, 42, 44, 46] * 2, [72, 74, 76, 78] * 2)
     leaping = _keys_register_pairs([40, 64] * 4, [72, 96] * 4)
     step_groups = _scored_keys_groups(stepwise)
@@ -5452,13 +5466,13 @@ def test_keys_leap_term_charges_a_single_alternating_two_register_melody(monkeyp
     assert all(len(g["notes"]) == 1 for g in _scored_keys_groups(leaping))  # nosec B101 - a single line
 
     def charged(arr):
-        real = routes._KEYS_LEAP_MAX_BONUS
+        real = scoring._KEYS_LEAP_MAX_BONUS
         try:
             on = [g["cost"] for g in _scored_keys_groups(arr)]
-            monkeypatch.setattr(routes, "_KEYS_LEAP_MAX_BONUS", 0.0)
+            monkeypatch.setattr(scoring, "_KEYS_LEAP_MAX_BONUS", 0.0)
             off = [g["cost"] for g in _scored_keys_groups(arr)]
         finally:
-            monkeypatch.setattr(routes, "_KEYS_LEAP_MAX_BONUS", real)
+            monkeypatch.setattr(scoring, "_KEYS_LEAP_MAX_BONUS", real)
         return [a - b for a, b in zip(on, off)]
 
     leap_charge = charged(leaping)
@@ -5526,9 +5540,9 @@ def test_keys_leap_term_makes_a_leaping_ladder_harder_end_to_end():
     costs, top_sizes = [], set()
     # #178: zeroed for the sweep so the arms differ ONLY in intervals; the
     # control below likewise zeroes both terms, for the same reason.
-    with patch.object(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0):
+    with patch.object(scoring, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0):
         for k in sizes:
-            phrases = routes.generate_phrases_for_arrangement(
+            phrases = scoring.generate_phrases_for_arrangement(
                 _keys_uniform_interval_arms(k), n_levels=4, section_times=section_times,
             )
             live = [p for p in phrases if p["levels"][-1]["notes"]]
@@ -5549,13 +5563,12 @@ def test_keys_leap_term_makes_a_leaping_ladder_harder_end_to_end():
 
     # Control: with the term switched off the sweep is flat, so the ordering
     # above really is this term and not an artefact of the fixtures.
-    with patch.object(routes, "_KEYS_LEAP_MAX_BONUS", 0.0), patch.object(
-        routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0,
+    with patch.object(scoring, "_KEYS_LEAP_MAX_BONUS", 0.0), patch.object(scoring, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0,
     ):
         flat = [
             [
                 float(p["difficulty_cost"])
-                for p in routes.generate_phrases_for_arrangement(
+                for p in scoring.generate_phrases_for_arrangement(
                     _keys_uniform_interval_arms(k), n_levels=4, section_times=section_times,
                 ) if p["levels"][-1]["notes"]
             ]
@@ -5573,7 +5586,7 @@ def test_keys_leap_is_measured_against_the_previous_group_of_the_same_hand(monke
     # C, 96 is C, but 72+12*i hits 84/96 white and 72 is C white -- the 84 is
     # C white too; still, the black-key term is zeroed for hygiene) so the
     # leap delta below is the leap term and nothing else.
-    monkeypatch.setattr(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
+    monkeypatch.setattr(scoring, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
     notes = []
     for i in range(4):
         t = i * 0.5
@@ -5581,22 +5594,22 @@ def test_keys_leap_is_measured_against_the_previous_group_of_the_same_hand(monke
     beats = [{"time": round(b * 0.5, 3), "measure": 0 if b % 4 == 0 else -1}
              for b in range(12)]
     beat_times = [b["time"] for b in beats]
-    tempo = routes._TempoParams.from_beats(beat_times, beats)
-    leap = routes._keys_leap_bonus(12.0, 0.5, tempo)
+    tempo = scoring._TempoParams.from_beats(beat_times, beats)
+    leap = scoring._keys_leap_bonus(12.0, 0.5, tempo)
     assert leap > 0.0  # nosec B101 - pytest assertion
     # The gap BETWEEN the two hands inside one onset is 24 semitones, which
     # would charge a materially larger bonus than the 12 the upper hand
     # actually travels -- so the per-hand scoping below is doing real work,
     # not just avoiding a rounding difference.
-    assert routes._keys_leap_bonus(24.0, 0.5, tempo) > leap  # nosec B101 - pytest assertion
+    assert scoring._keys_leap_bonus(24.0, 0.5, tempo) > leap  # nosec B101 - pytest assertion
 
     def scored():
-        groups = routes._group_notes_keys(deepcopy(notes), [])
-        routes._score_groups_keys(groups, beat_times, tempo=tempo)
+        groups = scoring._group_notes_keys(deepcopy(notes), [])
+        scoring._score_groups_keys(groups, beat_times, tempo=tempo)
         return groups
 
     with_leap = scored()
-    monkeypatch.setattr(routes, "_KEYS_LEAP_MAX_BONUS", 0.0)
+    monkeypatch.setattr(scoring, "_KEYS_LEAP_MAX_BONUS", 0.0)
     without_leap = scored()
 
     assert [g["hand"] for g in with_leap] == ["lower", "upper"] * 4  # nosec B101 - from _split_keys_hands
@@ -5622,7 +5635,7 @@ def test_keys_leap_is_zero_past_the_movement_window(monkeypatch):
     # #178: zeroed so the inside/outside-window comparison below measures
     # the leap term alone (40 is E white, 64 is E white -- no black keys
     # here, but hygiene is cheap).
-    monkeypatch.setattr(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
+    monkeypatch.setattr(scoring, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
     def scored(last_time):
         notes = [_midi_note(t, 40, 0.1) for t in (0.0, 0.2, 0.4)]
         notes.append(_midi_note(last_time, 64, 0.1))
@@ -5631,7 +5644,7 @@ def test_keys_leap_is_zero_past_the_movement_window(monkeypatch):
                          for b in range(10)],
                "sections": [], "tuning": []}
         groups = _scored_keys_groups(arr)
-        return groups, routes._TempoParams.from_beats(
+        return groups, scoring._TempoParams.from_beats(
             [b["time"] for b in arr["beats"]], arr["beats"],
         ).fret_jump_window_seconds
 
@@ -5640,7 +5653,7 @@ def test_keys_leap_is_zero_past_the_movement_window(monkeypatch):
     assert all(g["hand"] == "upper" for g in early + late)  # nosec B101 - one hand throughout
     assert 0.6 - 0.4 <= window  # nosec B101 - the early jump is inside the window
     assert 3.0 - 0.4 > window  # nosec B101 - the late one is not
-    monkeypatch.setattr(routes, "_KEYS_LEAP_MAX_BONUS", 0.0)
+    monkeypatch.setattr(scoring, "_KEYS_LEAP_MAX_BONUS", 0.0)
     early_off, _ = scored(0.6)
     late_off, _ = scored(3.0)
     assert early[-1]["cost"] > early_off[-1]["cost"]  # nosec B101 - charged inside the window
@@ -5706,32 +5719,32 @@ def test_keys_leap_bonus_matches_its_documented_formula(distance, available, win
     arithmetic that produces it. This follows the repo convention of pinning
     a weight exactly (see `_legacy_keys_scores`) rather than only bounding it.
     """
-    tempo = routes._TempoParams(fret_jump_window_seconds=window)
-    assert routes._keys_leap_bonus(distance, available, tempo) == pytest.approx(expected)  # nosec B101 - hand-computed
+    tempo = scoring._TempoParams(fret_jump_window_seconds=window)
+    assert scoring._keys_leap_bonus(distance, available, tempo) == pytest.approx(expected)  # nosec B101 - hand-computed
 
 
 def test_keys_leap_bonus_is_bounded_and_saturates_at_the_reference_distance():
-    tempo = routes._TempoParams()
-    assert routes._keys_leap_bonus(0.0, 0.0, tempo) == 0.0  # nosec B101 - no movement, no cost
+    tempo = scoring._TempoParams()
+    assert scoring._keys_leap_bonus(0.0, 0.0, tempo) == 0.0  # nosec B101 - no movement, no cost
     for distance in (0.5, 2.0, 5.0, 12.0, 19.0, 24.0, 48.0, 240.0):
         for available in (0.0, 0.05, 0.5, 1.0, 5.0):
-            bonus = routes._keys_leap_bonus(distance, available, tempo)
-            assert 0.0 <= bonus <= routes._KEYS_LEAP_MAX_BONUS  # nosec B101 - pytest assertion
+            bonus = scoring._keys_leap_bonus(distance, available, tempo)
+            assert 0.0 <= bonus <= scoring._KEYS_LEAP_MAX_BONUS  # nosec B101 - pytest assertion
     # At or beyond the reference distance with no time at all the term
     # saturates exactly at its cap, and further distance buys nothing.
-    assert routes._keys_leap_bonus(
-        routes._KEYS_LEAP_REFERENCE_SEMITONES, 0.0, tempo,
-    ) == pytest.approx(routes._KEYS_LEAP_MAX_BONUS)  # nosec B101 - pytest assertion
-    assert routes._keys_leap_bonus(240.0, 0.0, tempo) == pytest.approx(routes._KEYS_LEAP_MAX_BONUS)  # nosec B101 - pytest assertion
+    assert scoring._keys_leap_bonus(
+        scoring._KEYS_LEAP_REFERENCE_SEMITONES, 0.0, tempo,
+    ) == pytest.approx(scoring._KEYS_LEAP_MAX_BONUS)  # nosec B101 - pytest assertion
+    assert scoring._keys_leap_bonus(240.0, 0.0, tempo) == pytest.approx(scoring._KEYS_LEAP_MAX_BONUS)  # nosec B101 - pytest assertion
     # Strictly increasing in distance below the cap, non-increasing in the time
     # available (a bounded-log index over a saturating pressure factor).
-    by_distance = [routes._keys_leap_bonus(d, 0.5, tempo) for d in (2, 5, 9, 12)]
+    by_distance = [scoring._keys_leap_bonus(d, 0.5, tempo) for d in (2, 5, 9, 12)]
     assert all(a < b for a, b in zip(by_distance, by_distance[1:]))  # nosec B101 - pytest assertion
-    by_time = [routes._keys_leap_bonus(12.0, t, tempo) for t in (0.0, 0.25, 0.5, 1.0, 4.0)]
+    by_time = [scoring._keys_leap_bonus(12.0, t, tempo) for t in (0.0, 0.25, 0.5, 1.0, 4.0)]
     assert all(b <= a for a, b in zip(by_time, by_time[1:]))  # nosec B101 - pytest assertion
     # The target width is the "no cost" width: anything narrower still costs
     # something, but an order of magnitude less than the reference distance.
-    assert routes._keys_leap_bonus(5.0, 0.0, tempo) < routes._keys_leap_bonus(19.0, 0.0, tempo)  # nosec B101 - pytest assertion
+    assert scoring._keys_leap_bonus(5.0, 0.0, tempo) < scoring._keys_leap_bonus(19.0, 0.0, tempo)  # nosec B101 - pytest assertion
 
 
 def test_keys_leap_term_preserves_the_cost_vs_retention_relationship():
@@ -5748,8 +5761,8 @@ def test_keys_leap_term_preserves_the_cost_vs_retention_relationship():
            "beats": [{"time": round(b * 0.5, 3), "measure": 0 if b % 4 == 0 else -1}
                      for b in range(20)]}
     groups = _scored_keys_groups(arr)
-    turning = routes._melody_turning_points_keys(
-        groups, routes._TempoParams.from_beats(
+    turning = scoring._melody_turning_points_keys(
+        groups, scoring._TempoParams.from_beats(
             [b["time"] for b in arr["beats"]], arr["beats"],
         ),
     )
@@ -5761,10 +5774,10 @@ def test_keys_leap_term_preserves_the_cost_vs_retention_relationship():
     # predecessor, so it carries a real leap while still being no melody and no
     # turning point.
     assert checked[-1]["notes"][0]["s"] * 24 + checked[-1]["notes"][0]["f"] == 66  # nosec B101 - pytest assertion
-    assert routes._keys_leap_bonus(22.0, 0.5, routes._TempoParams()) > 0.0  # nosec B101 - pytest assertion
+    assert scoring._keys_leap_bonus(22.0, 0.5, scoring._TempoParams()) > 0.0  # nosec B101 - pytest assertion
     for g in checked:
         assert g["cost"] - g["retention_score"] == pytest.approx(
-            routes._KEYS_BEAT_VALUE_COEF * g["value"],
+            scoring._KEYS_BEAT_VALUE_COEF * g["value"],
         )  # nosec B101 - pytest assertion
 
 
@@ -5783,8 +5796,8 @@ def test_keys_leap_max_bonus_stays_below_the_metrical_coefficient():
     value the scoring path actually produces. The term's magnitude is pinned
     by `test_keys_leap_bonus_matches_its_documented_formula`, which this
     deliberately does not duplicate."""
-    assert routes._KEYS_LEAP_MAX_BONUS < 0.12  # nosec B101 - pytest assertion
-    assert routes._KEYS_LEAP_MAX_BONUS < routes._SHIFT_MAX_BONUS  # nosec B101 - pytest assertion
+    assert scoring._KEYS_LEAP_MAX_BONUS < 0.12  # nosec B101 - pytest assertion
+    assert scoring._KEYS_LEAP_MAX_BONUS < scoring._SHIFT_MAX_BONUS  # nosec B101 - pytest assertion
 
 
 def test_keys_unsplit_group_hand_follows_the_melody_register():
@@ -5804,14 +5817,14 @@ def test_keys_unsplit_group_hand_follows_the_melody_register():
     # The term's behaviour on those tags is covered by
     # `test_keys_leap_is_measured_against_the_previous_group_of_the_same_hand`
     # and `test_keys_leap_term_charges_a_single_alternating_two_register_melody`.
-    split = routes._group_notes_keys(
+    split = scoring._group_notes_keys(
         [_midi_note(0.0, 40), _midi_note(0.0, 84)], [],
     )
     assert [g["hand"] for g in split] == ["lower", "upper"]  # nosec B101 - from _split_keys_hands
 
     notes = [_midi_note(i * 0.5, 40 + 2 * i) for i in range(6)]
     notes += [_midi_note(3.0 + i * 0.5, 72 + 2 * i) for i in range(6)]
-    groups = routes._group_notes_keys(notes, [])
+    groups = scoring._group_notes_keys(notes, [])
     assert all(not g["hand_split"] for g in groups)  # nosec B101 - pytest assertion
     assert all(g["hand"] is not None for g in groups)  # nosec B101 - the key always exists
     assert [g["melody"] for g in groups] == [False] * 6 + [True] * 6  # nosec B101 - pytest assertion
@@ -5838,17 +5851,17 @@ def test_keys_black_key_bonus_matches_its_documented_formula():
     pays nothing, and a 4-voice chord with one black key pays a quarter."""
     def group(midis):
         return [{"s": m // 24, "f": m % 24} for m in midis]
-    assert routes._keys_black_key_bonus([]) == 0.0  # nosec B101 - no notes, no cost
-    assert routes._keys_black_key_bonus(group([60])) == 0.0  # nosec B101 - C white
-    assert routes._keys_black_key_bonus(group([61])) == pytest.approx(
-        routes._KEYS_BLACK_KEY_MAX_BONUS
+    assert scoring._keys_black_key_bonus([]) == 0.0  # nosec B101 - no notes, no cost
+    assert scoring._keys_black_key_bonus(group([60])) == 0.0  # nosec B101 - C white
+    assert scoring._keys_black_key_bonus(group([61])) == pytest.approx(
+        scoring._KEYS_BLACK_KEY_MAX_BONUS
     )  # nosec B101 - C# black pays the full cap
-    assert routes._keys_black_key_bonus(group([60, 64, 67])) == 0.0  # nosec B101 - C major triad
-    assert routes._keys_black_key_bonus(group([60, 61, 62])) == pytest.approx(
-        routes._KEYS_BLACK_KEY_MAX_BONUS / 3
+    assert scoring._keys_black_key_bonus(group([60, 64, 67])) == 0.0  # nosec B101 - C major triad
+    assert scoring._keys_black_key_bonus(group([60, 61, 62])) == pytest.approx(
+        scoring._KEYS_BLACK_KEY_MAX_BONUS / 3
     )  # nosec B101 - one of three black (C, C#, D)
-    assert routes._keys_black_key_bonus(group([61, 63, 66, 68])) == pytest.approx(
-        routes._KEYS_BLACK_KEY_MAX_BONUS
+    assert scoring._keys_black_key_bonus(group([61, 63, 66, 68])) == pytest.approx(
+        scoring._KEYS_BLACK_KEY_MAX_BONUS
     )  # nosec B101 - all black pays the cap, not 4x it
 
 
@@ -5866,8 +5879,8 @@ def test_keys_black_key_max_bonus_stays_below_the_metrical_coefficient():
     value the scoring path produces. The term's magnitude is pinned by
     `test_keys_black_key_bonus_matches_its_documented_formula`, and its
     scoring-path effect by the transposition tests below."""
-    assert routes._KEYS_BLACK_KEY_MAX_BONUS < routes._KEYS_BEAT_VALUE_COEF  # nosec B101 - pytest assertion
-    assert routes._KEYS_BLACK_KEY_MAX_BONUS < 0.12  # nosec B101 - fretted metrical ceiling
+    assert scoring._KEYS_BLACK_KEY_MAX_BONUS < scoring._KEYS_BEAT_VALUE_COEF  # nosec B101 - pytest assertion
+    assert scoring._KEYS_BLACK_KEY_MAX_BONUS < 0.12  # nosec B101 - fretted metrical ceiling
 
 
 def _keys_transposition_pair():
@@ -5901,9 +5914,9 @@ def test_keys_black_key_passage_scores_harder_than_its_white_transposition():
     assert [g["melody"] for g in white_groups] == [g["melody"] for g in black_groups]  # nosec B101 - same contour
     assert all(len(g["notes"]) == 1 for g in white_groups + black_groups)  # nosec B101 - poly/span are 0 both sides
     deltas = [b["cost"] - w["cost"] for b, w in zip(black_groups, white_groups)]
-    assert all(0.0 <= d <= routes._KEYS_BLACK_KEY_MAX_BONUS + 1e-9 for d in deltas)  # nosec B101 - within the documented bound
+    assert all(0.0 <= d <= scoring._KEYS_BLACK_KEY_MAX_BONUS + 1e-9 for d in deltas)  # nosec B101 - within the documented bound
     assert sum(deltas) / len(deltas) == pytest.approx(
-        0.75 * routes._KEYS_BLACK_KEY_MAX_BONUS
+        0.75 * scoring._KEYS_BLACK_KEY_MAX_BONUS
     )  # nosec B101 - mean gain is the mean black share times the cap
     assert (
         sum(g["retention_score"] for g in black_groups)
@@ -5911,7 +5924,7 @@ def test_keys_black_key_passage_scores_harder_than_its_white_transposition():
     )  # nosec B101 - retention follows cost up
     # Control: with the term off the pair is byte-identical, so the whole
     # delta above is this term and not an artefact of the fixtures.
-    with patch.object(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0):
+    with patch.object(scoring, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0):
         white_off = _scored_keys_groups(_keys_register_single_line(white))
         black_off = _scored_keys_groups(_keys_register_single_line(black))
     assert [g["cost"] for g in white_off] == [g["cost"] for g in black_off]  # nosec B101 - unconfounded control
@@ -5947,11 +5960,11 @@ def test_keys_black_key_term_preserves_the_cost_vs_retention_relationship():
     white, black = _keys_transposition_pair()
     black_arr = _keys_register_single_line(black)
     beat_times = [b["time"] for b in black_arr["beats"]]
-    tempo = routes._TempoParams.from_beats(beat_times, black_arr["beats"])
+    tempo = scoring._TempoParams.from_beats(beat_times, black_arr["beats"])
     groups = _scored_keys_groups(black_arr)
     white_groups = _scored_keys_groups(_keys_register_single_line(white))
     assert [g["melody"] for g in groups] == [g["melody"] for g in white_groups]  # nosec B101 - tags agree
-    turning = routes._melody_turning_points_keys(groups, tempo)
+    turning = scoring._melody_turning_points_keys(groups, tempo)
     checked = [
         g for gi, g in enumerate(groups)
         if g["notes"] and not g["melody"] and gi not in turning
@@ -5959,11 +5972,11 @@ def test_keys_black_key_term_preserves_the_cost_vs_retention_relationship():
     assert len(checked) >= 3  # nosec B101 - pytest assertion
     assert any(g["value"] > 0.0 for g in checked)  # nosec B101 - the fixture must exercise a real discount
     assert any(
-        routes._note_midi_keys(g["notes"][0]) % 12 in _BLACK_KEYS for g in checked
+        scoring._note_midi_keys(g["notes"][0]) % 12 in _BLACK_KEYS for g in checked
     )  # nosec B101 - and a real black-key charge
     for g in checked:
         assert g["cost"] - g["retention_score"] == pytest.approx(
-            routes._KEYS_BEAT_VALUE_COEF * g["value"],
+            scoring._KEYS_BEAT_VALUE_COEF * g["value"],
         )  # nosec B101 - pytest assertion
 
 
@@ -5990,7 +6003,7 @@ def test_keys_black_key_chord_charges_the_share_not_the_count():
     assert len(white_groups[0]["notes"]) == 4  # nosec B101 - one unsplit chord group
     assert len(mixed_groups[0]["notes"]) == 4  # nosec B101 - pytest assertion
     assert mixed_groups[0]["cost"] - white_groups[0]["cost"] == pytest.approx(
-        routes._KEYS_BLACK_KEY_MAX_BONUS / 4
+        scoring._KEYS_BLACK_KEY_MAX_BONUS / 4
     )  # nosec B101 - one black key of four
 
 
@@ -6002,8 +6015,8 @@ def test_keys_black_key_term_makes_a_black_ladder_harder_end_to_end():
     white, black = _keys_transposition_pair()
     white_arr = _keys_register_single_line(white * 2)
     black_arr = _keys_register_single_line(black * 2)
-    white_phrases = routes.generate_phrases_for_arrangement(white_arr, n_levels=4)
-    black_phrases = routes.generate_phrases_for_arrangement(black_arr, n_levels=4)
+    white_phrases = scoring.generate_phrases_for_arrangement(white_arr, n_levels=4)
+    black_phrases = scoring.generate_phrases_for_arrangement(black_arr, n_levels=4)
     assert white_phrases and black_phrases  # nosec B101 - pytest assertion
     assert len(white_phrases) == len(black_phrases)  # nosec B101 - same windows
     for wp, bp in zip(white_phrases, black_phrases):
@@ -6056,7 +6069,7 @@ def test_fretted_arrangement_matches_baseline(fixture_name):
     arr = _load_json(fixture_path)
     baseline = _load_json(baseline_path)
 
-    result = routes.generate_phrases_for_arrangement(arr, n_levels=6)
+    result = scoring.generate_phrases_for_arrangement(arr, n_levels=6)
 
     assert result == baseline, (
         f"{fixture_name}: generated phrases differ from baseline"
