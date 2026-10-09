@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- The standalone difficulty guide is now an **event-driven, accessible DOM
+  tier rail** instead of a per-frame canvas glass HUD (#157, item 2 of the
+  tier rail in #131, part of #139's overlay work). One cell per visible
+  phrase; the first `currentTier + 1` segments are lit and an outlined
+  segment marks `topTier`; difficulty is never encoded by physical size, and
+  hover/focus/`aria-label` give `Tier N of M · full detail at K` with a
+  single keyboard focus stop reading current + upcoming phrases. Decisions
+  the issue asked to state: it moved OFF the bare canvas onto DOM (so an
+  accessible name and focus come from the platform), and it updates on
+  discrete events — song load, phrase commit, mastery change, settings
+  change, visibility — never from a `requestAnimationFrame` loop (the old
+  HUD redrew every frame despite rarely-changing inputs). Missing phrase
+  data shows no rail rather than a zero-tier value; Section Map / Split
+  Screen isolation is unchanged (the overlay hides exactly as before). The
+  legacy canvas glass HUD is retained but unreachable (gated behind an
+  internal `_USE_LEGACY_GLASS_HUD` constant) so sub-issue 4 (#159) can
+  delete it in one place. New `tests/tier_rail.test.js` pins the render, the
+  accessible name, every suppression gate, the unknown-mastery case and the
+  no-rAF contract. Version 0.30.5 -> 0.31.0.
 - Verified the Split Screen compatibility floor and pinned the Note Detect
   / Split Screen peer surfaces with integration tests (#130). Split Screen's
   consumed API (`window.slopsmithSplitscreen.isActive()`) exists at least as
