@@ -19,14 +19,18 @@ don't assume "gameplay-loop plugin" means the interesting code is all in
   (`_score_groups_keys`) instruments. `_notes_for_level` strips notes/
   techniques back down to what a given tier keeps. This is where nearly
   all of the roadmap work below lives.
-- **`screen.js` — the live controller.** Watches accuracy per phrase
-  (`commitPhraseResult`) and moves the mastery slider via an EMA with a
-  dead band (see `thresholds()` for the actual up/down hit-rate cutoffs
-  per Sensitivity setting — there is no simple closed-form settle-point
-  formula; use `tools/settle_points.js` to reason about where a setting
-  actually lands. A README section documenting its output is proposed in
-  PR #132, not yet merged as of this writing — check whether it has
-  landed before citing it as existing).
+- **`screen.js` — the live controller.** Watches accuracy per phrase and
+  moves the mastery slider via an EMA with a dead band (see `thresholds()`
+  for the actual up/down hit-rate cutoffs per Sensitivity setting — there
+  is no simple closed-form settle-point formula; use
+  `tools/settle_points.js` to reason about where a setting actually lands.
+  A README section documenting its output is proposed in PR #132, not yet
+  merged as of this writing — check whether it has landed before citing it
+  as existing). One parameterized judgment-polling/commit machine serves
+  both the main player (default state `_mainScore`) and each Split Screen
+  panel (per-highway state) — `_tickScoreHighway` with per-path commit
+  hooks — so there is a single scoring pipeline, not a main copy and a
+  split copy (Stage 4, #139).
 
 **The design rationale for nearly everything in `routes.py` lives in
 issue #103** (the science-grounded roadmap: motor learning / music
