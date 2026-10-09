@@ -7,18 +7,26 @@ tier-assignment pipeline that is the bulk of this repo's actual complexity —
 don't assume "gameplay-loop plugin" means the interesting code is all in
 `screen.js`.
 
-## Two halves: generator (`routes.py`) vs. controller (`screen.js`)
+## Three files: generator (`scoring.py`) + I/O (`routes.py`) vs. controller (`screen.js`)
 
-- **`routes.py` — the generator.** Given a chart, scores every note/chord
-  group's *cost* (how hard to play — fretting, technique, coordination,
-  hand movement) and *value* (how much to keep — beat strength, phrase
-  boundaries, melody shape, key/chord stability), then assigns tiers via
-  `_score_groups` → `_tier_thresholds` → `_assign_tiers`, refining the
-  lower-tier path with `_refine_lower_tier_path`/`_best_bridge_candidate`.
-  Separate scoring paths exist for fretted (`_score_groups`) and keys
-  (`_score_groups_keys`) instruments. `_notes_for_level` strips notes/
-  techniques back down to what a given tier keeps. This is where nearly
-  all of the roadmap work below lives.
+- **`scoring.py` — the pure generator core.** Given a chart, scores every
+  note/chord group's *cost* (how hard to play — fretting, technique,
+  coordination, hand movement) and *value* (how much to keep — beat
+  strength, phrase boundaries, melody shape, key/chord stability), then
+  assigns tiers via `_score_groups` → `_tier_thresholds` → `_assign_tiers`,
+  refining the lower-tier path with
+  `_refine_lower_tier_path`/`_best_bridge_candidate`. Separate scoring paths
+  exist for fretted (`_score_groups`) and keys (`_score_groups_keys`)
+  instruments. `_notes_for_level` strips notes/techniques back down to what
+  a given tier keeps. This is where nearly all of the roadmap work below
+  lives. It takes and returns plain dicts/lists — no Path/zipfile/FastAPI —
+  and is enforced I/O-free by the `pure-core-has-no-io` CI check. Extracted
+  from `routes.py` in Stage 2b (#146/#155).
+- **`routes.py` — pack I/O, request models, and HTTP.** Reads/writes the
+  sloppak dir/zip (with member-name containment checks), defines the
+  Pydantic request bodies, and registers the routes in `setup()`. It loads
+  the scoring core with `context["load_sibling"]("scoring")` (never at
+  import time) and threads the module into `_generate_one`/`_generate_song`.
 - **`screen.js` — the live controller.** Watches accuracy per phrase and
   moves the mastery slider via an EMA with a dead band (see `thresholds()`
   for the actual up/down hit-rate cutoffs per Sensitivity setting — there
@@ -32,7 +40,7 @@ don't assume "gameplay-loop plugin" means the interesting code is all in
   hooks — so there is a single scoring pipeline, not a main copy and a
   split copy (Stage 4, #139).
 
-**The design rationale for nearly everything in `routes.py` lives in
+**The design rationale for nearly everything in `scoring.py` lives in
 issue #103** (the science-grounded roadmap: motor learning / music
 cognition citations, evidence-confidence tags, and a live status table of
 what's shipped vs. still open) — read it before assuming a scoring term's

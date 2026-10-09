@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Extracted the pure chart-scoring core out of `routes.py` into a sibling
+  `scoring.py` (Stage 2b-4, #155, part of #146). `routes.py` (4387 -> 649
+  lines) now holds only pack I/O, Pydantic request models and `setup()`'s
+  route registration; `scoring.py` (3671 lines) holds the scoring math. The
+  core is loaded at setup time via `context["load_sibling"]("scoring")` —
+  the Host's namespaced sibling loader, never at import time — and threaded
+  into `_generate_one`/`_generate_song` as a keyword-only `scoring` argument
+  (not a module global, so the ~14 tests that call those functions directly
+  without running `setup()` keep working). The only names crossing the seam
+  are four pure callables (`_instrument_kind`, `_is_bass_arrangement`,
+  `_is_unsupported_skip`, `generate_phrases_for_arrangement`); there is no
+  `routes` <-> `scoring` import cycle and no shared constant. The test suite
+  now binds the real sibling loader and retargets pure-name references and
+  `patch.object`/`getattr` targets at the `scoring` module object (508+ refs)
+  rather than forwarding attribute access through `routes`, which the
+  Stage 2b-1 prototype measured as silently neutering four regression pins.
+  No scoring-behavior change: 361 Python + 263 JS tests pass unchanged, and
+  `pure-core-has-no-io` passes with `scoring.py` carrying the
+  `Pure chart-scoring core` banner. Version 0.30.3 -> 0.30.4 (internal
+  refactor, no behavior change).
+
 ### Fixed
 - Removed leftover duplication from the scoring-pipeline unification and
   documented the single pipeline (Stage 4-4, #166, part of #139). Factored
