@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Removed leftover duplication from the scoring-pipeline unification and
+  documented the single pipeline (Stage 4-4, #166, part of #139). Factored
+  the thrice-repeated abandon-phrase reset (discontinuity step's two branches,
+  transition step's reset) into `_abandonScorePhrase`; flagged the now-dead
+  `stateForAttempt` hook field vestigial (kept for shape, no new uses);
+  corrected stale comments that still described the removed sync layer and
+  the pre-migration split copy. `CLAUDE.md` now describes the single
+  parameterized machine (`_tickScoreHighway` + per-path commit hooks) instead
+  of two pipelines. Guardrails verified: the shared tick does no per-frame
+  DOM or `localStorage` work (highway/scorer reads + in-memory ledger only;
+  persistence stays debounced, diagnostics contribution unchanged), no
+  handler awaits a fetch, subscriptions suspend when the screen is inactive
+  (unchanged `startRafLoops`/visibility paths). Settle-point output
+  byte-identical before vs after. Version 0.30.2 -> 0.30.3 (internal
+  cleanup, no scoring change).
 - Migrated the Split Screen scoring path onto the shared implementation and
   deleted the duplicate (Stage 4-3, #165, part of #139). Both pipelines now
   run one parameterized `_tickScoreHighway` (guards, seek handling, phrase
@@ -38,7 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sync-both-ways layer (and the class of stale-resync regressions it caused,
   e.g. a pre-seek judgment surviving a forward seek into the commit) is
   deleted, not worked around. The two pipelines differ only in side-channel
-  hooks: phrase-attempt scope (main always records; split only with a player
+  hooks: attempt scope (main always records; split only with a player
   context), mastery streak (main only), manual-override scope (global vs
   panel), write channel (`window.setMastery` + `lastAutoAction` vs panel
   highway), and diagnostics (main only). Split still runs its own tick path

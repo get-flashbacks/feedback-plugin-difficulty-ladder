@@ -1996,11 +1996,15 @@
     // is why the KNOWN DIFFERENCES the Stage 4-1 tests pin (write channel,
     // override scope, attempt scope, streak, diagnostics) live there and not
     // in the steps below:
-    //   hooks.contextForAttempt/highwayForAttempt/stateForAttempt: where the
-    //     phrase attempt record reads its ledger from (main: the default
-    //     state itself; split: the panel's own `state`).
+    //   hooks.contextForAttempt/highwayForAttempt: where the phrase attempt
+    //     and best-mastery records go (main: `_mainPlayerContext` +
+    //     `window.highway`; split: `state.context` + the panel highway).
+    //     `stateForAttempt` is vestigial -- both callers pass their own state
+    //     and the snapshot path ignores it -- kept so the existing hook
+    //     objects keep their shape. (Stage 4-4 #166: flagged for removal
+    //     once the direct-ratio callers are migrated; do not add new uses.)
     //   hooks.recordStreak: main updates the mastery streak on every commit;
-    //     split has no equivalent (pinned but untested -- Stage 4-2 decides).
+    //     split has no equivalent (pinned by the Stage 4-2 shared-commit test).
     //   hooks.onManualOverride(state, curPct): main disables auto-adjust
     //     GLOBALLY (setting + persisted + UI sync); split sets the panel's
     //     `manualOverride` flag only.
@@ -2641,6 +2645,8 @@
     // into `state`'s pending ledger up to `cutoff`. Same call for the main
     // path (state = `_mainScore`) and each split panel (state = the
     // per-highway object) -- the only difference is whose cursors advance.
+    // Highway-array reads stay INSIDE this step (one fetch per call) so the
+    // per-frame path fetches each array exactly once per pass.
     function _enqueueScoreEvents(hw, state, phrase, cutoff) {
         var notes = typeof hw.getFilteredNotes === 'function' ? hw.getFilteredNotes() : [];
         var chords = typeof hw.getFilteredChords === 'function' ? hw.getFilteredChords() : [];
@@ -2676,11 +2682,26 @@
 
     // The shared cursor-advance step: skip every event crossed by a forward
     // seek before resuming normal cursor-fed scoring at the destination.
-    // Reads the highway's arrays once (they are re-fetched per call -- the
-    // chart can change under a seek), advances the passed state's cursors.
+    // Advances the passed state's cursors over already-fetched arrays;
+    // `_advanceCursorsToTime` below is the highway-reading entry point (one
+    // fetch per call -- the chart can change under a seek).
     function _advanceScoreCursors(state, notes, chords, playbackTime) {
         state.noteCursor = _advanceCursorToTime(notes, state.noteCursor, playbackTime);
         state.chordCursor = _advanceCursorToTime(chords, state.chordCursor, playbackTime);
+    }
+
+    // Drop the in-flight phrase's judgments (a replay must judge fresh; a
+    // forward jump must not fabricate judgments for its unplayed tail).
+    // Factored because the discontinuity step needs it on two branches;
+    // cursors are NOT reset here -- a backward seek resyncs them from
+    // scratch at the call site, a forward jump advances past the jump via
+    // `_advanceCursorsToTime`.
+    function _abandonScorePhrase(state) {
+        state.phraseHits = 0;
+        state.phraseTotal = 0;
+        state.phraseJudgments = [];
+        state.judgedKeys = new Set();
+        state.pendingJudgments = new Map();
     }
 
     // The shared discontinuity step: fold one frame's seek handling into
@@ -2707,18 +2728,10 @@
             // stale -- without this, replayed notes are skipped as already
             // judged (their keys are still in the set) and multiple passes
             // over the same phrase silently merge into one attempt.
-            state.phraseHits = 0;
-            state.phraseTotal = 0;
-            state.phraseJudgments = [];
-            state.judgedKeys = new Set();
-            state.pendingJudgments = new Map();
+            _abandonScorePhrase(state);
         }
         if (jumpedForward) {
-            state.phraseHits = 0;
-            state.phraseTotal = 0;
-            state.phraseJudgments = [];
-            state.judgedKeys = new Set();
-            state.pendingJudgments = new Map();
+            _abandonScorePhrase(state);
         }
         state.lastScoredT = t;
         state.lastScoredWallT = wallT;
@@ -2767,11 +2780,7 @@
                 };
             }
             state.curPhraseIdx = idx;
-            state.phraseHits = 0;
-            state.phraseTotal = 0;
-            state.phraseJudgments = [];
-            state.judgedKeys = new Set();
-            state.pendingJudgments = new Map();
+            _abandonScorePhrase(state);
         }
         return { idx: idx, completed: completed };
     }
