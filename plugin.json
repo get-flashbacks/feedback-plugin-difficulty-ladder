@@ -1,7 +1,7 @@
 {
   "id": "difficulty_ladder",
   "name": "Difficulty Ladder",
-  "version": "0.29.3",
+  "version": "0.30.0",
   "private": false,
   "description": "Live accuracy-driven difficulty auto-adjustment with a per-section difficulty guide.",
   "category": "practice",

@@ -282,6 +282,20 @@ contract.
   twice `_KEYS_BEAT_VALUE_COEF` — are heuristics, not measured player
   thresholds. The term is keys-only; the fretted path's own shift bonus is
   unchanged.
+- **Keys/piano black-key content costs more (#178, item 2 of the keys roadmap
+  #175).** `_score_groups_keys` now charges each group its black-key share
+  (black notes / total notes over pitch classes 1/3/6/8/10), scaled to a
+  `_KEYS_BLACK_KEY_MAX_BONUS` cap of 0.02 — a single black melody note pays
+  the full cap, a 4-voice chord with one black key pays a quarter of it.
+  Mechanical like the leap term above, so it raises `cost` and
+  `retention_score` together. The cap sits below the keys metrical
+  `_KEYS_BEAT_VALUE_COEF` (0.025) and well under the fretted 0.12 ceiling,
+  so a fully-black passage scores at most 0.02/group above its all-white
+  transposition (measured +0.015/group mean on a C-major vs Db-major pair).
+  No separate white→black transition term — movement between onsets is
+  already priced by the leap term. Evidence is weak (beginner-method
+  precedent, 🔴 per #103's convention); the term compounds with, but never
+  disables, #179's key-stability discount.
 - **Keys/piano bottom tier has a minimum musical density (#181, item 6 of
   the keys roadmap #175).** The proportional tier floor in `_assign_tiers`
   guarantees tier 0 a share of the phrase's GROUPS (~15%), but a keys group
@@ -337,7 +351,7 @@ contract.
 | Instrument | Supported? | Notes |
 |---|---|---|
 | Guitar / bass (fretted) | ✅ | Fret complexity, low-position stretch posture, time-aware hand shifts, string-skip/hand-shape distance, tempo/syncopation-aware density, sustain-ease. Technique scoring covers bend (base + pre-bend/round-trip/shaped-curve difficulty, `bt`/`bnv`), slide, hammer-on/pull-off, tremolo, natural vs. pinch harmonic (scored independently), palm/string mute, vibrato, fret-hand mute, and bass slap/pop (scored independently, slap weighted harder), plus a coordination bonus for a group using more than one distinct technique at once or switching technique from the group before (a chord mixing a bend and a palm mute scores above either alone; see "Technique difficulty counts coordination demand" below). Timing thresholds (grouping window, beat tolerance, movement time scale) scale with the song's own tempo instead of fixed wall-clock constants. |
-| Keys / piano | ✅ | Separate pitch-based heuristic (polyphony, hand-span, density, sustain-ease, per-hand position shift) — keys notes encode `midi = string*24 + fret`, so the fretted heuristic doesn't apply and never runs against them. No fret anchors/hand-shapes generated (the piano renderer doesn't consume them). |
+| Keys / piano | ✅ | Separate pitch-based heuristic (polyphony, hand-span, density, sustain-ease, per-hand position shift, black-key share) — keys notes encode `midi = string*24 + fret`, so the fretted heuristic doesn't apply and never runs against them. No fret anchors/hand-shapes generated (the piano renderer doesn't consume them). |
 | Drums | ❌ | Drum parts are a `drum_tab.json` pointer, not a `notes`/`chords` file — outside this generator's data model entirely. Detected and skipped cleanly (`unsupported-instrument-drums`), never mis-scored. |
 | Anything else (vocals, harmony, notation-only, …) | ❌ | An arrangement whose `type` is a specific, non-empty value this generator doesn't recognize is rejected explicitly (`unsupported-instrument-type`) rather than silently treated as fretted. |
 

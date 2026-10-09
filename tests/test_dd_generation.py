@@ -4883,12 +4883,17 @@ def test_fretted_turning_points_still_count_a_note_sharing_an_onset_with_a_chord
     assert 1 in turning  # nosec B101 - pytest assertion
 
 
-def test_keys_melody_bonus_keeps_cheap_melody_notes_distinguishable():
+def test_keys_melody_bonus_keeps_cheap_melody_notes_distinguishable(monkeypatch):
     # Slow, sustained melody notes have a very low cost; the melody discount
     # must neither drive a positive score to the 0.0 clamp nor collapse the
     # ordering. Compared against the same groups scored WITHOUT the melody
     # flag, so the existing beat-value discount (which can reach 0.0 on its
     # own for the very cheapest notes) is not mistaken for the melody bonus.
+    # #178: the upper line walks 72/74/76/78/80 -- two of those (74 D, 76 E
+    # are white, but 78 F# and 80 G# are black), so the black-key term would
+    # charge the melody notes unevenly and break the ordering this pins.
+    # Zeroed so the comparison measures the melody bonus alone.
+    monkeypatch.setattr(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
     sustains = [0.4, 0.8, 1.2, 1.6, 2.0, 2.4]
     notes = [_midi_note(i * 2.0, 72 + (i % 5) * 2, sustains[i % len(sustains)]) for i in range(12)]
     notes += [_midi_note(i * 2.0, 48, 3.0) for i in range(12)]
@@ -5247,12 +5252,16 @@ def test_keys_tier0_floor_caps_the_backstop_at_the_emittable_count():
     assert len(p["levels"][3]["notes"]) == 40  # nosec B101 - pytest assertion
 
 
-def test_keys_tier0_floor_leaves_an_already_dense_bottom_tier_alone():
+def test_keys_tier0_floor_leaves_an_already_dense_bottom_tier_alone(monkeypatch):
     """A phrase whose groups all sit at tier 0 already (a slow,
     sustained, sparse line: every retention score is 0.0) needs
     no floor -- the strong-beat covers are already kept and the
     backstop's share is already met, so the assignment is
-    untouched."""
+    untouched. #178: the fixture walks 60-64 (C, C#, D#, E white/black
+    mixed), so the black-key term would lift the black notes off 0.0 and
+    break the all-tier-0 premise. Zeroed so the premise holds; removing
+    the zeroing must fail (the term genuinely moves the fixture)."""
+    monkeypatch.setattr(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
     spb = 0.4
     notes = [_midi_note(bar * 4 * spb, 60 + bar % 5, 2.0) for bar in range(8)]
     groups, beat_times, tempo = _tier0_keys_groups(
@@ -5352,15 +5361,21 @@ def _assert_keys_tiers_nested(phrases):
             assert lower <= higher  # nosec B101 - real superset nesting
 
 
-def test_keys_leap_term_scores_a_leaping_passage_harder_than_a_stepwise_one():
+def test_keys_leap_term_scores_a_leaping_passage_harder_than_a_stepwise_one(monkeypatch):
     # #177 done-when, unit level. Same 16 onsets, same single notes, same
     # sustain; the stepwise fixture walks up in whole tones, the leaping one
     # jumps a full two octaves (24 semitones) per hand per pair of slots, and
     # both chains stay inside their own register so each remains one hand.
+    # #178: the stepwise line is black-key-heavy (42/44/46 are F#/G#/A#)
+    # while the leaping line is all white, so the black-key term would charge
+    # the stepwise side more and shrink the leap delta below the pinned
+    # threshold. Zeroed here so the pair differs ONLY in intervals -- the
+    # black-key term is pinned by its own tests, not this one.
     # Measured: mean cost 0.2039 (stepwise) vs 0.2228 (leaping), mean
     # retention 0.1259 vs 0.1448; every group past each hand's first costs
     # strictly more when it leaps (+0.0280 charged for the two-octave move
     # against +0.0054 for the whole tone).
+    monkeypatch.setattr(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
     stepwise = _keys_register_pairs([40, 42, 44, 46] * 2, [72, 74, 76, 78] * 2)
     leaping = _keys_register_pairs([40, 64] * 4, [72, 96] * 4)
     step_groups = _scored_keys_groups(stepwise)
@@ -5497,25 +5512,33 @@ def test_keys_leap_term_makes_a_leaping_ladder_harder_end_to_end():
     #   k= 19  0.2154 / 0.2175
     # and with the term disabled (`_KEYS_LEAP_MAX_BONUS = 0`) all eleven
     # collapse onto the same pair, 0.1925 / 0.1925, so the whole rise is
-    # this term and nothing else. The BOTTOM tier is 3 / 4 notes at every k up
+    # this term and nothing else. #178: the sweep arms drift across black
+    # and white pitch classes as k changes, so the black-key term would add
+    # a non-monotone ±0.02/group wobble on top of the leap rise and break
+    # the strict step. Zeroed here so the sweep differs ONLY in intervals,
+    # like the unit-level pair above; the tier-0 content note below holds
+    # for the same reason. The BOTTOM tier is 3 / 4 notes at every k up
     # to 13 and 3 / 2 from k = 16 on — it does move, but far too little to be
     # the property worth pinning, which is exactly why the old `== 9` / `== 7`
     # assertion went: a uniform shift barely reorders a passage.
     section_times = [0.0, 1.5, 3.0]
     sizes = [0, 1, 2, 4, 7, 10, 13, 16, 17, 18, 19]
     costs, top_sizes = [], set()
-    for k in sizes:
-        phrases = routes.generate_phrases_for_arrangement(
-            _keys_uniform_interval_arms(k), n_levels=4, section_times=section_times,
-        )
-        live = [p for p in phrases if p["levels"][-1]["notes"]]
-        assert len(live) == 2  # nosec B101 - two non-empty phrases, as measured
-        costs.append([float(p["difficulty_cost"]) for p in live])
-        # Same input notes at every interval size, so equal top-tier content
-        # is what rules out "harder" meaning "more notes" or "fewer tiers".
-        top_sizes.add(tuple(len(p["levels"][-1]["notes"]) for p in live))
-        # The #99 nesting guarantee, on every fixture in the sweep.
-        _assert_keys_tiers_nested(phrases)
+    # #178: zeroed for the sweep so the arms differ ONLY in intervals; the
+    # control below likewise zeroes both terms, for the same reason.
+    with patch.object(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0):
+        for k in sizes:
+            phrases = routes.generate_phrases_for_arrangement(
+                _keys_uniform_interval_arms(k), n_levels=4, section_times=section_times,
+            )
+            live = [p for p in phrases if p["levels"][-1]["notes"]]
+            assert len(live) == 2  # nosec B101 - two non-empty phrases, as measured
+            costs.append([float(p["difficulty_cost"]) for p in live])
+            # Same input notes at every interval size, so equal top-tier content
+            # is what rules out "harder" meaning "more notes" or "fewer tiers".
+            top_sizes.add(tuple(len(p["levels"][-1]["notes"]) for p in live))
+            # The #99 nesting guarantee, on every fixture in the sweep.
+            _assert_keys_tiers_nested(phrases)
 
     assert top_sizes == {(6, 6)}  # nosec B101 - all 12 notes survive at every size
     for smaller, larger in zip(costs, costs[1:]):
@@ -5526,7 +5549,9 @@ def test_keys_leap_term_makes_a_leaping_ladder_harder_end_to_end():
 
     # Control: with the term switched off the sweep is flat, so the ordering
     # above really is this term and not an artefact of the fixtures.
-    with patch.object(routes, "_KEYS_LEAP_MAX_BONUS", 0.0):
+    with patch.object(routes, "_KEYS_LEAP_MAX_BONUS", 0.0), patch.object(
+        routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0,
+    ):
         flat = [
             [
                 float(p["difficulty_cost"])
@@ -5544,6 +5569,11 @@ def test_keys_leap_is_measured_against_the_previous_group_of_the_same_hand(monke
     # The two halves of one onset are NOT each other's predecessor: if they
     # were, BOTH halves of every onset would be charged a phantom leap, and a
     # passage whose left hand never moves would still pay for it.
+    # #178: the fixture mixes white and black pitch classes (48 is C, 84 is
+    # C, 96 is C, but 72+12*i hits 84/96 white and 72 is C white -- the 84 is
+    # C white too; still, the black-key term is zeroed for hygiene) so the
+    # leap delta below is the leap term and nothing else.
+    monkeypatch.setattr(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
     notes = []
     for i in range(4):
         t = i * 0.5
@@ -5589,6 +5619,10 @@ def test_keys_leap_is_zero_past_the_movement_window(monkeypatch):
     # tempo-relative bound the fretted shift bonus and
     # `_melody_turning_points_keys` use. Three repeated low notes hold the
     # skyline median down, so all four groups stay in one hand.
+    # #178: zeroed so the inside/outside-window comparison below measures
+    # the leap term alone (40 is E white, 64 is E white -- no black keys
+    # here, but hygiene is cheap).
+    monkeypatch.setattr(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0)
     def scored(last_time):
         notes = [_midi_note(t, 40, 0.1) for t in (0.0, 0.2, 0.4)]
         notes.append(_midi_note(last_time, 64, 0.1))
@@ -5784,6 +5818,198 @@ def test_keys_unsplit_group_hand_follows_the_melody_register():
     assert [g["hand"] for g in groups] == [
         "upper" if g["melody"] else "lower" for g in groups
     ]  # nosec B101 - one register judgement, so the two agree by construction
+
+
+# ── #178: keys black-key / awkward-fingering cost ──────────────────────────
+#
+# Keys cost ignored which keys are played, so a passage dense in accidentals
+# cost exactly what its transposition to C major did. The fixtures below hold
+# onsets, note counts, sustain and therefore poly/span/density/speed fixed,
+# and -- checked explicitly -- hand and melody tags, so the only thing
+# separating a black-key passage from its all-white transposition is the
+# pitch class each note sits on.
+
+_BLACK_KEYS = {1, 3, 6, 8, 10}
+
+
+def test_keys_black_key_bonus_matches_its_documented_formula():
+    """`_keys_black_key_bonus` is share-of-group times the cap: a single
+    black note pays the full `_KEYS_BLACK_KEY_MAX_BONUS`, an all-white group
+    pays nothing, and a 4-voice chord with one black key pays a quarter."""
+    def group(midis):
+        return [{"s": m // 24, "f": m % 24} for m in midis]
+    assert routes._keys_black_key_bonus([]) == 0.0  # nosec B101 - no notes, no cost
+    assert routes._keys_black_key_bonus(group([60])) == 0.0  # nosec B101 - C white
+    assert routes._keys_black_key_bonus(group([61])) == pytest.approx(
+        routes._KEYS_BLACK_KEY_MAX_BONUS
+    )  # nosec B101 - C# black pays the full cap
+    assert routes._keys_black_key_bonus(group([60, 64, 67])) == 0.0  # nosec B101 - C major triad
+    assert routes._keys_black_key_bonus(group([60, 61, 62])) == pytest.approx(
+        routes._KEYS_BLACK_KEY_MAX_BONUS / 3
+    )  # nosec B101 - one of three black (C, C#, D)
+    assert routes._keys_black_key_bonus(group([61, 63, 66, 68])) == pytest.approx(
+        routes._KEYS_BLACK_KEY_MAX_BONUS
+    )  # nosec B101 - all black pays the cap, not 4x it
+
+
+def test_keys_black_key_max_bonus_stays_below_the_metrical_coefficient():
+    """#178's weight guard, mirroring `test_keys_leap_max_bonus_stays_below_
+    the_metrical_coefficient` and `test_keys_key_stability_coefficient_sits_
+    below_the_keys_beat_coefficient`: the black-key term must stay under the
+    keys metrical `_KEYS_BEAT_VALUE_COEF` (0.025) -- beat position is a
+    stronger, better-evidenced retention signal (#103/B2) than a pitch-class
+    heuristic -- and under the fretted metrical 0.12 the leap guard pins
+    against.
+
+    This is a CONSTANT GUARD, not behaviour coverage: it still passes with
+    `_KEYS_BLACK_KEY_MAX_BONUS = 0.0` (the term deleted outright) and pins no
+    value the scoring path produces. The term's magnitude is pinned by
+    `test_keys_black_key_bonus_matches_its_documented_formula`, and its
+    scoring-path effect by the transposition tests below."""
+    assert routes._KEYS_BLACK_KEY_MAX_BONUS < routes._KEYS_BEAT_VALUE_COEF  # nosec B101 - pytest assertion
+    assert routes._KEYS_BLACK_KEY_MAX_BONUS < 0.12  # nosec B101 - fretted metrical ceiling
+
+
+def _keys_transposition_pair():
+    """Same contour in the same register, one all-white, one mostly black.
+
+    White: C-D-E-F-G-A-B-C x2 (48-60, all pitch classes in {0,2,4,5,7,9,11}).
+    Black: Db-Eb-F-Gb-Ab-Bb-C-Db x2 shifted to the same register -- six of
+    eight notes black, the two white ones (53 F, 60 C) landing on the same
+    relative contour slots, so hand/melody tags and leap charges agree
+    exactly and only the black-key share differs."""
+    white = [48, 50, 52, 53, 55, 57, 59, 60] * 2
+    black = [49, 51, 53, 54, 56, 58, 60, 61] * 2
+    assert all(m % 12 not in _BLACK_KEYS for m in white)  # nosec B101 - fixture hygiene
+    assert sum(m % 12 in _BLACK_KEYS for m in black) == 12  # nosec B101 - 6 of 8 per octave
+    return white, black
+
+
+def test_keys_black_key_passage_scores_harder_than_its_white_transposition():
+    """#178 done-when, unit level: a black-key-heavy fixture scores higher
+    than its transposition to C major, within a documented bound.
+
+    The pair shares onsets, note counts, sustain, hand tags, melody tags and
+    -- with the term off -- byte-identical costs, so the delta with it on is
+    this term and nothing else. The bound is the term's own cap: no group
+    may gain more than `_KEYS_BLACK_KEY_MAX_BONUS` (0.02), and the mean gain
+    is the mean black share (0.75 here) times the cap."""
+    white, black = _keys_transposition_pair()
+    white_groups = _scored_keys_groups(_keys_register_single_line(white))
+    black_groups = _scored_keys_groups(_keys_register_single_line(black))
+    assert [g["hand"] for g in white_groups] == [g["hand"] for g in black_groups]  # nosec B101 - same register
+    assert [g["melody"] for g in white_groups] == [g["melody"] for g in black_groups]  # nosec B101 - same contour
+    assert all(len(g["notes"]) == 1 for g in white_groups + black_groups)  # nosec B101 - poly/span are 0 both sides
+    deltas = [b["cost"] - w["cost"] for b, w in zip(black_groups, white_groups)]
+    assert all(0.0 <= d <= routes._KEYS_BLACK_KEY_MAX_BONUS + 1e-9 for d in deltas)  # nosec B101 - within the documented bound
+    assert sum(deltas) / len(deltas) == pytest.approx(
+        0.75 * routes._KEYS_BLACK_KEY_MAX_BONUS
+    )  # nosec B101 - mean gain is the mean black share times the cap
+    assert (
+        sum(g["retention_score"] for g in black_groups)
+        > sum(g["retention_score"] for g in white_groups)
+    )  # nosec B101 - retention follows cost up
+    # Control: with the term off the pair is byte-identical, so the whole
+    # delta above is this term and not an artefact of the fixtures.
+    with patch.object(routes, "_KEYS_BLACK_KEY_MAX_BONUS", 0.0):
+        white_off = _scored_keys_groups(_keys_register_single_line(white))
+        black_off = _scored_keys_groups(_keys_register_single_line(black))
+    assert [g["cost"] for g in white_off] == [g["cost"] for g in black_off]  # nosec B101 - unconfounded control
+
+
+def _keys_register_single_line(midis, *, spb=0.5, sus=0.4):
+    """One note per onset on a fixed grid with a graded beat map -- the
+    single-line counterpart to `_keys_register_pairs`, so a transposition
+    pair differs ONLY in pitch class (timing, density, speed, sustain and
+    beat phase are fixed by the helper)."""
+    notes = [_midi_note(i * spb, m, sus) for i, m in enumerate(midis)]
+    beats = [
+        {"time": round(i * spb, 3), "measure": 0 if i % 4 == 0 else -1}
+        for i in range(len(midis) + 8)
+    ]
+    return {
+        "type": "keys", "name": "Keys", "notes": notes, "chords": [],
+        "beats": beats, "sections": [], "tuning": [],
+    }
+
+
+def test_keys_black_key_term_preserves_the_cost_vs_retention_relationship():
+    """The black-key term is mechanical, so it is added to `cost` AND
+    `retention_score` alike -- exactly as the #177 leap term is. That must
+    not disturb the cost/retention separation #72/B1 established: for a
+    group that is neither a melody nor a turning point, cost -
+    retention_score stays EXACTLY the beat-value discount, whatever the
+    black-key share. Uses the black side of the transposition pair, whose
+    tags are pinned equal to the white side's above; turning points are
+    excluded since the melody-turning bonus legitimately moves them off
+    the discount line (same exclusion the leap term's own relationship
+    test uses)."""
+    white, black = _keys_transposition_pair()
+    black_arr = _keys_register_single_line(black)
+    beat_times = [b["time"] for b in black_arr["beats"]]
+    tempo = routes._TempoParams.from_beats(beat_times, black_arr["beats"])
+    groups = _scored_keys_groups(black_arr)
+    white_groups = _scored_keys_groups(_keys_register_single_line(white))
+    assert [g["melody"] for g in groups] == [g["melody"] for g in white_groups]  # nosec B101 - tags agree
+    turning = routes._melody_turning_points_keys(groups, tempo)
+    checked = [
+        g for gi, g in enumerate(groups)
+        if g["notes"] and not g["melody"] and gi not in turning
+    ]
+    assert len(checked) >= 3  # nosec B101 - pytest assertion
+    assert any(g["value"] > 0.0 for g in checked)  # nosec B101 - the fixture must exercise a real discount
+    assert any(
+        routes._note_midi_keys(g["notes"][0]) % 12 in _BLACK_KEYS for g in checked
+    )  # nosec B101 - and a real black-key charge
+    for g in checked:
+        assert g["cost"] - g["retention_score"] == pytest.approx(
+            routes._KEYS_BEAT_VALUE_COEF * g["value"],
+        )  # nosec B101 - pytest assertion
+
+
+def test_keys_black_key_chord_charges_the_share_not_the_count():
+    """A 4-voice chord with one black key pays a quarter of the cap, not the
+    full cap -- awkwardness scales with how much of what the hand holds is
+    black. Same onset grid and sustain both sides; only the chord's pitch
+    classes change (C-E-G-C white vs C-E-Ab-C with one black key). The
+    second note (48, C white) pins the leap control: with the term off both
+    sides cost the same there, so the chord delta below is the black-key
+    share and nothing else (the leap term moves the follower by a hair
+    because the two chords' mean anchors differ by 0.25 semitones -- that
+    is the leap term working as designed, not this term leaking)."""
+    def chord_arr(midis):
+        notes = [_midi_note(0.0, m, 0.4) for m in midis]
+        notes += [_midi_note(0.5, 48, 0.4), _midi_note(1.0, 55, 0.4)]
+        return {
+            "type": "keys", "name": "Keys", "notes": notes, "chords": [],
+            "beats": [{"time": round(i * 0.5, 3), "measure": -1} for i in range(12)],
+            "sections": [], "tuning": [],
+        }
+    white_groups = _scored_keys_groups(chord_arr([60, 64, 67, 72]))
+    mixed_groups = _scored_keys_groups(chord_arr([60, 64, 68, 72]))
+    assert len(white_groups[0]["notes"]) == 4  # nosec B101 - one unsplit chord group
+    assert len(mixed_groups[0]["notes"]) == 4  # nosec B101 - pytest assertion
+    assert mixed_groups[0]["cost"] - white_groups[0]["cost"] == pytest.approx(
+        routes._KEYS_BLACK_KEY_MAX_BONUS / 4
+    )  # nosec B101 - one black key of four
+
+
+def test_keys_black_key_term_makes_a_black_ladder_harder_end_to_end():
+    """#178 done-when, end to end through the real generator: the black
+    fixture's phrase `difficulty_cost` exceeds its white transposition's,
+    the top tier keeps every note on both sides (harder means costlier, not
+    more/fewer notes), and every tier nests (#99)."""
+    white, black = _keys_transposition_pair()
+    white_arr = _keys_register_single_line(white * 2)
+    black_arr = _keys_register_single_line(black * 2)
+    white_phrases = routes.generate_phrases_for_arrangement(white_arr, n_levels=4)
+    black_phrases = routes.generate_phrases_for_arrangement(black_arr, n_levels=4)
+    assert white_phrases and black_phrases  # nosec B101 - pytest assertion
+    assert len(white_phrases) == len(black_phrases)  # nosec B101 - same windows
+    for wp, bp in zip(white_phrases, black_phrases):
+        assert float(bp["difficulty_cost"]) > float(wp["difficulty_cost"])  # nosec B101 - harder end to end
+        assert len(bp["levels"][-1]["notes"]) == len(wp["levels"][-1]["notes"])  # nosec B101 - same top-tier content
+        _assert_keys_tiers_nested([wp, bp])
 
 
 # --- Fretted validation (issue #185) ---------------------------------------
