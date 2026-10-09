@@ -1604,6 +1604,7 @@
         _hudBadgeMeasureKey = null;
         _hudBadgeWidth = 0;
         _hudPhraseIdx = -1;
+        _railPhraseIdx = -1;
     }
     resetPerSongState();
 
@@ -3376,19 +3377,30 @@
         if (_railEl) _railEl.style.display = 'none';
     }
 
+    // One snapshot the rail's discrete paths share: the visibility gates
+    // plus a single `getPhrases()` read, so `_difficultyRailVisible` and
+    // `_syncDifficultyRail` never read the host twice on the same event
+    // (phrase-commit / mastery-change paths call the latter straight after
+    // the former — a second read would double that host call). Null when the
+    // rail must stay hidden.
+    function _railHighwaySnapshot() {
+        if (!isPlayerActive()) return null;
+        if (!settings.showDifficultyGuide) return null;
+        if (window.__slopsmithSectionMapHooksInstalled) return null;
+        var ss = window.feedBackSplitscreen || window.slopsmithSplitscreen;
+        if (ss && typeof ss.isActive === 'function' && ss.isActive()) return null;
+        var hw = window.highway;
+        if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return null;
+        if (typeof hw.getPhrases !== 'function') return null;
+        var phrases = hw.getPhrases();
+        if (!phrases || !phrases.length) return null;
+        return { hw: hw, phrases: phrases };
+    }
+
     // The same gates the glass HUD used: player active, guide on, Section Map
     // owns the guide, Split Screen owns the panels, and real phrase data.
     function _difficultyRailVisible() {
-        if (!isPlayerActive()) return false;
-        if (!settings.showDifficultyGuide) return false;
-        if (window.__slopsmithSectionMapHooksInstalled) return false;
-        var ss = window.feedBackSplitscreen || window.slopsmithSplitscreen;
-        if (ss && typeof ss.isActive === 'function' && ss.isActive()) return false;
-        var hw = window.highway;
-        if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return false;
-        if (typeof hw.getPhrases !== 'function') return false;
-        var phrases = hw.getPhrases();
-        return !!(phrases && phrases.length);
+        return !!_railHighwaySnapshot();
     }
 
     // One segment list per phrase: `maxTier + 1` equal segments, the first
@@ -3424,12 +3436,34 @@
 
     // Rebuild only when a cheap signature changes. Deliberately NOT a rAF
     // loop: every caller is a discrete event (see the section comment).
+    // The phrase scan runs only when no cached index still covers the event's
+    // playback time — a phrase transition invalidates the cache; a mastery
+    // or settings event reuses it (same cursor-caching idea the retired
+    // glass HUD's `_hudPhraseIdx` used).
+    var _railPhraseIdx = -1;
+
+    function _railCurrentIndex(phrases, t, changed) {
+        var idx = _railPhraseIdx;
+        if (idx >= 0 && idx < phrases.length
+            && t >= phrases[idx].start_time && t < phrases[idx].end_time) {
+            return idx;
+        }
+        _railPhraseIdx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
+        // A changed index is itself a transition-by-timeout on providers that
+        // report getTime without firing a commit: force the rebuild once the
+        // scan below runs, mirroring the host-contract guarantee that the
+        // "Current" label always tracks the covering phrase.
+        if (changed && _railPhraseIdx !== idx) _railSignature = null;
+        return _railPhraseIdx;
+    }
+
     function _syncDifficultyRail() {
-        if (!_difficultyRailVisible()) { _hideDifficultyRail(); return; }
-        var hw = window.highway;
-        var phrases = hw.getPhrases();
+        var snapshot = _railHighwaySnapshot();
+        if (!snapshot) { _hideDifficultyRail(); return; }
+        var hw = snapshot.hw;
+        var phrases = snapshot.phrases;
         var t = typeof hw.getTime === 'function' ? hw.getTime() : 0;
-        var curIdx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
+        var curIdx = _railCurrentIndex(phrases, t, true);
         if (curIdx < 0) curIdx = 0;
         var start = Math.max(0, curIdx - 1);
         var list = phrases.slice(start, start + RAIL_LOOKAHEAD);

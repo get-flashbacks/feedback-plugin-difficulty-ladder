@@ -192,6 +192,41 @@ test('a host reporting no mastery shows "tier unknown" instead of fabricating ti
     assert.equal(lit.length, 0, 'nothing lit when the tier is unknown');
 });
 
+test('the rail rescans phrases only when the cached phrase stops covering the event time', () => {
+    const dom = makeDom();
+    const mod = freshPlugin({ dom });
+    mod.settings.showDifficultyGuide = true;
+    const phrases = phrasesForRail();
+    let scans = 0;
+    const instrumented = phrases.map((p) => p);
+    Object.defineProperty(instrumented, 'findIndex', {
+        value(...args) { scans++; return Array.prototype.findIndex.apply(this, args); },
+    });
+    global.window.highway = {
+        hasPhraseData: () => true, getPhrases: () => instrumented, getTime: () => 5, getMastery: () => 0.74,
+    };
+    mod._syncDifficultyRail();
+    assert.equal(scans, 1, 'first render has no cache to reuse');
+    // A mastery event inside the same phrase: the cached index still covers
+    // the event time, so no rescan.
+    global.window.highway = {
+        hasPhraseData: () => true, getPhrases: () => instrumented, getTime: () => 6, getMastery: () => 0.5,
+    };
+    mod._syncDifficultyRail();
+    assert.equal(scans, 1, 'cached index reused when it still covers the event time');
+    // A phrase transition invalidates the cache: one scan, and the label moves.
+    global.window.highway = {
+        hasPhraseData: () => true, getPhrases: () => instrumented, getTime: () => 15, getMastery: () => 0.5,
+    };
+    mod._syncDifficultyRail();
+    assert.equal(scans, 2, 'phrase transition rescans once');
+    const rail = railOf(dom.player);
+    // The second phrase's rail-leading window starts at index 0 (curIdx - 1
+    // clamped), so both phrases stay visible with "Current" moved to the
+    // second one (mastery 0.5 on a 0..3 slider maps to tier 1).
+    assert.match(rail.getAttribute('aria-label'), /Current phrase: tier \d+ of 3, full detail at 1/);
+});
+
 test('the rail render is event-driven, never a requestAnimationFrame loop', () => {
     const dom = makeDom();
     let rafCalls = 0;
