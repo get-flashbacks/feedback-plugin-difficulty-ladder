@@ -30,9 +30,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged evidence — nothing here steers difficulty selection. `contributeDiagnostics`
   now exposes the latest observation under `elo` (schema
   `difficulty_ladder.elo.v1`: `player_elo`, `phrase_elo`, `phrase_seeded`,
-  `expected_win_chance`, `actual_outcome`). Tested in `tests/screen.test.js`
+  `expected_win_chance`, `actual_outcome`), reset to `null` on every song change
+  so the observation never names a previous song's phrase. Note the seed is a
+  play-corrected prior, not a calibrated probability — `difficulty_cost` is a
+  within-song relative ranking — so #55/#56 must ground-truth `expected_win_chance`
+  before treating it as absolute. Tested in `tests/screen.test.js`
   (seeding from cost, per-phrase keying, directional update, difficulty/mastery
-  untouched, diagnostics exposure). Version 0.32.0 -> 0.33.0.
+  untouched, diagnostics exposure, song-change reset, field parity).
+  Version 0.33.0 -> 0.34.0.
+- Per-arrangement **best mastery** library-card badge and Note Detect session
+  summary (#84, parent #81): the library card's overlay chip now reads each
+  arrangement's best mastery through `(song) -> string` `label`/`icon` (one
+  registration, `difficulty_ladder.mastery_badge`), listing every scored
+  arrangement in its title (`Lead 80% · Rhythm 55%`) and showing `★ N%` inline.
+  It surfaces a score migrated off the old Song Mastery plugin (preserved in
+  `migratedMastery`, immune to later `currentDifficulty` changes) without ever
+  presenting a bare remembered difficulty as mastery, and falls back to the
+  plugin's own legacy per-song map only before a profile context exists. At the
+  end of a scored play, one `★ N% mastery` row is
+  added to the Note Detect results card from its synchronous `notedetect:session`
+  event — no `MutationObserver` or polling — stamped `first play` only when the
+  session establishes the node's first best (the one case that may write from
+  whole-session accuracy; a standing best advances only through co-measured
+  phrase commits) and never duplicating a row. New helpers
+  `_songMasteryBadge` / `_songArrangementMastery` / `_bestMasteryOf`,
+  `_onNoteDetectSession`, and `_injectSessionMasteryRow` in `screen.js`; tested
+  in `tests/screen.test.js`. Version 0.32.0 -> 0.33.0.
 - Per-song **Regenerate difficulty ladder** library-card menu action (#183):
   a read-only `/generate` preview reports each existing ladder's provenance
   before any write. New `x_difficulty_ladder` markers record both marker schema
