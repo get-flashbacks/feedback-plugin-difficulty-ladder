@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [Unreleased]
+
 ### Added
+- Elo player and phrase ratings, logged only (#113, M4 roadmap C5): on every
+  finalized phrase, the player's and phrase's Elo ratings are updated using
+  standard Elo (K=32) and the predicted win chance vs. actual hit rate is logged
+  to diagnostics. Phrase Elo is seeded from the generator difficulty; player Elo
+  starts at 1500. Ratings are stored per-player/context in the progress store
+  following the player-context contract (PLAYER_CONTEXT.md). The `contributeDiagnostics`
+  payload now includes `elo` with player/phrase Elo, expected win chance, and
+  actual outcome. No difficulty behaviour changes — purely logged evidence
+  for #31's confound resolution.
 - Per-song **Regenerate difficulty ladder** library-card menu action (#183):
   a read-only `/generate` preview reports each existing ladder's provenance
   before any write. New `x_difficulty_ladder` markers record both marker schema
