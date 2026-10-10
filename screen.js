@@ -111,17 +111,12 @@
     const PLAYER_CONTEXT_SCHEMA = 'difficulty_ladder.player_context.v1';
     const MAX_PHRASE_ATTEMPTS = 5000;
     const PERSISTENCE_FLUSH_MS = 150;
-    // Elo (logged only, issue #113): K-factor for per-phrase update.
-    // Default 32 is standard Elo; lower means slower adaptation.
+    // Elo (logged only, issue #113). K=32 is the standard adaptation rate;
+    // initial rating 1500 is the neutral midpoint, and 400 is the logistic
+    // scale (a 400-point gap is a 10:1 expected-score ratio).
     const ELO_K_FACTOR = 32;
-    // Default initial Elo for a phrase seeded from generator difficulty.
-    // Generator difficulty is mapped to [0,100] difficulty percent; we map
-    // it to Elo space with 1500 as the average (50% win chance = 1500 Elo).
-    const ELO_INITIAL_PHRASE = 1500;
-    // Default initial Elo for a new player (per instrument/role/skill).
     const ELO_INITIAL_PLAYER = 1500;
-    // Scale: 1 Elo point ≈ 1/400 win-probability ratio.
-    // A 200 Elo difference ≈ 75% win chance for higher-rated player.
+    const ELO_INITIAL_PHRASE = 1500;
     const ELO_SCALE = 400;
     // Maximum phrase attempts to retain (also MAX_PHRASE_ATTEMPTS).
     const PERSISTENCE_RETRY_MAX = 3;
@@ -132,90 +127,96 @@
     }
 
     // ---- Elo (logged only, issue #113) -----------------------------------
-    // Expected win probability for player with Elo p vs phrase with Elo q.
-    // Standard Elo formula: 1 / (1 + 10^((q - p) / 400))
+    // Player-vs-phrase Elo (Pelánek 2016): a player's skill and each phrase's
+    // difficulty are estimated together from play alone, with no
+    // pre-calibration. Everything here is LOGGED evidence only -- no value
+    // read or written below steers difficulty selection (roadmap C5, #113).
+    // Scope follows the #87 player-context layout: player Elo lives on the
+    // same skill node as bestMastery/currentDifficulty
+    // (profile/player/song/arrangement/instrument/role/skill) and phrase Elo
+    // is keyed there by phrase_id.
+
+    // Expected score for a player of Elo `playerElo` against a phrase of Elo
+    // `phraseElo`: the standard logistic 1 / (1 + 10^((q-p)/400)).
     function _eloExpectedScore(playerElo, phraseElo) {
         return 1 / (1 + Math.pow(10, (phraseElo - playerElo) / ELO_SCALE));
     }
 
-    // Update Elo ratings after a phrase result.
-    // actualScore: 1 for hit (hit_rate >= 1), else actual hit_rate in [0,1].
-    // Returns updated { playerElo, phraseElo }.
-    function _eloUpdate(playerElo, phraseElo, actualScore) {
+    // One K=32 update. `actual` is the observed outcome in [0,1]: 1 for a
+    // clean hit, the phrase hit rate otherwise. Returns rounded new ratings
+    // (player up exactly as much as the phrase goes down, zero-sum).
+    function _eloUpdate(playerElo, phraseElo, actual) {
         var expected = _eloExpectedScore(playerElo, phraseElo);
-        var delta = ELO_K_FACTOR * (actualScore - expected);
+        var delta = ELO_K_FACTOR * (actual - expected);
         return {
             playerElo: Math.round(playerElo + delta),
             phraseElo: Math.round(phraseElo - delta),
         };
     }
 
-    // Seed phrase Elo from generator difficulty.
-    // Generator difficulty is a percent (0-100); map 50% → 1500 Elo, linear in log-odds.
-    function _eloSeedPhraseFromDifficulty(difficultyPct) {
-        // difficulty 0% → ~1000 Elo (almost never succeeds), 100% → ~2000 Elo (almost always)
-        // Linear in log-odds: log(p/(1-p)) = (elo - 1500)/400
-        // p = difficultyPct / 100
-        var p = Math.max(0.01, Math.min(0.99, difficultyPct / 100));
-        var logOdds = Math.log(p / (1 - p));
-        return Math.round(1500 + logOdds * ELO_SCALE);
+    // The generator's own difficulty estimate for a phrase, as a success
+    // probability at the seed rating (1.0 = trivially hittable).
+    // `difficulty_cost` is the generator's mechanical cost of the phrase's
+    // full content (#72/B1, ~0..1+, deliberately unclamped); higher cost means
+    // less likely to be hit cleanly. A host that predates the field, or an
+    // authored ladder with no cost, seeds at a neutral 0.5.
+    function _eloSeedChance(phrase) {
+        var cost = Number(phrase && phrase.difficulty_cost);
+        if (!isFinite(cost) || cost < 0) return 0.5;
+        return Math.max(0.02, Math.min(0.98, 1 - cost));
     }
 
-    // Get or create player Elo from progress store.
-    function _eloGetPlayerElo(context) {
-        var store = loadProgressStore();
-        var node = _progressSkillNode(store, context, true);
-        if (!node) return ELO_INITIAL_PLAYER;
-        if (typeof node.eloPlayer === 'number' && isFinite(node.eloPlayer)) {
-            return node.eloPlayer;
-        }
-        node.eloPlayer = ELO_INITIAL_PLAYER;
-        return ELO_INITIAL_PLAYER;
+    // Seed a phrase's Elo so a fresh (1500) player's expected score equals the
+    // generator's chance estimate. Inverting the logistic:
+    // phraseElo = 1500 - 400 * log10(p / (1 - p)).
+    function _eloSeedPhraseFromDifficulty(phrase) {
+        var p = _eloSeedChance(phrase);
+        return Math.round(ELO_INITIAL_PHRASE - ELO_SCALE * Math.log(p / (1 - p)) / Math.LN10);
     }
 
-    // Get or create phrase Elo, seeding from generator difficulty if needed.
-    function _eloGetPhraseElo(context, phrase, hw) {
+    // Read-or-seed both ratings for one finalized phrase attempt, apply the
+    // update, persist, and stash the observation on `state` for the
+    // diagnostics payload. Returns null when context/identity is unusable.
+    // Called ONLY from recordPhraseAttempt -- the #65 "finalized phrases only"
+    // contract, never per-note or per-frame.
+    //
+    // The bracket keys here are `_nodeKey()`-derived (prefixed and
+    // URI-encoded) and prototype-pollution-safe, like the progress and
+    // phraseAttempt stores; see the matching eslint-disable block around
+    // _progressSkillNode/_phraseAttemptNode.
+    /* eslint-disable security/detect-object-injection */
+    function _eloRecordAttempt(context, phraseId, phrase, ratio, state) {
+        var numericRatio = Number(ratio);
+        if (!isFinite(numericRatio)) return null;
         var store = loadProgressStore();
         var node = _progressSkillNode(store, context, true);
-        if (!node) return ELO_INITIAL_PHRASE;
-        if (typeof node.eloPhrase === 'number' && isFinite(node.eloPhrase)) {
-            return node.eloPhrase;
-        }
-        // Seed from generator difficulty: getPhrases().top_difficulty or max_difficulty
-        var difficultyPct = null;
-        var phrases = hw && hw.getPhrases ? hw.getPhrases() : null;
-        // Try to find the phrase by index or time
-        // For now, use a rough heuristic: if there are phrases, use the first one's max_difficulty
-        if (phrases && phrases.length > 0) {
-            // We need to find the right phrase - but we don't have easy access to phrase index here
-            // Fall back to the first phrase's max_difficulty as a rough seed
-            var first = phrases[0];
-            if (first && typeof first.max_difficulty === 'number' && first.max_difficulty > 0) {
-                difficultyPct = Math.max(1, Math.min(99, Math.round(first.max_difficulty * 100)));
-            }
-        }
-        var seeded = difficultyPct ? _eloSeedPhraseFromDifficulty(difficultyPct) : ELO_INITIAL_PHRASE;
-        node.eloPhrase = seeded;
-        return seeded;
+        if (!node) return null;
+        if (!_plainObject(node.eloPhrases)) node.eloPhrases = {};
+        var phraseKey = _nodeKey(phraseId);
+        var playerElo = (typeof node.eloPlayer === 'number' && isFinite(node.eloPlayer))
+            ? node.eloPlayer : ELO_INITIAL_PLAYER;
+        var prevPhraseElo = node.eloPhrases[phraseKey];
+        var seeded = typeof prevPhraseElo !== 'number' || !isFinite(prevPhraseElo);
+        var phraseElo = seeded ? _eloSeedPhraseFromDifficulty(phrase) : prevPhraseElo;
+        var expected = _eloExpectedScore(playerElo, phraseElo);
+        var actual = numericRatio >= 1 ? 1 : Math.max(0, Math.min(1, numericRatio));
+        var updated = _eloUpdate(playerElo, phraseElo, actual);
+        node.eloPlayer = updated.playerElo;
+        node.eloPhrases[phraseKey] = updated.phraseElo;
+        node.eloUpdatedAt = new Date().toISOString();
+        saveProgressStore(store);
+        var observation = {
+            phrase_id: phraseId,
+            player_elo: updated.playerElo,
+            phrase_elo: updated.phraseElo,
+            phrase_seeded: seeded,
+            expected_win_chance: Math.round(expected * 1000) / 1000,
+            actual_outcome: Math.round(actual * 1000) / 1000,
+        };
+        if (state && typeof state === 'object') state.lastElo = observation;
+        return observation;
     }
-
-    // Update and persist Elo ratings.
-    function _eloPersist(context, playerElo, phraseElo) {
-        var store = loadProgressStore();
-        var node = _progressSkillNode(store, context, true);
-        if (!node) return;
-        var changed = false;
-        if (typeof node.eloPlayer !== 'number' || node.eloPlayer !== playerElo) {
-            node.eloPlayer = playerElo; changed = true;
-        }
-        if (typeof node.eloPhrase !== 'number' || node.eloPhrase !== phraseElo) {
-            node.eloPhrase = phraseElo; changed = true;
-        }
-        if (changed) {
-            node.eloUpdatedAt = new Date().toISOString();
-            saveProgressStore(store);
-        }
-    }
+    /* eslint-enable security/detect-object-injection */
 
     // ---- Debounced localStorage store (issue #138) -----------------------
     // Every persistence store in this file — progress.v2, phraseAttempts.v2,
@@ -541,8 +542,9 @@
         var skillKey = _nodeKey(ctx.skill), skillNode = roleNode.skills[skillKey];
         if (!skillNode && create) skillNode = roleNode.skills[skillKey] = {
             skill: ctx.skill, currentDifficulty: null, bestMastery: null, updatedAt: null,
-            // Elo (logged only, issue #113)
-            eloPlayer: null, eloPhrase: null, eloUpdatedAt: null,
+            // Elo (logged only, issue #113): player rating on the node, phrase
+            // ratings keyed by phrase_id in the eloPhrases map.
+            eloPlayer: null, eloPhrases: null, eloUpdatedAt: null,
         };
         return _plainObject(skillNode) ? skillNode : null;
     }
@@ -2006,6 +2008,10 @@
         });
         attemptNode.attempts = attempts.slice(-MAX_PHRASE_ATTEMPTS);
         _phraseAttemptStore.markDirty();
+        // Elo (logged only, issue #113): a finalized phrase is exactly where
+        // the ratings update (#65 contract). Logged on the same scoreState the
+        // diagnostics payload reads; never influences difficulty selection.
+        _eloRecordAttempt(context, phraseId, phrase, ratio, ledger);
         return true;
     }
 
@@ -2226,23 +2232,6 @@
             recordPhraseAttempt(ratio, attemptContext, attemptState, hooks.highwayForAttempt || hw);
         }
         _updateBestMastery(hooks.contextForAttempt, hw, ratio);
-        // Elo (logged only, issue #113): update player and phrase Elo, log prediction.
-        var eloContext = hooks.contextForAttempt;
-        if (eloContext && normalizePlayerContext(eloContext)) {
-            var playerElo = _eloGetPlayerElo(eloContext);
-            var phraseElo = _eloGetPhraseElo(eloContext, null, hw);
-            var actualScore = ratio >= 1 ? 1 : ratio;
-            var expected = _eloExpectedScore(playerElo, phraseElo);
-            var updated = _eloUpdate(playerElo, phraseElo, actualScore);
-            _eloPersist(eloContext, updated.playerElo, updated.phraseElo);
-            // Store for diagnostics
-            state.lastElo = {
-                playerElo: updated.playerElo,
-                phraseElo: updated.phraseElo,
-                expected: expected,
-                actual: actualScore,
-            };
-        }
         var alpha = emaAlpha();
         state.emaHitRate = (state.emaHitRate == null)
             ? ratio : (alpha * ratio + (1 - alpha) * state.emaHitRate);
@@ -2392,7 +2381,6 @@
         if (!fb || !fb.diagnostics || typeof fb.diagnostics.contribute !== 'function') return;
         var hw = window.highway;
         var provider = hw && typeof hw.getNoteStateProvider === 'function' ? hw.getNoteStateProvider() : null;
-        var elo = _mainScore.lastElo || {};
         fb.diagnostics.contribute(PLUGIN_ID, {
             schema: 'difficulty_ladder.v1',
             ema_hit_rate: _mainScore.emaHitRate,
@@ -2411,14 +2399,12 @@
                 retained_attempts: loadPhraseAttempts(_mainPlayerContext).length,
                 max_retained_attempts: MAX_PHRASE_ATTEMPTS,
             },
-            // Elo (logged only, issue #113)
+            // Elo (logged only, issue #113): the most recent finalized-phrase
+            // observation on the main player. null until the first phrase
+            // commits. Purely informational evidence for #31's confound.
             elo: {
                 schema: 'difficulty_ladder.elo.v1',
-                player_elo: elo.playerElo ?? null,
-                phrase_elo: elo.phraseElo ?? null,
-                expected_win_chance: elo.expected ? Math.round(elo.expected * 1000) / 1000 : null,
-                actual_outcome: elo.actual ? Math.round(elo.actual * 1000) / 1000 : null,
-                last_updated: elo.playerElo ? new Date().toISOString() : null,
+                last_observation: _mainScore.lastElo || null,
             },
         });
     }

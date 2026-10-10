@@ -11,14 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Elo player and phrase ratings, logged only (#113, M4 roadmap C5): on every
-  finalized phrase, the player's and phrase's Elo ratings are updated using
-  standard Elo (K=32) and the predicted win chance vs. actual hit rate is logged
-  to diagnostics. Phrase Elo is seeded from the generator difficulty; player Elo
-  starts at 1500. Ratings are stored per-player/context in the progress store
-  following the player-context contract (PLAYER_CONTEXT.md). The `contributeDiagnostics`
-  payload now includes `elo` with player/phrase Elo, expected win chance, and
-  actual outcome. No difficulty behaviour changes — purely logged evidence
-  for #31's confound resolution.
+  finalized phrase the player's Elo (K=32, neutral 1500, scale 400) is updated
+  against a per-phrase Elo keyed by `phrase_id`, and the predicted win chance is
+  logged next to the actual hit rate. A phrase's first rating is seeded from its
+  generator `difficulty_cost` (a neutral 0.5 when absent) so a first play is not
+  a guess — Pelánek (2016) player-vs-item Elo, no pre-calibration. Both ratings
+  live on the existing per-player/context skill node following the #87
+  player-context layout, update only on a finalized phrase (#65), and are purely
+  logged evidence — nothing here steers difficulty selection. `contributeDiagnostics`
+  now exposes the latest observation under `elo` (schema
+  `difficulty_ladder.elo.v1`: `player_elo`, `phrase_elo`, `phrase_seeded`,
+  `expected_win_chance`, `actual_outcome`). Tested in `tests/screen.test.js`
+  (seeding from cost, per-phrase keying, directional update, difficulty/mastery
+  untouched, diagnostics exposure).
 - Per-song **Regenerate difficulty ladder** library-card menu action (#183):
   a read-only `/generate` preview reports each existing ladder's provenance
   before any write. New `x_difficulty_ladder` markers record both marker schema
