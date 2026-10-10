@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Review-thread follow-ups (test strength): the legacy `window.slopsmithSplitscreen`
+  fallback now has its own peer-compat test asserting a panel still registers
+  (previously only `window.feedBackSplitscreen` was exercised, so removing the
+  v1.10.6 fallback would have stayed green), and `drawHud` is exported and driven
+  directly by a host-contract test asserting the collapsed-ladder glass fill
+  reflects the phrase's `pTop` rather than `max_difficulty` (the earlier
+  assertion called `_tierFillFrac` directly and stayed green under that
+  regression). `CLAUDE.md`'s JS test count corrected from the stale 281 to 287.
+  No behavior change; Version 0.31.2 -> 0.31.3.
 - Consolidation/cutover documentation for the absorbed Song Mastery plugin
   (#86, parent #81): new `MIGRATION.md` records what was absorbed (per-song
   difficulty memory, monotonic best mastery, library-card badge, adaptive
