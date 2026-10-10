@@ -41,10 +41,15 @@ All keys live in `localStorage`, prefixed `difficulty_ladder.` (`LS_PREFIX`,
 |---|---|---|---|
 | `difficulty_ladder.progress.v2` | schema `difficulty_ladder.progress.v2`, version 2: `profiles → players → songs → arrangements → instruments → roles → skills` nodes (`currentDifficulty`, `bestMastery`, `updatedAt`) plus a `migrations` map | live scoring, migration | canonical; replaced `songMastery` |
 | `difficulty_ladder.phraseAttempts.v2` | schema `difficulty_ladder.phrase_attempts.v2`, version 2 | live scoring | canonical; replaced `phraseAttempts.v1` |
-| `difficulty_ladder.player_context.v1` | schema `difficulty_ladder.player_context.v1` | runtime | player-context identity |
-| `difficulty_ladder.songMastery` | legacy per-song map, `filename::arrangement` → numeric or `{mastery, instrument}` record | read by migration and the badge; **also written** by `_rememberSongInstrument` (`screen.js:1678`) and **pruned** by stale-label cleanup `_clearStaleSongInstrument` (`screen.js:614`) | legacy migration source. Not strictly read-only: the difficulty value is migrated+retained, but its `instrument` label is rewritten on contact and an entry judged stale is deleted, so rollback is best-effort, not guaranteed (§7) |
+| `difficulty_ladder.songMastery` | legacy per-song map, `filename::arrangement` → numeric or `{mastery, instrument}` record | read by migration and the badge; **also written** by `_rememberSongInstrument` (`screen.js:545`) and **pruned** by stale-label cleanup `_clearStaleSongInstrument` (`screen.js:618`) | legacy migration source. Not strictly read-only: the difficulty value is migrated+retained, but its `instrument` label is rewritten on contact and an entry judged stale is deleted, so rollback is best-effort, not guaranteed (§7) |
 | `difficulty_ladder.phraseAttempts.v1` | legacy attempt array | read-only left shift during migration (`screen.js:98`) | legacy migration source; retained |
 | `difficulty_ladder.autoAdjust`, `.dropResistance`, `.levelUpOnly`, `.sensitivity`, `.downStepRatio`, `.reactionSpeed`, `.minMastery`, `.maxMastery`, `.generateLevels`, `.showDifficultyGuide` | booleans / numbers | settings UI | current settings. `showGlasses` is the renamed predecessor of `showDifficultyGuide` and is migrated forward once (`_resolveDifficultyGuideSetting`, `screen.js:78`) |
+
+Not `localStorage` keys (schema/capability identifiers, listed so readers
+don't look for persisted data that is never written):
+`difficulty_ladder.player_context.v1` (`PLAYER_CONTEXT_SCHEMA`),
+`difficulty_ladder.sections.v2` / `.v3`, `difficulty_ladder.difficulty_event.v1`,
+`difficulty_ladder.difficulty_request.v1`.
 
 Key naming history: the plugin was renamed `dynamic_difficulty` →
 `difficulty_ladder`; the old `dynamic_difficulty.*` keys were **not** migrated
@@ -96,7 +101,7 @@ runtime*, distinct from the data cutover marker above.
 | **Fresh install** (no Song Mastery, no legacy keys) | No migration fires; stores initialise empty; defaults apply | Code path guarded on absent `songMastery` map; **verified in code** |
 | **Song Mastery-only user installs Difficulty Ladder** | Legacy `songMastery` / `phraseAttempts.v1` migrate once into `progress.v2` / `phraseAttempts.v2` under `skill: "overall"`, claimed by the first compatibility context | `migrateLegacyData`; test "legacy song difficulty and phrase attempts migrate once into overall for a ready profile" (`tests/screen.test.js:1411`); **verified for this plugin's legacy shape** |
 | **Difficulty Ladder-only user** | No-op; migration marker absent, nothing to read | **verified in code** |
-| **Both plugins installed** | See §5 (conflict decision). No cross-writes; duplicate badge prevention is by distinct action id + the idempotency guard | **partially verified** — depends on the Host's card rendering; not run here |
+| **Both plugins installed** | See §5 (conflict decision). No cross-writes; each plugin registers under its own action id, so the idempotency guard only prevents *this* plugin double-registering — the Host may render **both** badges | **partially verified** — duplicate *across* plugins is not deduplicated by this plugin; depends on the Host's card rendering |
 | **Missing Note Detection** (`window.createNoteDetector` absent) | Standalone operation: slider + authored difficulty still work; no live mastery/best-mastery updates, auto-adjust idle, badge shows only remembered values | Documented in README ("Requirements"); README `## Requirements` (line ~489); **verified in code (feature-detected)** |
 | **Missing phrase data** (`hasPhraseData()` false) | The tier rail is **hidden** — `_railHighwaySnapshot` returns null on `!hasPhraseData()` (`screen.js:3418`). The manual mastery slider and ladder generation (`/generate`) still work | **verified in code** (corrected: the rail does not fall back to authored difficulty without phrase data) |
 | **Multiple arrangements** | Each `(song, arrangement)` migrates independently; a live phrase finalization does not leak across arrangements | Tests named in `CHANGELOG.md` (#82/#83 edge cases): "two arrangements of the same song migrating independently", "a live phrase finalization not leaking across arrangements"; **verified** |
@@ -110,10 +115,12 @@ runtime*, distinct from the data cutover marker above.
 **Decision: read-only compatibility mode.** Difficulty Ladder never reads,
 writes, or deletes the *separate Song Mastery plugin's* storage, and registers
 its own card action under a distinct id (`difficulty_ladder.mastery_badge`)
-behind the idempotency guard, so it cannot double-register itself. It does not
-call any Song Mastery global. (This is about the other plugin's storage —
-Difficulty Ladder's *own* legacy `difficulty_ladder.songMastery` key is still
-read and, for instrument labels, written; see §2.)
+behind the idempotency guard, so it cannot double-register *itself* — it
+cannot suppress the other plugin's badge, so if both render one, disable one in
+the Host's library settings (below). It does not call any Song Mastery global.
+(This is about the other plugin's storage — Difficulty Ladder's *own* legacy
+`difficulty_ladder.songMastery` key is still read and, for instrument labels,
+written; see §2.)
 
 The alternatives were rejected for concrete reasons:
 
@@ -166,10 +173,10 @@ non-destructive, but two runtime paths can still change the legacy source:
 
 Caveats that make rollback best-effort rather than guaranteed:
 
-- `_rememberSongInstrument` (`screen.js:1678`) **rewrites** a legacy entry to
+- `_rememberSongInstrument` (`screen.js:545`) **rewrites** a legacy entry to
   `{ mastery, instrument }` when a song is played, so the record shape can
   change after migration.
-- `_clearStaleSongInstrument` (`screen.js:614`) **deletes** a legacy entry
+- `_clearStaleSongInstrument` (`screen.js:618`) **deletes** a legacy entry
   judged to carry a stale instrument label.
 - Neither path is user-facing data loss for the canonical store (the migrated
   v2 node keeps the value), but a reinstall of the prior release, which reads
@@ -239,6 +246,4 @@ With representative **Lead / Bass / Rhythm / Keys** arrangements:
 10. **Concurrent tabs** — load the same store in two tabs, write in each, and
     confirm the known whole-store clobber (§4): the later tab's write wins.
 
-Record the outcome of rows 2–8 per arrangement; any failure blocks §8.
-
-Record the outcome of rows 2–7 per arrangement; any failure blocks §8.
+Record the outcome of rows 2–10 per arrangement; any failure blocks §8.
