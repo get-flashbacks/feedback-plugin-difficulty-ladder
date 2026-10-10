@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Per-song **Regenerate difficulty ladder** library-card menu action (#183):
+  a read-only `/generate` preview reports each existing ladder's provenance
+  before any write. New `x_difficulty_ladder` markers record both marker schema
+  and Difficulty Ladder plugin version. The confirmation identifies the
+  recorded plugin version where available; missing/invalid markers are shown as
+  unknown (possibly handmade or generated before provenance tracking), not
+  asserted to be handmade. Every existing ladder requires confirmation before
+  replacement, and `/generate` plus `/generate-library` still require
+  `overwrite_authored: true` to overwrite an unmarked ladder. Drums/unsupported
+  arrangements are skipped and the highway reconnects only for the song open in
+  the player. Backend: `_ladder_provenance`, `_is_generated_ladder`, and
+  `_stamp_generated_marker` in `routes.py`; frontend: `performGenerate`,
+  `regenerateDifficultyLadder`, and `registerLibraryCardRegenerateAction` in
+  `screen.js`. Python and JavaScript tests cover version metadata, read-only
+  preview, generated/unknown classification, confirmation, and declined writes.
+  Version 0.31.4 -> 0.32.0.
 - Calibrated keys hand-split threshold (`_KEYS_HAND_SPLIT_SEMITONES`) and melody bonus (`_KEYS_MELODY_LINE_BONUS`) against 8 synthetic piano fixtures (two-hand, Alberti bass, stride, crossed hands, ballad, block chords, solo runs, arpeggio) — zero nesting violations, zero collapsed tiers, tier-0 melody always present across full sweep (hand_split 8-14, melody_bonus 0.04-0.12); current defaults (10, 0.08) retained pending real-chart validation; see `tests/CALIBRATION_REPORT.md` and `tests/calibration_results.json` (#176)
 - Documented `difficulty:mastery-updated` event (schema
   `difficulty_ladder.mastery-updated.v1`) closing #83's remaining acceptance
