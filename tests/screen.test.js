@@ -1570,6 +1570,8 @@ test('legacy song difficulty and phrase attempts migrate once into overall for a
     assert.equal(mod.migrateLegacyData(ctx), true);
     assert.equal(mod.readProgress(migrated).currentDifficulty, 72);
     assert.equal(mod.readProgress(migrated).bestMastery, null);
+    assert.equal(mod.readProgress(migrated).migratedMastery, 72,
+        'the carried-over legacy score is preserved immutably for the mastery surface');
     assert.equal(mod.loadPhraseAttempts(ctx).length, 1, 'idempotent migration must not duplicate attempts');
     assert.equal(mod.loadPhraseAttempts(ctx)[0].skill, 'overall');
     assert.equal(global.localStorage.getItem(legacyDifficultyKey), stored[legacyDifficultyKey], 'legacy recovery source retained');
@@ -2794,6 +2796,346 @@ test('_rememberSongInstrument persists classification before the first mastery v
         'new.feedpak::0': { mastery: null, instrument: 'keys' },
     });
     assert.equal(mod._dominantSongMastery({ filename: 'new.feedpak' }), null);
+});
+
+// ── Library card mastery badge (#84) ────────────────────────────────────────
+
+test('_songMasteryBadge lists each arrangement\'s best mastery using the card\'s own labels', () => {
+    const mod = freshPlugin();
+    const main = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(main);
+    mod.writeProgress({ ...main, arrangement_id: '0', instrument: 'guitar', role: 'lead' }, { bestMastery: 80 });
+    mod.writeProgress({ ...main, arrangement_id: '1', instrument: 'guitar', role: 'rhythm' }, { bestMastery: 55 });
+
+    const badge = mod._songMasteryBadge({
+        filename: 'song.feedpak',
+        arrangements: [{ index: 0, name: 'Lead' }, { index: 1, name: 'Rhythm' }],
+    });
+
+    assert.equal(badge.best, 80);
+    assert.equal(badge.icon, '★ 80%');
+    assert.deepEqual(badge.arrangements.map(e => [e.label, e.value]), [['Lead', 80], ['Rhythm', 55]]);
+    assert.match(badge.label, /Lead 80%/);
+    assert.match(badge.label, /Rhythm 55%/);
+});
+
+test('_songMasteryBadge surfaces the score migrateLegacyData preserved in migratedMastery', () => {
+    const mod = freshPlugin();
+    const main = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(main);
+    // migrateLegacyData's write shape: the legacy score lands in
+    // currentDifficulty (the live target) AND is preserved in migratedMastery
+    // (the immutable carry-over), stamped with the claiming player.
+    mod.writeProgress({ ...main, arrangement_id: '0' },
+        { currentDifficulty: 63, migratedMastery: 63, legacy_claim_player_id: 'main' });
+
+    assert.equal(mod._bestMasteryOf(mod.readProgress({ ...main, arrangement_id: '0' })), 63);
+    assert.equal(mod._songMasteryBadge({ filename: 'song.feedpak' }).best, 63);
+});
+
+test('_songMasteryBadge is not swayed by a difficulty target changed after migration', () => {
+    const mod = freshPlugin();
+    const main = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(main);
+    mod.writeProgress({ ...main, arrangement_id: '0' },
+        { currentDifficulty: 63, migratedMastery: 63, legacy_claim_player_id: 'main' });
+    // Live play rewrites the mutable target; the preserved score is immune.
+    mod.writeProgress({ ...main, arrangement_id: '0' }, { currentDifficulty: 90 });
+
+    assert.equal(mod._bestMasteryOf(mod.readProgress({ ...main, arrangement_id: '0' })), 63,
+        'the changed target must not be shown as mastery');
+    assert.equal(mod._songMasteryBadge({ filename: 'song.feedpak' }).best, 63);
+});
+
+test('_songMasteryBadge reads best mastery across every skill node, not just overall', () => {
+    const mod = freshPlugin();
+    const main = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(main);
+    // The context records under a non-overall skill; reading only `overall`
+    // would omit this arrangement's score.
+    mod.writeProgress({ ...main, arrangement_id: '0', instrument: 'guitar', role: 'lead', skill: 'lead_guitar' },
+        { bestMastery: 66 });
+
+    assert.equal(mod._songMasteryBadge({ filename: 'song.feedpak' }).best, 66);
+});
+
+test('_songMasteryBadge names the legacy map arrangement it actually scored', () => {
+    const mod = freshPlugin();
+    // Only arrangement 2 is scored pre-migration; the badge must say so rather
+    // than always labeling the carry-over as the first/overall arrangement.
+    mod.saveSongMasteryMap({ 'song.feedpak::2': 63 });
+
+    const badge = mod._songMasteryBadge({
+        filename: 'song.feedpak',
+        arrangements: [{ index: 0, name: 'Lead' }, { index: 1, name: 'Rhythm' }, { index: 2, name: 'Bass' }],
+    });
+    assert.equal(badge.best, 63);
+    assert.deepEqual(badge.arrangements, [{ index: '2', label: 'Bass', value: 63 }]);
+    assert.match(badge.label, /Bass 63%/);
+});
+
+test('_songMasteryBadge does not show a remembered difficulty as mastery', () => {
+    const mod = freshPlugin();
+    const main = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(main);
+    // A live target with no score and no migration stamp is currentDifficulty,
+    // not mastery — the badge stays off even though the old difficulty badge
+    // would still show it.
+    mod.writeProgress({ ...main, arrangement_id: '0' }, { currentDifficulty: 63 });
+
+    assert.equal(mod._songMasteryBadge({ filename: 'song.feedpak' }), null);
+    assert.equal(mod._dominantSongMastery({ filename: 'song.feedpak' }), 63, 'sanity: existing difficulty badge path unchanged');
+});
+
+test('_songMasteryBadge takes the best mastery across instruments sharing one arrangement', () => {
+    const mod = freshPlugin();
+    const main = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(main);
+    mod.writeProgress({ ...main, arrangement_id: '0', instrument: 'guitar', role: 'lead' }, { bestMastery: 30 });
+    mod.writeProgress({ ...main, arrangement_id: '0', instrument: 'bass', role: 'bass' }, { bestMastery: 70 });
+
+    assert.equal(mod._songMasteryBadge({ filename: 'song.feedpak' }).best, 70);
+});
+
+test('_songMasteryBadge falls back to store order when the card has no arrangement metadata', () => {
+    const mod = freshPlugin();
+    const main = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(main);
+    mod.writeProgress({ ...main, arrangement_id: '0' }, { bestMastery: 40 });
+    mod.writeProgress({ ...main, arrangement_id: '1' }, { bestMastery: 65 });
+
+    const badge = mod._songMasteryBadge({ filename: 'song.feedpak' });
+    assert.deepEqual(badge.arrangements.map(e => e.label).sort(), ['Arrangement 0', 'Arrangement 1']);
+    assert.equal(badge.best, 65);
+});
+
+test('_songMasteryBadge reads the plugin legacy map before any profile context exists', () => {
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::0': 40, 'song.feedpak::1': 90 });
+
+    const badge = mod._songMasteryBadge({ filename: 'song.feedpak' });
+    assert.equal(badge.best, 40, 'matches _dominantSongMastery, which prefers arrangement 0');
+    assert.equal(mod._songMasteryBadge({ filename: 'unplayed.feedpak' }), null);
+});
+
+test('_songMasteryBadge stays off while profile identity is still resolving', () => {
+    const mod = freshPlugin();
+    global.window.v3Profile = { get: () => null };
+    mod.saveSongMasteryMap({ 'song.feedpak::0': 40 });
+
+    assert.equal(mod._songMasteryBadge({ filename: 'song.feedpak' }), null, 'a profile-aware host must not fall back to unscoped legacy data');
+});
+
+test('registerLibraryCardBadge registers per-song label/icon readers reflecting best mastery', () => {
+    const mod = freshPlugin();
+    const main = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(main);
+    mod.writeProgress({ ...main, arrangement_id: '0', instrument: 'guitar', role: 'lead' }, { bestMastery: 80 });
+    const registered = mountLibraryCardActions();
+
+    mod.registerLibraryCardBadge();
+
+    assert.equal(registered.length, 1);
+    const action = registered[0];
+    assert.equal(action.id, 'difficulty_ladder.mastery_badge');
+    assert.equal(action.placement, 'overlay');
+    assert.equal(typeof action.label, 'function');
+    assert.equal(typeof action.icon, 'function');
+    const song = { filename: 'song.feedpak', arrangements: [{ index: 0, name: 'Lead' }] };
+    assert.equal(action.applies(song), true);
+    assert.equal(action.applies({ filename: 'unplayed.feedpak' }), false);
+    assert.equal(action.icon(song), '★ 80%');
+    assert.match(action.label(song), /Lead 80%/);
+    assert.equal(action.run(song).mastery, 80);
+});
+
+test('registerLibraryCardBadge is idempotent and tolerates a host without the capability', () => {
+    const mod = freshPlugin();
+    const registered = mountLibraryCardActions();
+    mod.registerLibraryCardBadge();
+    mod.registerLibraryCardBadge();
+    assert.equal(registered.length, 1, 'window.__ddCardBadgeRegistered guards duplicate registration');
+
+    const bare = freshPlugin();
+    global.window.feedBack = {};
+    assert.doesNotThrow(function () { bare.registerLibraryCardBadge(); });
+});
+
+// ── Note Detect session-summary mastery row (#84) ───────────────────────────
+
+test('_onNoteDetectSession records a first-play best and injects one summary row', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    const events = collectEmits();
+    global.window.highway = { getMastery: () => 0.8 };
+    const dom = installSummaryDom();
+
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 50 } }), true);
+
+    assert.equal(mod.readProgress(ctx).bestMastery, 40, '80% difficulty x 50% accuracy');
+    const emitted = lastEvent(events, 'difficulty:mastery-updated');
+    assert.ok(emitted, 'a first best goes through the documented emit path');
+    assert.equal(emitted.detail.best_mastery, 40);
+    const row = dom.overlay.querySelector('.dd-mastery-row');
+    assert.ok(row, 'the finished summary card is decorated');
+    assert.match(row.textContent, /40% mastery/);
+    assert.match(row.textContent, /first play/);
+    assert.ok(dom.panel.children.indexOf(row) < dom.panel.children.indexOf(dom.actions),
+        'the row sits between the results and the action buttons');
+});
+
+test('_onNoteDetectSession labels a below-best session without rewriting the record', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    mod.writeProgress(ctx, { bestMastery: 40 });
+    global.window.highway = { getMastery: () => 0.8 };
+    const dom = installSummaryDom();
+
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 20 } }), true);
+
+    assert.equal(mod.readProgress(ctx).bestMastery, 40, 'a weaker session never lowers the best');
+    const row = dom.overlay.querySelector('.dd-mastery-row');
+    assert.match(row.textContent, /16% mastery/);
+    assert.match(row.textContent, /\(best 40%\)/);
+});
+
+test('_injectSessionMasteryRow decorates a given overlay only once', () => {
+    const mod = freshPlugin();
+    const dom = installSummaryDom();
+    const first = mod._injectSessionMasteryRow({ mastery: 40, previousBest: null });
+    const second = mod._injectSessionMasteryRow({ mastery: 55, previousBest: 40 });
+
+    assert.equal(first, true);
+    assert.equal(second, false, 'a duplicate session event must not stack a second row');
+    assert.equal(dom.overlay.querySelector('.dd-mastery-row'), dom.overlay.querySelector('.dd-mastery-row'));
+    let rows = 0;
+    for (const child of dom.panel.children) if (child.className === 'dd-mastery-row') rows += 1;
+    assert.equal(rows, 1);
+});
+
+test('_onNoteDetectSession is inert without accuracy, a highway, or a context', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 50 } }), false, 'no highway yet');
+    global.window.highway = { getMastery: () => 0.8 };
+    assert.equal(mod._onNoteDetectSession({ detail: {} }), false, 'no accuracy');
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: null } }), false, 'null accuracy is not 0%');
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: '' } }), false, 'blank accuracy is not 0%');
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 50 } }), false, 'no resolved player context');
+});
+
+test('_onNoteDetectSession still records the score when there is no summary DOM to decorate', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    global.window.highway = { getMastery: () => 0.8 };
+
+    // freshPlugin's document has no createElement/querySelector.
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 50 } }), true);
+    assert.equal(mod.readProgress(ctx).bestMastery, 40);
+});
+
+test('_onNoteDetectSession scores a Split Screen panel against its own highway, not the main one', () => {
+    const mod = freshPlugin();
+    const panel = playerContext({ session_id: 'split-1', player_id: 'panel-a' });
+    const panelHighway = { getMastery: () => 0.9 };
+    global.window.highway = { getMastery: () => 0.1 };
+    mod.upsertPlayerContext({ ...panel, highway: panelHighway });
+
+    // The event payload serializes only the context's string fields, so the
+    // highway must come from the registered context.
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 100, player_context: panel } }), true);
+
+    assert.equal(mod.readProgress(panel).bestMastery, 90, '90% panel difficulty x 100% accuracy');
+});
+
+test('notedetect:session dispatch drives _onNoteDetectSession through the registered listener', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    global.window.highway = { getMastery: () => 0.8 };
+    installSummaryDom();
+
+    global.window.dispatchEvent({ type: 'notedetect:session', detail: { accuracy: 50 } });
+
+    assert.equal(mod.readProgress(ctx).bestMastery, 40,
+        'the module-registered window listener folded the session into the best');
+});
+
+test('_onNoteDetectSession cannot overwrite a standing best with an inflated session product', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    mod.writeProgress(ctx, { bestMastery: 40 });
+    global.window.highway = { getMastery: () => 0.8 }; // 80% difficulty x 100% -> 80
+    const dom = installSummaryDom();
+
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 100 } }), true);
+
+    assert.equal(mod.readProgress(ctx).bestMastery, 40,
+        'a whole-session product never rewrites a standing best (only first plays write)');
+    assert.match(dom.overlay.querySelector('.dd-mastery-row').textContent, /\(best 40%\)/,
+        'the row reports the standing record, not the overstated product');
+});
+
+test('_onNoteDetectSession never regresses a migrated best with a weaker session', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    // A migrated node: the carried-over score lives in migratedMastery, not
+    // bestMastery (the migration never writes bestMastery).
+    mod.writeProgress(ctx, { currentDifficulty: 63, migratedMastery: 63, legacy_claim_player_id: 'main' });
+    global.window.highway = { getMastery: () => 0.8 }; // 80% difficulty x 20% -> 16
+    const dom = installSummaryDom();
+
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 20 } }), true);
+
+    assert.equal(mod.readProgress(ctx).bestMastery, null, 'no regression write against the migrated best');
+    assert.equal(mod._songMasteryBadge({ filename: 'song.feedpak' }).best, 63, 'the migrated best still shows');
+    assert.match(dom.overlay.querySelector('.dd-mastery-row').textContent, /\(best 63%\)/);
+});
+
+test('_onNoteDetectSession drops an explicit context with no highway of its own', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    // The panel registers presence only — no highway. Its session event must
+    // not be scored against the main player's slider.
+    const panel = playerContext({ session_id: 'split-1', player_id: 'panel-a' });
+    mod.upsertPlayerContext(panel);
+    global.window.highway = { getMastery: () => 1 };
+
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 100, player_context: panel } }), false);
+    assert.equal(mod.readProgress(panel), null, 'nothing is written for the unresolved panel');
+});
+
+test('_onNoteDetectSession drops a session naming an unnormalizable context', () => {
+    const mod = freshPlugin();
+    const main = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(main);
+    global.window.highway = { getMastery: () => 1 };
+
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 100, player_context: 'nonsense' } }), false,
+        'an explicit raw context that normalizes to nothing is not folded into another player');
+});
+
+test('_injectSessionMasteryRow decorates the last summary overlay, not an older one', () => {
+    const mod = freshPlugin();
+    const dom = installSummaryDom();
+    const older = dom.overlay;
+    // Second overlay: fake a document where querySelectorAll is present and
+    // returns the overlays in DOM order.
+    const newer = dom.makeElement('nd-summary-overlay');
+    global.document.querySelectorAll = (selector) =>
+        selector === '.nd-summary-overlay' ? [older, newer] : [];
+    newer.appendChild(dom.makeElement('nd-sum-actions'));
+
+    const injected = mod._injectSessionMasteryRow({ mastery: 40, previousBest: null });
+
+    assert.equal(injected, true);
+    assert.ok(newer.querySelector('.dd-mastery-row'), 'the newest overlay is the one decorated');
+    assert.equal(older.querySelector('.dd-mastery-row'), null, 'the older overlay stays untouched');
 });
 
 test('_instrumentKind matches the shared cross-language fixture', () => {
@@ -4566,6 +4908,60 @@ function mountLibraryCardActions() {
         libraryCardActions: { register: function (action) { registered.push(action); } },
     };
     return registered;
+}
+
+// Minimal fake DOM for the Note Detect results overlay (#84): just enough
+// structure for document.querySelector('.nd-summary-overlay'),
+// overlay.querySelector('.nd-sum-actions'/'.dd-mastery-row'), and an
+// insertBefore to be exercised without a browser.
+function installSummaryDom() {
+    function makeElement(className) {
+        const el = {
+            className: className || '',
+            textContent: '',
+            style: { cssText: '' },
+            children: [],
+            parentNode: null,
+            appendChild(child) {
+                child.parentNode = el;
+                el.children.push(child);
+                return child;
+            },
+            insertBefore(child, ref) {
+                child.parentNode = el;
+                const at = el.children.indexOf(ref);
+                if (at === -1) el.children.push(child);
+                else el.children.splice(at, 0, child);
+                return child;
+            },
+            querySelector(selector) { return findElement(el, selector); },
+        };
+        return el;
+    }
+    function hasClass(el, name) {
+        return (el.className || '').split(/\s+/).indexOf(name) !== -1;
+    }
+    function findElement(root, selector) {
+        const name = selector.charAt(0) === '.' ? selector.slice(1) : null;
+        for (const child of root.children) {
+            if (name ? hasClass(child, name) : child.tagName === selector) return child;
+            const nested = findElement(child, selector);
+            if (nested) return nested;
+        }
+        return null;
+    }
+    const overlay = makeElement('nd-summary-overlay');
+    const panel = makeElement('nd-sum-panel');
+    const actions = makeElement('nd-sum-actions');
+    overlay.appendChild(panel);
+    panel.appendChild(actions);
+    global.document = {
+        addEventListener: () => {},
+        getElementById: () => null,
+        querySelector: (selector) => (selector === '.nd-summary-overlay' ? overlay : null),
+        createElement: () => makeElement(''),
+    };
+    return { overlay, panel, actions, makeElement };
 }
 
 test('registerLibraryCardRegenerateAction registers a destructive menu action gated on song.filename', () => {
