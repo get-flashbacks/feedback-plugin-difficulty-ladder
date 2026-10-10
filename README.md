@@ -1,8 +1,9 @@
 # Difficulty Ladder
 
 A feedBack plugin that keeps a song's difficulty matched to how well you're
-actually playing it, and shows upcoming sections as a row of glass-filling
-difficulty indicators.
+actually playing it, and shows upcoming sections as a compact, accessible
+tier rail (lit segments for the current tier, an outlined segment for the
+full-detail tier).
 
 ## Multi-player and profile isolation
 
@@ -453,9 +454,9 @@ claim marker prevents another player sharing that profile from reading it.
 - feedBack core with the `note-detection` capability / `setNoteStateProvider`
   contract (spec 009) and phrase-level difficulty data (feedBack#48).
 - A note-detection scorer plugin installed and active for auto-adjust to have
-  any signal to react to. Without one, the HUD still renders (using only
-  authored difficulty + the manual mastery slider), but auto-adjust has
-  nothing to observe and stays idle.
+  any signal to react to. Without one, the tier rail still renders on song
+  load (using only authored difficulty + the manual mastery slider) but has no
+  phrase-transition events to advance it, and auto-adjust stays idle.
 
 ## Host and peer compatibility
 
@@ -537,7 +538,7 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 | Difficulty mode | **Standard** (default) keeps difficulty fixed — no automatic movement. **Adaptive** enables today's live auto-adjust (`setMastery()` calls driven by accuracy). |
 | Resist isolated difficulty drops | Require two consecutive below-threshold sections before a downward adjustment; upward adjustments remain immediate. Off by default. Inert while *Level up only* is on. |
 | Level up only (#111) | Opt-in comfort switch: auto-adjust raises difficulty as usual but never lowers it, at any accuracy. The manual slider still works, and moving it still stands auto-adjust down entirely — both directions — exactly as without this setting. Off by default, and deliberately presented as a comfort option rather than a learning aid (a 2022 meta-analysis, McKay et al., found the self-controlled-practice benefit close to zero after bias correction). |
-| Show difficulty guide | Show/hide this plugin's standalone overlay (per-section bars whose height tracks peak difficulty and whose fill tracks the current master-difficulty setting). With Section Map installed the overlay is suppressed and the guide renders in Section Map's section bar instead; this setting does not control that surface. |
+| Show difficulty guide | Show/hide this plugin's standalone difficulty guide: a compact, **event-driven** segmented **tier rail**. One cell per visible phrase; the first `currentTier + 1` segments are lit and an outlined segment marks `topTier` (the full-detail threshold) — difficulty is never encoded by changing a component's size. Hover, focus and an `aria-label` give the exact `Tier N of M · full detail at K` (a single focus stop reads the current + upcoming phrases). It updates on song load, phrase commit, mastery change and settings change — never from a `requestAnimationFrame` loop. With Section Map installed the overlay is suppressed and the guide renders in Section Map's section bar instead; this setting does not control that surface. |
 | Sensitivity (1-3) | How confident auto-adjust must be (hit-rate thresholds) before it moves the slider, and how big a step it takes. A step is 10 / 15 / 20 percentage points; the per-song warm-up start is a fraction of one (see above). |
 | Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
 | Difficulty drop speed (1×-2×) | Multiplies only the downward auto-adjust target so difficulty can ease off faster than it climbs. The default 1× preserves symmetric behavior. Inert while *Level up only* is on. |

@@ -1477,6 +1477,9 @@
         }
         _emitPlayerDifficultyChanged(ctx, value, reason);
         scheduleSectionDifficultiesEmit(ctx, hw);
+        // #157: a mastery change is a guide input. No-op when the rail is
+        // hidden (split panels, Section Map owns it, guide off).
+        _syncDifficultyRail();
     }
 
     function _applyDifficultyForContext(context, pct, explicitHighway, reason) {
@@ -1601,6 +1604,7 @@
         _hudBadgeMeasureKey = null;
         _hudBadgeWidth = 0;
         _hudPhraseIdx = -1;
+        _railPhraseIdx = -1;
     }
     resetPerSongState();
 
@@ -2172,6 +2176,10 @@
         // `recordPhraseAttempt` (via `stateForAttempt`), `contributeDiagnostics`
         // (via the `afterCommit` hook) -- observes the live values.
         _commitScoreRatio(_mainScore, ratio, hw, _mainCommitHooks());
+        // #157: a committed phrase is a phrase transition (and usually a
+        // mastery step), so refresh the event-driven guide. Cheap no-op when
+        // the rail's signature is unchanged.
+        _syncDifficultyRail();
     }
 
     function updateMasteryStreak(ratio, masteryPct) {
@@ -3190,7 +3198,13 @@
         });
     }
 
-    // ---- Glass-filling HUD (overlay contract: own canvas, own rAF) ----
+    // ---- Standalone difficulty guide ----
+    // #157 (tier rail 2/4): the standalone guide is now the event-driven,
+    // accessible DOM tier rail below. The legacy canvas "glass" HUD
+    // (ensureHudCanvas/drawHud + the GLASS_* constants) is retained, unreachable
+    // by default, so sub-issue 4 (#159) can delete it in one place; flip
+    // _USE_LEGACY_GLASS_HUD to run the old renderer while integrating.
+    var _USE_LEGACY_GLASS_HUD = false;
     var _hudCanvas = null;
     var _hudRafHandle = null;
     var _playerEl = null;   // cached — re-resolved only if disconnected, never per-frame-queried
@@ -3343,6 +3357,164 @@
                 ctx.fillRect(x + 1, y + glassH - fillH, GLASS_W - 2, fillH);
             }
         });
+    }
+
+    // ---- Tier rail (#157): the standalone guide, event-driven + accessible ----
+    // Replaces the per-frame canvas glass HUD as the active standalone
+    // renderer. Decisions the issue asked to make and state:
+    //   * Moved OFF the bare canvas onto DOM: an <ol role="list"> of phrase
+    //     cells, so hover, focus and an accessible name come from the
+    //     platform instead of a pointer-inert <canvas>.
+    //   * NO physical-size encoding: every cell and segment is the same size.
+    //     currentTier is read from how many segments are lit; topTier (the
+    //     full-detail threshold) is a distinct outlined segment.
+    //   * Event-driven: _syncDifficultyRail() runs on song load, phrase
+    //     commit, mastery change, settings change and visibility change —
+    //     never from a requestAnimationFrame loop.
+    //   * Per-instance isolation: this is the main-player overlay only; it
+    //     hides exactly when Split Screen owns the panels, so no panel state
+    //     is shared (PLAYER_CONTEXT.md).
+    var _railEl = null;
+    var _railSignature = null;
+    var RAIL_LOOKAHEAD = 5;
+
+    function ensureRailEl() {
+        if (_railEl && _railEl.isConnected) return _railEl;
+        var player = getPlayerEl();
+        if (!player) return null;
+        var rail = document.createElement('ol');
+        rail.id = 'dynamic-difficulty-rail';
+        rail.setAttribute('role', 'list');
+        rail.setAttribute('aria-label', 'Difficulty tiers');
+        rail.setAttribute('tabindex', '0');
+        rail.style.cssText =
+            'position:absolute;top:8px;left:50%;transform:translateX(-50%);' +
+            'display:flex;gap:4px;align-items:flex-end;margin:0;padding:2px;' +
+            'list-style:none;z-index:15;pointer-events:none;' +
+            'border-radius:6px;outline-offset:2px;';
+        player.appendChild(rail);
+        _railEl = rail;
+        return rail;
+    }
+
+    function _hideDifficultyRail() {
+        _railSignature = null;
+        if (_railEl) _railEl.style.display = 'none';
+    }
+
+    // One snapshot the rail's discrete paths share: the visibility gates
+    // plus a single `getPhrases()` read, so `_difficultyRailVisible` and
+    // `_syncDifficultyRail` never read the host twice on the same event
+    // (phrase-commit / mastery-change paths call the latter straight after
+    // the former — a second read would double that host call). Null when the
+    // rail must stay hidden.
+    function _railHighwaySnapshot() {
+        if (!isPlayerActive()) return null;
+        if (!settings.showDifficultyGuide) return null;
+        if (window.__slopsmithSectionMapHooksInstalled) return null;
+        var ss = window.feedBackSplitscreen || window.slopsmithSplitscreen;
+        if (ss && typeof ss.isActive === 'function' && ss.isActive()) return null;
+        var hw = window.highway;
+        if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return null;
+        if (typeof hw.getPhrases !== 'function') return null;
+        var phrases = hw.getPhrases();
+        if (!phrases || !phrases.length) return null;
+        return { hw: hw, phrases: phrases };
+    }
+
+    // The same gates the glass HUD used: player active, guide on, Section Map
+    // owns the guide, Split Screen owns the panels, and real phrase data.
+    function _difficultyRailVisible() {
+        return !!_railHighwaySnapshot();
+    }
+
+    // One segment list per phrase: `maxTier + 1` equal segments, the first
+    // `currentTier + 1` lit, and the segment at `topTier` outlined. Returns a
+    // DOM <li> plus the phrase's accessible description.
+    function _buildRailCell(hw, phrase, isCurrent) {
+        var maxTier = Math.max(0, Math.floor(Number(phrase && phrase.max_difficulty) || 0));
+        var topTier = Math.max(0, Math.min(_phraseTopDifficulty(phrase), maxTier));
+        var currentTier = _presentedDifficultyLevel(hw, phrase);
+        var li = document.createElement('li');
+        li.setAttribute('role', 'listitem');
+        li.setAttribute('aria-hidden', 'true');
+        // The rail is pointer-events:none so the band never intercepts highway
+        // clicks; the cells opt back in so their `title` tooltip is hoverable.
+        li.style.cssText = 'display:flex;gap:1px;align-items:flex-end;height:16px;pointer-events:auto;';
+        for (var tier = 0; tier <= maxTier; tier++) {
+            var seg = document.createElement('span');
+            var lit = currentTier != null && tier <= currentTier;
+            seg.style.cssText = 'width:6px;height:16px;border-radius:1px;' +
+                (lit ? 'background:#e8c040;' : 'background:rgba(200,200,200,0.25);') +
+                (tier === topTier ? 'outline:1px solid #f4d35e;outline-offset:1px;' : '');
+            li.appendChild(seg);
+        }
+        var who = isCurrent ? 'current' : 'upcoming';
+        var tierText = currentTier == null ? 'tier unknown' : 'tier ' + currentTier + ' of ' + maxTier;
+        return {
+            li: li,
+            description: (isCurrent ? 'Current phrase: ' : 'Upcoming phrase: ')
+                + tierText + (maxTier > 0 ? ', full detail at ' + topTier : ''),
+            title: tierText + (maxTier > 0 ? ' \u00b7 full detail at ' + topTier : '') + ' (' + who + ')',
+        };
+    }
+
+    // Rebuild only when a cheap signature changes. Deliberately NOT a rAF
+    // loop: every caller is a discrete event (see the section comment).
+    // The phrase scan runs only when no cached index still covers the event's
+    // playback time — a phrase transition invalidates the cache; a mastery
+    // or settings event reuses it (same cursor-caching idea the retired
+    // glass HUD's `_hudPhraseIdx` used).
+    var _railPhraseIdx = -1;
+
+    function _railCurrentIndex(phrases, t, changed) {
+        var idx = _railPhraseIdx;
+        if (idx >= 0 && idx < phrases.length
+            && t >= phrases[idx].start_time && t < phrases[idx].end_time) {
+            return idx;
+        }
+        _railPhraseIdx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
+        // A changed index is itself a transition-by-timeout on providers that
+        // report getTime without firing a commit: force the rebuild once the
+        // scan below runs, mirroring the host-contract guarantee that the
+        // "Current" label always tracks the covering phrase.
+        if (changed && _railPhraseIdx !== idx) _railSignature = null;
+        return _railPhraseIdx;
+    }
+
+    function _syncDifficultyRail() {
+        var snapshot = _railHighwaySnapshot();
+        if (!snapshot) { _hideDifficultyRail(); return; }
+        var hw = snapshot.hw;
+        var phrases = snapshot.phrases;
+        var t = typeof hw.getTime === 'function' ? hw.getTime() : 0;
+        var curIdx = _railCurrentIndex(phrases, t, true);
+        if (curIdx < 0) curIdx = 0;
+        var start = Math.max(0, curIdx - 1);
+        var list = phrases.slice(start, start + RAIL_LOOKAHEAD);
+        var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : null;
+        var sig = JSON.stringify([
+            curIdx,
+            _masteryPct(mastery),
+            list.map(function (p) { return [_phraseTopDifficulty(p), p.max_difficulty]; }),
+        ]);
+        if (sig === _railSignature && _railEl && _railEl.isConnected) return;
+        var rail = ensureRailEl();
+        if (!rail) return;
+        _railSignature = sig;
+        rail.style.display = '';
+        while (rail.firstChild) rail.removeChild(rail.firstChild);
+        var descriptions = [];
+        list.forEach(function (p, i) {
+            var cell = _buildRailCell(hw, p, (start + i) === curIdx);
+            rail.appendChild(cell.li);
+            descriptions.push(cell.description);
+            cell.li.setAttribute('title', cell.title);
+        });
+        // A single focus stop carries the whole readable description so
+        // keyboard/screen-reader users get current + upcoming at once; the
+        // visual segments are aria-hidden so they aren't read as noise.
+        rail.setAttribute('aria-label', 'Difficulty tiers. ' + descriptions.join('. ') + '.');
     }
 
     // ---- Generate-difficulties CTA (calls routes.py's /generate) ----
@@ -3577,7 +3749,13 @@
     function startRafLoops() {
         startMasteryLifecycleSubscriptions();
         if (!_scoreRafHandle) tickScoring();
-        if (!_hudRafHandle) drawHud();
+        // #157: the standalone guide is the event-driven rail. The legacy glass
+        // HUD (with its own rAF) only runs when explicitly forced on.
+        if (_USE_LEGACY_GLASS_HUD) {
+            if (!_hudRafHandle) drawHud();
+        } else {
+            _syncDifficultyRail();
+        }
     }
 
     function onSongEvent() {
@@ -3675,6 +3853,7 @@
                 _clearGenerateLabelTimer();
                 cancelSectionDifficultiesEmit();
                 if (_hudCanvas) _hudCanvas.style.display = 'none';
+                _hideDifficultyRail();
                 if (_generateLabelTimer) { clearTimeout(_generateLabelTimer); _generateLabelTimer = null; }
             }
         });
@@ -3713,6 +3892,8 @@
             _mainScore.rampProgress = 0;
         }
         if (has('minMastery') || has('maxMastery')) _normalizeMasteryBounds();
+        // #157: any setting can change the guide's visibility or tiers.
+        _syncDifficultyRail();
     }
 
     // Settings panel writes localStorage directly (see settings.html) and
@@ -3738,6 +3919,7 @@
             lsSet('showDifficultyGuide', settings.showDifficultyGuide);
             syncControlsUI();
             contributeDiagnostics();
+            _syncDifficultyRail();
             return;
         }
         if (Object.prototype.hasOwnProperty.call(settings, short)) {
@@ -3799,6 +3981,12 @@
             _maybeRestoreSongMastery, _resumeStartPct,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
+            _applySettingsChange,
+            // #157 tier rail (standalone guide): exported so the event-driven
+            // render and its accessibility contract are unit-testable without
+            // a browser.
+            _syncDifficultyRail, _buildRailCell, _difficultyRailVisible,
+            _hideDifficultyRail, ensureRailEl,
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
             registerSplitHighway, tickOneSplitHighway: tickOneSplitHighway,
             _splitScoreStateForHighway,
