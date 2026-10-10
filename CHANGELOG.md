@@ -200,6 +200,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer describe the setting in glass terms.
 
 ### Fixed
+- Keys/piano reduction is now voice-aware: it keeps the downbeat bass root,
+  budgets tier 0 per hand, and no longer mislabels crossed/interleaved hands
+  (#180, item 5 of the keys roadmap #175). Three measured gaps.
+  (1) The #181 strong-beat skeleton kept ONE group per strong position
+  (whichever sat nearest it), which on a two-hand onset is usually the melody
+  -- the cheaper-scoring voice -- so the downbeat bass root was dropped from
+  the bottom tier even while sounding (measured: an Alberti-bass phrase's
+  tier 0 held the melody but not the root under it). The skeleton now also
+  keeps the lowest-pitch group of the same onset; only groups sounding at that
+  onset qualify, so no note is forced into a sparse window.
+  (2) The skeleton and the note-density backstop reason about groups globally,
+  so on a texture where one hand plays a dense run and the other only a few
+  widely spaced notes the dense hand satisfied both alone and the sparse hand
+  was absent from EVERY reduced tier but the top (measured: right-hand
+  sixteenths under a left-hand bass on two off-beats). Tier 0 now keeps one
+  group from each hand -- from the `hand_split` groups when the phrase has any,
+  otherwise from a phrase-level register banding that also covers hands that
+  are *staggered* (never sounding together, hence never split).
+  (3) `_split_keys_hands` split at the widest internal gap, but with several
+  equal gaps -- the crossed case -- the first is not necessarily the seam:
+  `[36, 48, 60, 72]` has three equal 12-semitone gaps and taking the first
+  returned a lower part spanning 24 semitones -- two octaves, impossible for one
+  hand. Candidate seams are now ranked by widest gap then by balance (the split
+  whose larger part spans least), so ties resolve to the most compact split
+  (`[36, 48] | [60, 72]` here, each part within a hand); among seams that leave
+  both parts within a hand's reach (a 9th) that ranking applies, and a genuine
+  split is never dropped for being wide -- the widest gap is still the fallback.
+  The bass-root and per-hand demotions only relabel levels downwards; the
+  anti-collapse guard prefers restoring a non-required demotion so a required
+  group normally keeps its tier-0 place, and restores a required one only when
+  nothing else can separate an otherwise-identical pair -- keeping the ladder's
+  full tier count, which outranks the guarantee when the two conflict (leaving
+  the pair would let the floor create 22 new identical tier pairs across these
+  fixtures). The split change is upstream of tiering -- it affects which notes
+  share a group and their hand/melody labels, and therefore scoring -- and is
+  covered by the nesting tests plus the `_split_keys_hands` unit tests. Fixtures
+  for Alberti bass, stride and crossed-hand passages pin tiers 0-2 and nesting
+  in `tests/test_dd_generation.py`. Version 0.31.0 -> 0.31.1.
 - Keys/piano ladders no longer generate a degenerate, near-empty
   bottom tier (#181, item 6 of the keys roadmap #175). The
   proportional tier floor in `_assign_tiers` guarantees tier 0 a

@@ -341,6 +341,49 @@ contract.
   two-voice chords, any demotion at all would create a new identical pair,
   so the floor leaves the tier assignment untouched. The floor is keys-only;
   the fretted path is untouched.
+- **Keys/piano reduction is voice-aware (#180, item 5 of the keys roadmap
+  #175).** Three gaps in the hand-aware thinning above, each measured on a
+  synthetic fixture. (1) *Bass root on downbeats.* The #181 strong-beat
+  skeleton keeps ONE group per strong position — whichever sits nearest it —
+  and on a two-hand onset that is usually the melody, which tends to score
+  cheaper than the accompaniment; the downbeat bass root was then left out of
+  the bottom tier while still sounding (measured: an Alberti-bass phrase's
+  tier 0 held the melody but not the downbeat root under it). The skeleton now
+  also keeps the lowest-pitch group of the same onset. Only groups sounding at
+  that onset qualify, so a position with no bass note under it — a rest, or a
+  right-hand-only bar — forces nothing into a sparse window. (2) *Per-hand
+  floor.* The skeleton and the note-density backstop both reason about groups
+  GLOBALLY, so on a texture where one hand plays a dense run and the other
+  only a few widely spaced notes, the dense hand's many cheap groups satisfy
+  both on their own and the sparse hand is absent from every reduced tier but
+  the top (measured: right-hand sixteenths under a left-hand bass sounding
+  only on two off-beats put the left hand at the top tier alone). Tier 0 now
+  keeps one group from each hand, so one hand's density cannot starve the
+  other. Hands come from the `hand_split` groups when the phrase has any;
+  otherwise from `_keys_phrase_hands`, which bands the phrase's own pitches at
+  the widest gap between consecutive distinct pitches, so hands that are
+  *staggered* (never sounding together, hence never split) are covered too.
+  (3) *Crossed / interleaved hands.* `_split_keys_hands` split at the widest
+  internal gap, but with several equal gaps — the crossed case — the first is
+  not necessarily the seam: `[36, 48, 60, 72]` has three equal 12-semitone
+  gaps, and taking the first returned a lower part spanning 24 semitones —
+  two octaves, impossible for one hand. Candidate seams are now ranked by
+  widest gap and then by balance (the split whose larger part spans least), so
+  ties resolve to the most compact split (`[36, 48] | [60, 72]` here, each part
+  within a hand); among seams that leave both parts within a hand's reach
+  (`_KEYS_HAND_SPAN_SEMITONES`, a 9th) that ranking is applied, and a genuine
+  split is never dropped for being wide — the widest gap is still the
+  fallback. Fixtures for Alberti bass, stride, and crossed-hand passages pin
+  tiers 0-2 and nesting in `tests/test_dd_generation.py`. The bass-root and
+  per-hand *demotions* only relabel levels downwards; the anti-collapse guard
+  prefers restoring a non-required demotion, so a required group normally keeps
+  its tier-0 place, and restores a required one only when nothing else can
+  separate an otherwise-identical pair — keeping the ladder's full tier count,
+  which outranks the guarantee when the two conflict (leaving the pair would
+  let the floor create 22 new identical tier pairs across these fixtures). The
+  split change is upstream of tiering — it affects which notes share a group
+  and their hand/melody labels, and therefore scoring — and is covered by the
+  nesting tests plus the `_split_keys_hands` unit tests.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
