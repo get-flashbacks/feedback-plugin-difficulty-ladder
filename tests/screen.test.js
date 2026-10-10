@@ -4720,6 +4720,68 @@ test('regenerateDifficultyLadder reconnects only when the regenerated song is th
     assert.deepEqual(reconnectCalls, [['song.feedpak', 0]]);
 });
 
+test('regenerateDifficultyLadder re-confirms when an unmarked ladder appears between preview and force', async () => {
+    const mod = freshPlugin();
+    const bodies = [];
+    const calls = [];
+    global.fetch = async (url, opts) => {
+        const body = JSON.parse(opts.body);
+        bodies.push(body);
+        if (body.preview) {
+            return { ok: true, json: async () => ({ preview: true, arrangements: [
+                { arrangement_index: 0, ladder_provenance: { status: 'missing', origin: 'none' } },
+            ] }) };
+        }
+        calls.push('fetch');
+        return body.overwrite_authored
+            ? { ok: true, json: async () => ({ generated: 1, needs_confirmation: 0 }) }
+            : { ok: true, json: async () => ({ generated: 0, needs_confirmation: 1, arrangements: [
+                { arrangement_index: 1, ladder_provenance: { status: 'present', origin: 'unknown', marker_status: 'missing' } },
+            ] }) };
+    };
+    global.window.confirm = () => { calls.push('confirm'); return true; };
+
+    const res = await mod.regenerateDifficultyLadder({ filename: 'song.feedpak' });
+
+    assert.equal(res.ok, true);
+    assert.deepEqual(calls, ['fetch', 'confirm', 'fetch'], 'the race fallback prompts before re-issuing');
+    assert.deepEqual(bodies, [
+        { filename: 'song.feedpak', levels: 4, preview: true },
+        { filename: 'song.feedpak', levels: 4, force: true },
+        { filename: 'song.feedpak', levels: 4, force: true, overwrite_authored: true },
+    ]);
+});
+
+test('regenerateDifficultyLadder reconnects on race-fallback decline because the pack already changed', async () => {
+    const mod = freshPlugin();
+    const bodies = [];
+    const reconnectCalls = [];
+    global.window.highway = {
+        getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 0 }),
+        hasPhraseData: () => false,
+        reconnect: (filename, idx) => reconnectCalls.push([filename, idx]),
+    };
+    global.fetch = async (url, opts) => {
+        const body = JSON.parse(opts.body);
+        bodies.push(body);
+        return body.preview
+            ? { ok: true, json: async () => ({ preview: true, arrangements: [
+                { arrangement_index: 0, ladder_provenance: { status: 'missing', origin: 'none' } },
+            ] }) }
+            : { ok: true, json: async () => ({ generated: 0, needs_confirmation: 1, arrangements: [
+                { arrangement_index: 1, ladder_provenance: { status: 'present', origin: 'unknown', marker_status: 'missing' } },
+            ] }) };
+    };
+    global.window.confirm = () => false;
+
+    const res = await mod.regenerateDifficultyLadder({ filename: 'song.feedpak' });
+
+    assert.equal(res.cancelled, true);
+    assert.equal(bodies.length, 2, 'declining the second prompt must not fire the overwrite_authored retry');
+    assert.equal(bodies[1].overwrite_authored, undefined);
+    assert.deepEqual(reconnectCalls, [['song.feedpak', 0]], 'the forced write may have changed marked ladders, so reload');
+});
+
 test('regenerateDifficultyLadder fails closed when the provenance preview is unavailable', async () => {
     const mod = freshPlugin();
     let fetchCalls = 0;
