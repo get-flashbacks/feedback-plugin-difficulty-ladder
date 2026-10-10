@@ -835,6 +835,125 @@ test('contributeDiagnostics reports the host tier-semantics signal', () => {
     assert.equal(contributed[1].host_reports_phrase_tiers, true);
 });
 
+// ── Elo player/phrase ratings, logged only (issue #113) ───────────────────
+
+test('a finalized phrase seeds its Elo from generator difficulty and updates both ratings', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    // difficulty_cost 0.5 is a coin-flip phrase: it seeds at the neutral 1500,
+    // so a clean hit (actual 1) raises the player and lowers the phrase equally.
+    const hard = { start_time: 0, end_time: 10, max_difficulty: 3, difficulty_cost: 0.5 };
+    const highway = stubHighwayForSectionDifficulty({ phrases: [hard], sections: [], mastery: 0.5 });
+    const state = { curPhraseIdx: 0, phraseTotal: 4, phraseHits: 4, phraseJudgments: [] };
+
+    assert.equal(mod.recordPhraseAttempt(1, ctx, state, highway), true);
+
+    const progress = mod.readProgress(ctx);
+    const key = mod._nodeKey(mod._phraseIdOf('song.feedpak::lead', 0, hard));
+    assert.equal(progress.eloPlayer, 1516, 'a clean hit above a coin flip raises the player by K/2');
+    assert.equal(progress.eloPhrases[key], 1484, 'the phrase rating falls by the same delta');
+    assert.equal(state.lastElo.phrase_seeded, true);
+    assert.equal(state.lastElo.expected_win_chance, 0.5);
+    assert.equal(state.lastElo.actual_outcome, 1);
+});
+
+test('a phrase seeds above or below 1500 with its generator difficulty_cost', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const hard = { start_time: 0, end_time: 10, max_difficulty: 3, difficulty_cost: 0.9 };
+    const easy = { start_time: 10, end_time: 20, max_difficulty: 3, difficulty_cost: 0.1 };
+    const highway = stubHighwayForSectionDifficulty({ phrases: [hard, easy], sections: [], mastery: 0.5 });
+
+    mod.recordPhraseAttempt(1, ctx, { curPhraseIdx: 0, phraseTotal: 4, phraseHits: 4, phraseJudgments: [] }, highway);
+    mod.recordPhraseAttempt(1, ctx, { curPhraseIdx: 1, phraseTotal: 4, phraseHits: 4, phraseJudgments: [] }, highway);
+
+    const progress = mod.readProgress(ctx);
+    const hardKey = mod._nodeKey(mod._phraseIdOf('song.feedpak::lead', 0, hard));
+    const easyKey = mod._nodeKey(mod._phraseIdOf('song.feedpak::lead', 1, easy));
+    assert.ok(progress.eloPhrases[hardKey] > 1500, 'a costly phrase seeds above neutral (harder to beat)');
+    assert.ok(progress.eloPhrases[easyKey] < 1500, 'a cheap phrase seeds below neutral (easier to beat)');
+});
+
+test('Elo phrase ratings are per phrase and persist across attempts', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const p0 = { start_time: 0, end_time: 10, max_difficulty: 3, difficulty_cost: 0.5 };
+    const p1 = { start_time: 10, end_time: 20, max_difficulty: 3, difficulty_cost: 0.5 };
+    const highway = stubHighwayForSectionDifficulty({ phrases: [p0, p1], sections: [], mastery: 0.5 });
+    const key0 = mod._nodeKey(mod._phraseIdOf('song.feedpak::lead', 0, p0));
+    const key1 = mod._nodeKey(mod._phraseIdOf('song.feedpak::lead', 1, p1));
+
+    mod.recordPhraseAttempt(1, ctx, { curPhraseIdx: 0, phraseTotal: 2, phraseHits: 2, phraseJudgments: [] }, highway);
+    const afterHit = mod.readProgress(ctx).eloPhrases[key0];
+    mod.recordPhraseAttempt(0, ctx, { curPhraseIdx: 0, phraseTotal: 2, phraseHits: 0, phraseJudgments: [] }, highway);
+    const progress = mod.readProgress(ctx);
+
+    assert.ok(progress.eloPhrases[key0] > afterHit, 'a miss raises the phrase rating it just beat');
+    assert.equal(progress.eloPhrases[key1], undefined, 'an unplayed phrase gets no rating');
+});
+
+test('Elo updates never touch difficulty or best mastery', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { currentDifficulty: 55, bestMastery: 40 });
+    const highway = stubHighwayForSectionDifficulty({
+        phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3, difficulty_cost: 0.2 }],
+        sections: [],
+        mastery: 0.5,
+    });
+
+    mod.recordPhraseAttempt(1, ctx, { curPhraseIdx: 0, phraseTotal: 3, phraseHits: 3, phraseJudgments: [] }, highway);
+    const progress = mod.readProgress(ctx);
+    assert.equal(progress.currentDifficulty, 55, 'difficulty selection is unchanged (logged only)');
+    assert.equal(progress.bestMastery, 40, 'best mastery is untouched by Elo');
+    assert.equal(typeof progress.eloPlayer, 'number');
+});
+
+test('contributeDiagnostics exposes the last Elo observation', () => {
+    const mod = freshPlugin();
+    const contributed = [];
+    global.window.feedBack = { diagnostics: { contribute: (id, payload) => contributed.push(payload) } };
+    const ctx = playerContext();
+    const phrase = { start_time: 0, end_time: 10, max_difficulty: 3, difficulty_cost: 0.5 };
+    const highway = stubHighwayForSectionDifficulty({ phrases: [phrase], sections: [], mastery: 0.5 });
+    const ms = mod._mainScore();
+    ms.curPhraseIdx = 0; ms.phraseTotal = 2; ms.phraseHits = 2; ms.phraseJudgments = [];
+    mod.recordPhraseAttempt(1, ctx, ms, highway);
+
+    mod.contributeDiagnostics();
+
+    assert.equal(contributed.length, 1);
+    assert.equal(contributed[0].elo.schema, 'difficulty_ladder.elo.v1');
+    assert.equal(
+        contributed[0].elo.last_observation.phrase_id,
+        mod._phraseIdOf('song.feedpak::lead', 0, phrase)
+    );
+    assert.equal(contributed[0].elo.last_observation.actual_outcome, 1);
+});
+
+test('a song change clears the cached Elo observation so diagnostics cannot cross songs', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const phrase = { start_time: 0, end_time: 10, max_difficulty: 3, difficulty_cost: 0.5 };
+    const highway = stubHighwayForSectionDifficulty({ phrases: [phrase], sections: [], mastery: 0.5 });
+    const ms = mod._mainScore();
+    ms.curPhraseIdx = 0; ms.phraseTotal = 2; ms.phraseHits = 2; ms.phraseJudgments = [];
+    mod.recordPhraseAttempt(1, ctx, ms, highway);
+    assert.ok(ms.lastElo, 'the observation is cached while the song is playing');
+
+    // onSongEvent -> resetPerSongState() -> contributeDiagnostics(): the new
+    // song's first payload must not name the previous song's phrase_id.
+    mod.resetPerSongState();
+    assert.equal(mod._mainScore().lastElo, null, 'a song change drops the cached observation');
+});
+
+test('the split initializer carries and clears the same Elo observation field as the main state', () => {
+    const mod = freshPlugin();
+    const split = mod.newSplitScoreState(playerContext());
+    assert.equal('lastElo' in split, true, 'field parity: lastElo is declared on both initializers');
+    assert.equal(split.lastElo, null);
+});
+
 test('the v2 event still emits byte-for-byte what Section Map consumes today', () => {
     const mod = freshPlugin();
     global.window.highway = stubHighwayForSectionDifficulty({

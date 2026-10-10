@@ -19,6 +19,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the gate: C5 (#113) must ship and log data first.
 
 ### Added
+- Elo player and phrase ratings, logged only (#113, M4 roadmap C5): on every
+  finalized phrase the player's Elo (K=32, neutral 1500, scale 400) is updated
+  against a per-phrase Elo keyed by `phrase_id`, and the predicted win chance is
+  logged next to the actual hit rate. A phrase's first rating is seeded from its
+  generator `difficulty_cost` (a neutral 0.5 when absent) so a first play is not
+  a guess — Pelánek (2016) player-vs-item Elo, no pre-calibration. Both ratings
+  live on the existing per-player/context skill node following the #87
+  player-context layout, update only on a finalized phrase (#65), and are purely
+  logged evidence — nothing here steers difficulty selection. `contributeDiagnostics`
+  now exposes the latest observation under `elo` (schema
+  `difficulty_ladder.elo.v1`: `player_elo`, `phrase_elo`, `phrase_seeded`,
+  `expected_win_chance`, `actual_outcome`), reset to `null` on every song change
+  so the observation never names a previous song's phrase. Note the seed is a
+  play-corrected prior, not a calibrated probability — `difficulty_cost` is a
+  within-song relative ranking — so #55/#56 must ground-truth `expected_win_chance`
+  before treating it as absolute. Tested in `tests/screen.test.js`
+  (seeding from cost, per-phrase keying, directional update, difficulty/mastery
+  untouched, diagnostics exposure, song-change reset, field parity).
+  Version 0.33.0 -> 0.34.0.
 - Per-arrangement **best mastery** library-card badge and Note Detect session
   summary (#84, parent #81): the library card's overlay chip now reads each
   arrangement's best mastery through `(song) -> string` `label`/`icon` (one
