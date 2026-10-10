@@ -32,7 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `difficulty_ladder.elo.v1`: `player_elo`, `phrase_elo`, `phrase_seeded`,
   `expected_win_chance`, `actual_outcome`). Tested in `tests/screen.test.js`
   (seeding from cost, per-phrase keying, directional update, difficulty/mastery
-  untouched, diagnostics exposure).
+  untouched, diagnostics exposure). Version 0.32.0 -> 0.33.0.
 - Per-song **Regenerate difficulty ladder** library-card menu action (#183):
   a read-only `/generate` preview reports each existing ladder's provenance
   before any write. New `x_difficulty_ladder` markers record both marker schema
