@@ -474,6 +474,17 @@
             && node.legacy_claim_player_id !== patch.legacy_claim_player_id) {
             node.legacy_claim_player_id = patch.legacy_claim_player_id; changed = true;
         }
+        // The migrated legacy score, preserved separately from the mutable
+        // currentDifficulty (which the difficulty paths rewrite freely): it is
+        // the only field the mastery surface may read as the migrated value.
+        // Immutable once written, so a later difficulty change can never be
+        // mistaken for the score the cutover carried over.
+        if (Object.prototype.hasOwnProperty.call(patch, 'migratedMastery')) {
+            var migratedMastery = _pct(patch.migratedMastery);
+            if (migratedMastery !== null && _pct(node.migratedMastery) === null) {
+                node.migratedMastery = migratedMastery; changed = true;
+            }
+        }
         if (changed) node.updatedAt = patch.updatedAt || new Date().toISOString();
         return changed;
     }
@@ -800,30 +811,42 @@
             return fallbackV2;
         }
         if (_profileApisPresent()) return null;
+        var entry = _dominantSongMasteryEntry(song);
+        return entry === null ? null : entry.value;
+    }
+
+    // The dominant score for `song` out of the legacy per-song map, as
+    // { index, value } where `index` is the arrangement id from the map key
+    // (`filename::<arrangementId>`), so the badge can name the arrangement it
+    // actually scored instead of always labeling it as the first/overall one.
+    function _dominantSongMasteryEntry(song) {
         var map = loadSongMasteryMap();
         var prefix = song.filename + '::';
         var fallback = null;
+        var fallbackIndex = null;
         for (var k in map) {
             if (!Object.prototype.hasOwnProperty.call(map, k) || k.indexOf(prefix) !== 0) continue;
             var v = _masteryPct(map[k]);
             if (v === null) continue;
-            if (k === prefix + '0') return v; // prefer the first/primary arrangement
-            if (fallback === null) fallback = v;
+            var index = k.slice(prefix.length);
+            if (index === '0') return { index: 0, value: v }; // prefer the first/primary arrangement
+            if (fallback === null) { fallback = v; fallbackIndex = index; }
         }
-        return fallback;
+        if (fallback === null) return null;
+        return { index: fallbackIndex, value: fallback };
     }
     /* eslint-enable security/detect-object-injection */
 
-    // The score to show for one skill node: the standing best, or — for a user
-    // migrated off the old Song Mastery plugin — the score the cutover wrote
-    // into currentDifficulty before any bestMastery existed. Gated on the
-    // migration stamp so a plain remembered difficulty target is never shown
-    // as an earned score.
+    // The score to show for one skill node: the standing best, or — for a
+    // node migrated off the old Song Mastery plugin — the score the cutover
+    // preserved in `migratedMastery` before live play began. `currentDifficulty`
+    // never stands in for the score: it is the live target, rewritten by every
+    // difficulty change, so reading it would present a changed target as mastery.
     function _bestMasteryOf(node) {
         if (!_plainObject(node)) return null;
         var best = _pct(node.bestMastery);
         if (best !== null) return best;
-        return node.legacy_claim_player_id ? _pct(node.currentDifficulty) : null;
+        return _pct(node.migratedMastery);
     }
 
     function _formatMasteryPct(value) {
@@ -856,8 +879,15 @@
                     var roleNode = _plainObject(roles[rk]);
                     var skills = roleNode && _plainObject(roleNode.skills) ? roleNode.skills : null;
                     if (!skills) return;
-                    var value = _bestMasteryOf(skills[_nodeKey('overall')]);
-                    if (value !== null && (best === null || value > best)) best = value;
+                    // Best across every skill node, not just `overall`: the
+                    // write path records under the context's own skill, and a
+                    // context can legitimately carry a non-overall skill, so
+                    // reading only `overall` would omit the arrangement.
+                    Object.keys(skills).forEach(function (sk) {
+                        var skillNode = _plainObject(skills[sk]);
+                        var value = skillNode ? _bestMasteryOf(skillNode) : null;
+                        if (value !== null && (best === null || value > best)) best = value;
+                    });
                 });
             });
             if (best !== null) values[_id(arrangementNode.arrangement_id, ak)] = best;
@@ -875,10 +905,21 @@
         var base = _mainPlayerContext;
         if (!base) {
             if (_profileApisPresent()) return []; // identity not ready yet
-            var legacy = _dominantSongMastery(song);
+            var legacy = _dominantSongMasteryEntry(song);
             if (legacy === null) return [];
-            var firstMeta = Array.isArray(song.arrangements) && song.arrangements.length ? song.arrangements[0] : null;
-            return [{ index: 0, label: _id(firstMeta && firstMeta.name, 'Overall'), value: legacy }];
+            // Label the legacy score with the arrangement it came from (the map
+            // keys are `filename::<arrangementId>`), matching the song's own
+            // arrangement metadata when it exposes any.
+            var legacyMeta = null;
+            if (Array.isArray(song.arrangements)) {
+                song.arrangements.forEach(function (arrangement) {
+                    if (arrangement && String(arrangement.index) === String(legacy.index)) legacyMeta = arrangement;
+                });
+            }
+            var label = legacyMeta && legacyMeta.name
+                ? legacyMeta.name
+                : (String(legacy.index) === '0' ? 'Overall' : 'Arrangement ' + legacy.index);
+            return [{ index: legacy.index, label: label, value: legacy.value }];
         }
         var ctxBase = normalizePlayerContext(Object.assign({}, base, { song_id: song.filename, skill: 'overall' }));
         if (!ctxBase) return [];
@@ -2083,6 +2124,7 @@
                 if (!existing || _pct(existing.currentDifficulty) === null) {
                     _writeProgressToStore(progress, legacyContext, {
                         currentDifficulty: currentDifficulty,
+                        migratedMastery: currentDifficulty,
                         legacyUnscoped: !sourceRole,
                         legacy_claim_player_id: ctx.player_id,
                     });
@@ -2203,12 +2245,24 @@
     // no setTimeout/poll retry loop (the old Song Mastery plugin needed both).
     // One row per overlay: the duplicate guard is a presence check, and a
     // retry/loop that fires a second session event on the same overlay is a
-    // no-op rather than a stacked second row.
+    // no-op rather than a stacked second row. The note reports what the record
+    // holds: `first play` when the row established the node's first best and a
+    // migrated/standing best was absent, else `(best N%)`.
     function _injectSessionMasteryRow(result) {
         if (typeof document === 'undefined'
-            || typeof document.createElement !== 'function'
-            || typeof document.querySelector !== 'function') return false;
-        var overlay = document.querySelector('.nd-summary-overlay');
+            || typeof document.createElement !== 'function') return false;
+        // The LAST overlay, not the first: Note Detect can leave more than one
+        // summary card in the DOM (a previous finished session), and the row
+        // must decorate the card that owns the event being handled, not an
+        // older one already finished.
+        var overlay = null;
+        if (typeof document.querySelectorAll === 'function') {
+            var overlays = document.querySelectorAll('.nd-summary-overlay');
+            if (overlays && overlays.length) overlay = overlays[overlays.length - 1];
+        }
+        if (!overlay && typeof document.querySelector === 'function') {
+            overlay = document.querySelector('.nd-summary-overlay');
+        }
         if (!overlay || typeof overlay.querySelector !== 'function'
             || typeof overlay.appendChild !== 'function') return false;
         if (overlay.querySelector('.dd-mastery-row')) return false; // already decorated
@@ -2218,8 +2272,8 @@
         // matching the results card's centred, bordered row rhythm.
         row.style.cssText = 'border-top:1px solid #374151;margin-top:0.75rem;'
             + 'padding-top:0.75rem;text-align:center;font-weight:600;color:#818cf8;';
-        var note = result.isNewBest
-            ? (result.previousBest === null ? 'first play' : '▲ new best')
+        var note = result.previousBest === null
+            ? 'first play'
             : '(best ' + _formatMasteryPct(result.previousBest) + '%)';
         row.textContent = '★ ' + _formatMasteryPct(result.mastery) + '% mastery — ' + note;
         // Sit with the other result rows, above the action buttons (which are
@@ -2235,41 +2289,76 @@
 
     // The highway a context scores against: the one the context itself carries
     // (the main compatibility context and split/registered contexts do), else
-    // the one registered for its session/player key, else the main highway as a
-    // last resort. Without this a Split Screen panel's finished song would be
-    // scored against the main player's slider.
-    function _highwayForContext(ctx) {
+    // the one registered for its session/player key, else — with
+    // `requireOwnHighway` clear — the main highway as a last resort. The
+    // caller decides what that fallback means: a session event that names an
+    // EXPLICIT non-main context must never fold into another player's highway,
+    // so those sessions pass `requireOwnHighway: true` and are dropped when no
+    // highway of their own can be found, instead of being mis-scored against
+    // the main player's slider.
+    function _highwayForContext(ctx, opts) {
         if (ctx.highway && typeof ctx.highway.getMastery === 'function') return ctx.highway;
-        var registered = _playerContexts.get(playerContextKey(ctx));
+        var key = playerContextKey(ctx);
+        var registered = key ? _playerContexts.get(key) : null;
         if (registered && registered.highway && typeof registered.highway.getMastery === 'function') {
             return registered.highway;
         }
+        if (opts && opts.requireOwnHighway) return null;
         return window.highway;
     }
 
-    // Fold one finished session into the standing best (through the same
-    // monotonic write + emit path phrase commits use) and decorate the summary
+    // Fold one finished session into the standing best and decorate the summary
     // card. The session's difficulty is the live slider value at completion —
     // the same source `_phraseMasteryPct` reads per phrase — times the
-    // session's overall accuracy.
+    // session's overall accuracy. Only a session that establishes a node's
+    // FIRST best may write from that whole-session product: for an arrangement
+    // with no co-measured phrase history the product is the only evidence there
+    // is, and auto-adjust cannot have moved the slider yet without phrase
+    // commits to anchor it. Any later advancement must come from the per-phrase
+    // commits, which measure difficulty and accuracy on the same phrase — the
+    // same product over a whole adaptive session could outrun what any phrase
+    // actually earned, so it is never allowed to overwrite a standing best.
     function _onNoteDetectSession(event) {
         var detail = _plainObject(event && event.detail) || _plainObject(event);
         if (!detail) return false;
-        var accuracy = Number(detail.accuracy);
+        // Accept only a real accuracy figure: null/blank/omitted (an unscored
+        // session) must not become 0% via Number('') / Number(null).
+        var rawAccuracy = detail.accuracy;
+        if (rawAccuracy === null || rawAccuracy === undefined || rawAccuracy === '') return false;
+        var accuracy = Number(rawAccuracy);
         if (!isFinite(accuracy)) return false;
-        var ctx = normalizePlayerContext(detail.player_context) || _mainPlayerContext;
-        if (!ctx) return false;
-        var highway = _highwayForContext(ctx);
-        if (!highway || typeof highway.getMastery !== 'function') return false;
+        var explicitRaw = detail.player_context || detail.playerContext
+            || detail.player;
+        var ctx = normalizePlayerContext(explicitRaw);
+        var highway = null;
+        if (explicitRaw) {
+            // The event named its own context. If it does not normalize at all
+            // it must not be folded into another player's session, so an
+            // explicit but unresolvable context drops the event.
+            if (!ctx) return false;
+            // ... and it must carry or have a registered highway of its own.
+            // An explicit NON-main context is never scored against the main
+            // player's highway; an explicit main context (player matching the
+            // registered main one) may resolve to window.highway like any
+            // unadorned single-player session.
+            var isMain = !!_mainPlayerContext && ctx.player_id === _mainPlayerContext.player_id;
+            highway = _highwayForContext(ctx, { requireOwnHighway: !isMain });
+            if (!highway || typeof highway.getMastery !== 'function') return false;
+        } else if (!_mainPlayerContext) {
+            return false;
+        } else {
+            ctx = Object.assign({}, _mainPlayerContext);
+            highway = _highwayForContext(ctx);
+        }
+        if (!ctx || !highway || typeof highway.getMastery !== 'function') return false;
         var ratio = Math.max(0, Math.min(1, accuracy / 100));
         var mastery = _phraseMasteryPct(highway, ratio);
         if (mastery === null) return false;
         var previous = readProgress(ctx, { exactOnly: true });
-        var previousBest = previous ? _pct(previous.bestMastery) : null;
-        var isNewBest = previousBest === null || mastery > previousBest;
-        if (isNewBest) _updateBestMastery(ctx, highway, ratio);
+        var previousBest = previous ? _bestMasteryOf(previous) : null;
+        if (previousBest === null) _updateBestMastery(ctx, highway, ratio);
         _injectSessionMasteryRow({
-            mastery: mastery, previousBest: previousBest, isNewBest: isNewBest,
+            mastery: mastery, previousBest: previousBest,
         });
         return true;
     }

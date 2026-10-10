@@ -472,8 +472,12 @@ without the event bus drops it silently.
 
 The same best is surfaced in two places: as a small chip on the song's library card (see
 **Library card badge** below), and — at the end of a scored play — as one `★ N% mastery`
-row on the Note Detect results card. That row distinguishes a new best (or a first play)
-from a below-best session and never stacks a duplicate. It is injected from Note Detect's
+row on the Note Detect results card. That row is stamped `first play` when the session
+establishes the node's first best, otherwise it reports the standing best — it never
+duplicates the co-measured phrase commits or a second row. Only a first session may write
+from the whole-session accuracy, because that is the one case where per-phrase evidence
+can't contradict it; after a best exists, the record advances only on phrase-finalization
+commits, which measure difficulty and accuracy together. It is injected from Note Detect's
 synchronous `notedetect:session` event, so no `MutationObserver` or polling is involved.
 
 **Live auto-adjustment**
@@ -664,7 +668,8 @@ the song's library card via `window.feedBack.libraryCardActions` (`placement: 'o
 lists every scored arrangement (`Lead 80% · Rhythm 55%`), because the capability renders one element
 per card rather than one per arrangement. Mastery, not the remembered difficulty, is what is shown:
 a song whose node holds only a live difficulty target and no score stays unbadged, while a score
-migrated off the old Song Mastery plugin is surfaced from its claim-stamped `currentDifficulty`.
+migrated off the old Song Mastery plugin is surfaced from the `migratedMastery` the cutover preserved
+(never from the mutable `currentDifficulty`, which live difficulty changes rewrite).
 `label`/`icon` are `(song) -> string` readers, so each card reflects its own song — the capability
 passes functions through (`_normalize`) and calls them per card.
 

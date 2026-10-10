@@ -24,13 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arrangement's best mastery through `(song) -> string` `label`/`icon` (one
   registration, `difficulty_ladder.mastery_badge`), listing every scored
   arrangement in its title (`Lead 80% · Rhythm 55%`) and showing `★ N%` inline.
-  It surfaces a score migrated off the old Song Mastery plugin (a claim-stamped
-  `currentDifficulty`) without ever presenting a bare remembered difficulty as
-  mastery, and falls back to the plugin's own legacy per-song map only before a
-  profile context exists. At the end of a scored play, one `★ N% mastery` row is
+  It surfaces a score migrated off the old Song Mastery plugin (preserved in
+  `migratedMastery`, immune to later `currentDifficulty` changes) without ever
+  presenting a bare remembered difficulty as mastery, and falls back to the
+  plugin's own legacy per-song map only before a profile context exists. At the
+  end of a scored play, one `★ N% mastery` row is
   added to the Note Detect results card from its synchronous `notedetect:session`
-  event — no `MutationObserver` or polling — distinguishing a new best / first
-  play from a below-best session and never duplicating a row. New helpers
+  event — no `MutationObserver` or polling — stamped `first play` only when the
+  session establishes the node's first best (the one case that may write from
+  whole-session accuracy; a standing best advances only through co-measured
+  phrase commits) and never duplicating a row. New helpers
   `_songMasteryBadge` / `_songArrangementMastery` / `_bestMasteryOf`,
   `_onNoteDetectSession`, and `_injectSessionMasteryRow` in `screen.js`; tested
   in `tests/screen.test.js`. Version 0.32.0 -> 0.33.0.

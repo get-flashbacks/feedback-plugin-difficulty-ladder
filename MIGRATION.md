@@ -21,17 +21,19 @@ master difficulty, and showed it as a library-card badge. Both were absorbed:
   once and migrated into the canonical progress store (`migrateLegacyData`,
   `screen.js:1895`).
 - **Long-term best mastery** — a monotonic, arrangement-scoped `bestMastery`
-  written only by live scoring (`_updateBestMastery`, `screen.js:2001`),
-  distinct from the current `currentDifficulty` (see the Settings table in
-  `README.md`).
+  written only through `_updateBestMastery` (`screen.js:2001`) — phrase
+  commits, and the first Note Detect session of a node, which alone may write
+  from whole-session accuracy — distinct from the current `currentDifficulty`
+  (see the Settings table in `README.md`).
 - **Library-card badge** — one registration through the Host
   `window.feedBack.libraryCardActions` capability
   (`registerLibraryCardBadge`; action id `difficulty_ladder.mastery_badge`),
-  now showing each arrangement's **best mastery** (with a claim-stamped
-  migrated score surfaced) rather than the remembered difficulty.
+  now showing each arrangement's **best mastery** (the cutover's
+  `migratedMastery` where one exists) rather than the remembered difficulty.
 - **Note Detect session summary** — one `★ N% mastery` row added to the finished
   results card from Note Detect's synchronous `notedetect:session` event
-  (`_onNoteDetectSession`, `_injectSessionMasteryRow`).
+  (`_onNoteDetectSession`, `_injectSessionMasteryRow`), stamped `first play`
+  when the session establishes the node's first best.
 - **Adaptive-difficulty behaviour** — the Song Mastery controller is replaced
   by Difficulty Ladder's section-aware controller; the settings mapping is
   recorded in §6.
@@ -43,7 +45,7 @@ All keys live in `localStorage`, prefixed `difficulty_ladder.` (`LS_PREFIX`,
 
 | Key | Schema / shape | Written by | Lifecycle |
 |---|---|---|---|
-| `difficulty_ladder.progress.v2` | schema `difficulty_ladder.progress.v2`, version 2: `profiles → players → songs → arrangements → instruments → roles → skills` nodes (`currentDifficulty`, `bestMastery`, `updatedAt`) plus a `migrations` map | live scoring, migration | canonical; replaced `songMastery` |
+| `difficulty_ladder.progress.v2` | schema `difficulty_ladder.progress.v2`, version 2: `profiles → players → songs → arrangements → instruments → roles → skills` nodes (`currentDifficulty`, `bestMastery`, `migratedMastery`, `updatedAt`) plus a `migrations` map | live scoring, migration | canonical; replaced `songMastery` |
 | `difficulty_ladder.phraseAttempts.v2` | schema `difficulty_ladder.phrase_attempts.v2`, version 2 | live scoring | canonical; replaced `phraseAttempts.v1` |
 | `difficulty_ladder.songMastery` | legacy per-song map, `filename::arrangement` → numeric or `{mastery, instrument}` record | read by migration (and, only before a profile context exists, by the badge's fallback); **also written** by `_rememberSongInstrument` (`screen.js:545`) and **pruned** by stale-label cleanup `_clearStaleSongInstrument` (`screen.js:618`) | legacy migration source. Not strictly read-only: the difficulty value is migrated+retained, but its `instrument` label is rewritten on contact and an entry judged stale is deleted, so rollback is best-effort, not guaranteed (§7) |
 | `difficulty_ladder.phraseAttempts.v1` | legacy attempt array | read-only left shift during migration (`screen.js:98`) | legacy migration source; retained |
@@ -89,7 +91,10 @@ One-time, idempotent, claim-once migration (`migrateLegacyData`,
   but they are not frozen afterwards: see §7 for the runtime paths that can
   still rewrite or prune a legacy entry.
 - The migration writes `currentDifficulty` only when the target node's
-  `currentDifficulty` is still unset, and never writes `bestMastery`.
+  `currentDifficulty` is still unset, and never writes `bestMastery`. It also
+  writes `migratedMastery` — the immutable preserve of the carried-over legacy
+  score, the only field the mastery surface may present as the migrated value,
+  so a later difficulty change can never masquerade as cutover mastery.
 
 The plugin also guards against the Host re-executing `screen.js` on reload:
 the `plugin-runtime-idempotent.v1` re-hydration guard at the top of
@@ -171,7 +176,8 @@ non-destructive, but two runtime paths can still change the legacy source:
    the difficulty value survives a reinstall of the prior release.
 2. The canonical `progress.v2` / `phraseAttempts.v2` stores are **additive**:
    migration writes nodes only where `currentDifficulty` was unset and never
-   touches `bestMastery` produced by live scoring.
+   touches `bestMastery` produced by live scoring; the preserved legacy value
+   lives in `migratedMastery` (set once, immutable).
 3. The cutover marker (`migrations.songMasteryV1`) records that migration ran;
    reverting keeps the legacy keys and ignores the v2 tree.
 
