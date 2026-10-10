@@ -42,7 +42,18 @@ contract.
   2000, via the request body) — it stops there rather than sweeping every
   song in an arbitrarily large library in one call.
 - Never touches an arrangement that already has phrase data unless `force`
-  is set — existing hand-authored difficulty ladders are never clobbered.
+  is set. Every ladder this plugin writes is stamped with a provenance marker
+  (`x_difficulty_ladder` on the arrangement), and a `force` regenerate still
+  refuses to overwrite a ladder that has no marker — a hand-authored ladder, or
+  one written before the marker existed — unless the request *also* carries
+  `overwrite_authored: true`. A hand-authored ladder is therefore never
+  clobbered silently: the confirmation is explicit and comes from the caller.
+- Each library card's menu offers **Regenerate difficulty ladder**
+  (`difficulty_ladder.regenerate`, `placement: 'menu'`, destructive): it forces
+  a refresh of that song through `/generate` and, when the backend reports an
+  authored ladder, asks before overwriting. Drums and other unsupported
+  arrangements are still skipped, and the highway reconnects only if the
+  regenerated song is the one currently open in the player.
 - Both routes report `generated` / `unsupported` / `skipped` / `failed`
   counts in their response, so a caller can tell "nothing to do" (already had
   phrases, too little content) apart from "this generator doesn't support
@@ -625,6 +636,13 @@ validation against real (not just one) arrangements first. Like
 arrangement that already has phrases unless the request also sets
 `force`, matching `/generate`'s existing regenerate-only-on-request
 behavior.
+
+`overwrite_authored` is an additional `/generate` and `/generate-library`
+request field — `false` by default — that is the explicit confirmation
+required before `force` may overwrite a ladder carrying no
+`x_difficulty_ladder` marker. It is what the library-card **Regenerate
+difficulty ladder** action sends after the user accepts the browser prompt,
+and it never overrides the skip for drums/unsupported arrangements.
 
 **Library card badge** — songs with a remembered per-song difficulty (see above) show a small
 indicator on their library card via `window.feedBack.libraryCardActions` (`placement: 'overlay'`,

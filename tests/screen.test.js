@@ -4553,6 +4553,154 @@ test('onGenerateClick releases the _generating guard after success, so a follow-
     assert.equal(fetchCallCount, 2, 'the pre-try ReferenceError used to skip the finally block, leaving _generating stuck true forever');
 });
 
+// ── Library-card regenerate action (#183) ───────────────────────────────────
+// The card-menu action reuses /generate with force. The load-bearing behavior
+// is the authored-ladder guard: routes.py answers `needs_confirmation` for a
+// ladder it cannot prove it generated, and the action must (a) never send
+// `overwrite_authored` on the first try, (b) only send it after an explicit
+// window.confirm, and (c) leave the ladder alone when the user declines.
+
+function mountLibraryCardActions() {
+    var registered = [];
+    global.window.feedBack = {
+        libraryCardActions: { register: function (action) { registered.push(action); } },
+    };
+    return registered;
+}
+
+test('registerLibraryCardRegenerateAction registers a destructive menu action gated on song.filename', () => {
+    const mod = freshPlugin();
+    const registered = mountLibraryCardActions();
+
+    mod.registerLibraryCardRegenerateAction();
+
+    assert.equal(registered.length, 1);
+    const action = registered[0];
+    assert.equal(action.id, 'difficulty_ladder.regenerate');
+    assert.equal(action.pluginId, 'difficulty_ladder');
+    assert.equal(action.placement, 'menu');
+    assert.equal(action.destructive, true);
+    assert.equal(action.applies({ filename: 'song.feedpak' }), true);
+    assert.equal(action.applies({}), false, 'a library row without a filename is not a pack');
+    assert.equal(action.applies(null), false);
+});
+
+test('registerLibraryCardRegenerateAction is idempotent across repeated lifecycle events', () => {
+    const mod = freshPlugin();
+    const registered = mountLibraryCardActions();
+    mod.registerLibraryCardRegenerateAction();
+    mod.registerLibraryCardRegenerateAction();
+    assert.equal(registered.length, 1, 'window.__ddCardRegenerateRegistered guards against duplicate registrations');
+});
+
+test('registerLibraryCardRegenerateAction tolerates a host with no libraryCardActions capability', () => {
+    const mod = freshPlugin();
+    global.window.feedBack = {};
+    assert.doesNotThrow(function () { mod.registerLibraryCardRegenerateAction(); });
+});
+
+test('_clampedGenerateLevels parses settings.generateLevels and clamps to [2,8]', () => {
+    const mod = freshPlugin();
+    mod.settings.generateLevels = '6';
+    assert.equal(mod._clampedGenerateLevels(), 6);
+    mod.settings.generateLevels = 99;
+    assert.equal(mod._clampedGenerateLevels(), 8);
+    mod.settings.generateLevels = 1;
+    assert.equal(mod._clampedGenerateLevels(), 2);
+    mod.settings.generateLevels = 'not-a-number';
+    assert.equal(mod._clampedGenerateLevels(), 4, 'only NaN falls back to the default; a parsed 0 clamps to 2');
+});
+
+test('regenerateDifficultyLadder forces generation without prompting when nothing is authored', async () => {
+    const mod = freshPlugin();
+    const bodies = [];
+    global.fetch = async (url, opts) => {
+        bodies.push(JSON.parse(opts.body));
+        return { ok: true, json: async () => ({ generated: 1, needs_confirmation: 0 }) };
+    };
+    let prompted = false;
+    global.window.confirm = () => { prompted = true; return true; };
+
+    const res = await mod.regenerateDifficultyLadder({ filename: 'song.feedpak' });
+
+    assert.equal(res.ok, true);
+    assert.equal(bodies.length, 1);
+    assert.deepEqual(bodies[0], { filename: 'song.feedpak', levels: 4, force: true });
+    assert.equal(prompted, false);
+});
+
+test('regenerateDifficultyLadder prompts before an authored overwrite and re-issues with overwrite_authored', async () => {
+    const mod = freshPlugin();
+    const bodies = [];
+    global.fetch = async (url, opts) => {
+        bodies.push(JSON.parse(opts.body));
+        return bodies.length === 1
+            ? { ok: true, json: async () => ({ generated: 0, needs_confirmation: 1 }) }
+            : { ok: true, json: async () => ({ generated: 1, needs_confirmation: 0 }) };
+    };
+    global.window.confirm = () => true;
+
+    const res = await mod.regenerateDifficultyLadder({ filename: 'song.feedpak' });
+
+    assert.equal(res.ok, true);
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].overwrite_authored, undefined, 'the first request never pre-authorizes an overwrite');
+    assert.equal(bodies[1].overwrite_authored, true, 'the confirmed retry carries the explicit overwrite flag');
+});
+
+test('regenerateDifficultyLadder leaves the authored ladder alone when the prompt is declined', async () => {
+    const mod = freshPlugin();
+    const bodies = [];
+    global.fetch = async (url, opts) => {
+        bodies.push(JSON.parse(opts.body));
+        return { ok: true, json: async () => ({ generated: 0, needs_confirmation: 1 }) };
+    };
+    global.window.confirm = () => false;
+
+    const res = await mod.regenerateDifficultyLadder({ filename: 'song.feedpak' });
+
+    assert.equal(res.cancelled, true);
+    assert.equal(bodies.length, 1, 'declining must not fire the overwrite request');
+});
+
+test('regenerateDifficultyLadder reconnects only when the regenerated song is the one open in the player', async () => {
+    const mod = freshPlugin();
+    const reconnectCalls = [];
+    global.window.highway = {
+        getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 0 }),
+        hasPhraseData: () => false,
+        reconnect: (filename, idx) => reconnectCalls.push([filename, idx]),
+    };
+    global.fetch = async () => ({ ok: true, json: async () => ({ generated: 1, needs_confirmation: 0 }) });
+
+    await mod.regenerateDifficultyLadder({ filename: 'other.feedpak' });
+    assert.deepEqual(reconnectCalls, [], 'regenerating a song that is not open must not reload the current one');
+
+    await mod.regenerateDifficultyLadder({ filename: 'song.feedpak' });
+    assert.deepEqual(reconnectCalls, [['song.feedpak', 0]]);
+});
+
+test('regenerateDifficultyLadder refuses a song with no filename without hitting the network', async () => {
+    const mod = freshPlugin();
+    let fetchCalled = false;
+    global.fetch = async () => { fetchCalled = true; return { ok: true, json: async () => ({}) }; };
+
+    const res = await mod.regenerateDifficultyLadder({});
+
+    assert.equal(res.ok, false);
+    assert.equal(fetchCalled, false);
+});
+
+test('regenerateDifficultyLadder reports a backend error without throwing', async () => {
+    const mod = freshPlugin();
+    global.fetch = async () => ({ ok: false, status: 422, json: async () => ({ error: 'bad filename' }) });
+
+    const res = await mod.regenerateDifficultyLadder({ filename: 'song.feedpak' });
+
+    assert.equal(res.ok, false);
+    assert.equal(res.error, 'bad filename');
+});
+
 // ---------------------------------------------------------------------------
 // Stage 4-2 (#164): the shared scoring state machine
 // ---------------------------------------------------------------------------

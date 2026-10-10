@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Per-song **Regenerate difficulty ladder** library-card menu action (#183):
+  forces a fresh ladder for that sloppak through the existing `/generate`
+  route. To make regeneration safe, every ladder this plugin writes is now
+  stamped with a provenance marker (`x_difficulty_ladder` on the arrangement),
+  and both `/generate` and `/generate-library` refuse to overwrite an existing
+  ladder that carries no marker — a hand-authored ladder, or one written before
+  the marker existed — unless the request also sets the new
+  `overwrite_authored: true` field (default `false`, `StrictBool`). The card
+  action sends `force` first, and only adds `overwrite_authored` after an
+  explicit in-app confirmation when the backend reports
+  `needs_confirmation`; declining leaves the authored ladder byte-for-byte
+  intact. Drums/unsupported arrangements are still skipped, the highway
+  reconnects only when the regenerated song is the one open in the player, and
+  the shared request/response path was factored out of `onGenerateClick` so
+  both callers agree. Backend: `_is_generated_ladder` / `_stamp_generated_marker`
+  in `routes.py`; frontend: `performGenerate`, `regenerateDifficultyLadder`,
+  `registerLibraryCardRegenerateAction` in `screen.js`. Tested in
+  `tests/test_dd_generation.py` (marker stamped, marked ladder regenerates,
+  unmarked refused-then-overwrites-when-confirmed, invalid/non-dict markers
+  treated as authored, drums skipped while only the unmarked sibling is
+  flagged, failed write leaves the original intact) and `tests/screen.test.js`
+  (registration shape, idempotency, confirm accept/decline, reconnect-only-
+  if-open, no-filename and backend-error paths). README documents the marker,
+  the `overwrite_authored` field and the action. Version 0.31.4 -> 0.32.0.
 - Documented `difficulty:mastery-updated` event (schema
   `difficulty_ladder.mastery-updated.v1`) closing #83's remaining acceptance
   item (#81/M4): each NEW best mastery — `phrase difficulty × hit rate`, rounded

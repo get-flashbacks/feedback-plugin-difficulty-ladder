@@ -831,6 +831,35 @@
         });
     }
 
+    // Library-card menu action (issue #183): refresh this song's ladder through
+    // the same /generate route the player's Generate button uses, but with
+    // `force`. routes.py refuses to overwrite a ladder that lacks this plugin's
+    // provenance marker unless the request also confirms — the run handler
+    // prompts and re-issues with `overwrite_authored`. Modelled on the Stem
+    // Splitter's menu actions (placement: 'menu', applies/enabled/run).
+    function registerLibraryCardRegenerateAction() {
+        var fb = window.feedBack;
+        if (!fb || !fb.libraryCardActions || typeof fb.libraryCardActions.register !== 'function') return;
+        if (window.__ddCardRegenerateRegistered) return; // idempotent — see plugin-runtime-idempotent.v1 guard at top of file
+        window.__ddCardRegenerateRegistered = true;
+        fb.libraryCardActions.register({
+            id: 'difficulty_ladder.regenerate',
+            pluginId: PLUGIN_ID,
+            label: 'Regenerate difficulty ladder',
+            icon: '🔄',
+            placement: 'menu',
+            order: 91,
+            // Overwrites the pack's phrases in place, so the host should render
+            // it as a destructive action.
+            destructive: true,
+            // sloppak/feedpak songs only — the same `song.filename` gate the
+            // Stem Splitter menu actions use. A library row without a filename
+            // isn't a pack, and /generate would reject it anyway.
+            applies: function (song) { return !!(song && song.filename); },
+            run: function (song) { return regenerateDifficultyLadder(song); },
+        });
+    }
+
     // Live difficulty changes since this PR write only to the v2 progress
     // store — loadSongMasteryMap() (the v1 map) is legacy/read-only. Reading
     // v1 alone here would leave the Profile baseline card frozen for
@@ -3565,6 +3594,17 @@
                                 // stray second click raced two concurrent jobs
     var _generateLabelTimer = null;
 
+    // Defensive clamp at point of use (settings.generateLevels came from
+    // localStorage and could be stale/out-of-range) — same convention as
+    // thresholds()/emaAlpha() clamping settings.sensitivity/reactionSpeed
+    // rather than trusting the stored value blindly. Parse once and default
+    // only on NaN — `|| 4` would also catch a legitimately parsed 0. Shared by
+    // the player's Generate button and the library-card regenerate action.
+    function _clampedGenerateLevels() {
+        var parsedLevels = parseInt(settings.generateLevels, 10);
+        return Math.max(2, Math.min(8, isNaN(parsedLevels) ? 4 : parsedLevels));
+    }
+
     function currentTargetStatus() {
         var hw = window.highway;
         if (!hw || typeof hw.getSongInfo !== 'function') {
@@ -3584,13 +3624,7 @@
         var arrangementIndex = si.arrangement_index;
         if (arrangementIndex == null) arrangementIndex = currentSong.arrangementIndex;
         if (arrangementIndex == null) arrangementIndex = 0;
-        // Defensive clamp at point of use (settings.generateLevels came from
-        // localStorage and could be stale/out-of-range) — same convention as
-        // thresholds()/emaAlpha() clamping settings.sensitivity/reactionSpeed
-        // rather than trusting the stored value blindly. Parse once and default
-        // only on NaN — `|| 4` would also catch a legitimately parsed 0.
-        var parsedLevels = parseInt(settings.generateLevels, 10);
-        var levels = Math.max(2, Math.min(8, isNaN(parsedLevels) ? 4 : parsedLevels));
+        var levels = _clampedGenerateLevels();
         return {
             ok: true,
             target: {
@@ -3673,6 +3707,116 @@
         });
     }
 
+    // Single POST to routes.py's song-wide /generate. Shared by the player's
+    // "Generate Difficulties" button and the library-card regenerate action so
+    // both agree on the request shape, the response handling, and the
+    // instrument-classifier persistence. Returns { ok, data } or
+    // { ok:false, error } — never throws on a network/JSON failure.
+    async function performGenerate(target, opts) {
+        opts = opts || {};
+        var body = { filename: target.filename, levels: target.levels };
+        if (target.arrangement_index != null) body.arrangement_index = target.arrangement_index;
+        if (opts.force) body.force = true;
+        // The explicit second confirmation routes.py requires before it will
+        // overwrite an existing ladder that carries no provenance marker (#183).
+        if (opts.overwriteAuthored) body.overwrite_authored = true;
+        var resp = null;
+        var data = null;
+        try {
+            resp = await fetch('/api/plugins/' + PLUGIN_ID + '/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            try { data = await resp.json(); } catch (_) { /* noop */ }
+        } catch (e) {
+            console.warn('[difficulty_ladder] generate request failed:', e);
+            return { ok: false, error: String(e) };
+        }
+        if (!resp.ok || !data || data.error) {
+            return { ok: false, status: resp.status, error: (data && data.error) || resp.status };
+        }
+        // /generate is song-wide and returns one authoritative classifier per
+        // arrangement, including already-authored ladders. Persist all supported
+        // rows here so both callers get the same side effect.
+        rememberGeneratedInstruments(target.filename, target.arrangement_index, data);
+        return { ok: true, data: data };
+    }
+
+    // The song currently open in the player, or null. Used by the library-card
+    // regenerate action to decide whether a `reconnect` is even applicable.
+    function _openSongInfo() {
+        var status = currentTargetStatus();
+        return status.ok ? status.target : null;
+    }
+
+    // Best-effort result surface for the library-card action, which — unlike
+    // the player's Generate button — has no label to reuse. The plugin exposes
+    // no host notification capability (only diagnostics/ui/libraryCardActions/
+    // on), so this matches `onGenerateClick`'s own channel: console, split by
+    // severity. The structured return value from `regenerateDifficultyLadder`
+    // is the machine-readable counterpart for a host that surfaces `run`
+    // results.
+    function _ddNotify(title, message, accent) {
+        var line = '[difficulty_ladder] ' + title + (message ? ': ' + message : '');
+        if (accent === 'warn') console.warn(line);
+        else console.log(line);
+    }
+
+    // Library-card menu action body (issue #183). Regenerates this song's ladder
+    // with force. When the backend reports an authored/unknown ladder
+    // (`needs_confirmation`), it prompts before overwriting and re-issues with
+    // `overwrite_authored` — so an unmarked ladder is never clobbered silently.
+    async function regenerateDifficultyLadder(song) {
+        var filename = song && song.filename;
+        if (!filename) return { ok: false, error: 'no filename' };
+        var levels = _clampedGenerateLevels();
+        var res = await performGenerate({ filename: filename, levels: levels }, { force: true });
+        if (!res.ok) {
+            _ddNotify('Regenerate failed', res.error || 'See the plugin log.', 'warn');
+            return { ok: false, error: res.error };
+        }
+        var data = res.data;
+        if (data.needs_confirmation > 0) {
+            var count = data.needs_confirmation;
+            var prompt = count === 1
+                ? 'This song has a difficulty ladder that was not generated by Difficulty Ladder (likely hand-authored). Overwrite it?'
+                : count + ' arrangements have difficulty ladders that were not generated by Difficulty Ladder (likely hand-authored). Overwrite them?';
+            var proceed = typeof window.confirm === 'function' && window.confirm(prompt);
+            if (!proceed) {
+                _ddNotify('Regeneration cancelled', 'The authored ladder was left untouched.');
+                return { ok: false, cancelled: true };
+            }
+            res = await performGenerate(
+                { filename: filename, levels: levels },
+                { force: true, overwriteAuthored: true },
+            );
+            if (!res.ok) {
+                _ddNotify('Regenerate failed', res.error || 'See the plugin log.', 'warn');
+                return { ok: false, error: res.error };
+            }
+            data = res.data;
+        }
+        // Reload only if this exact song is open in the player, so the highway
+        // WS re-streams the new phrase data.
+        var open = _openSongInfo();
+        var hw = window.highway;
+        if (open && open.filename === filename && hw && typeof hw.reconnect === 'function') {
+            hw.reconnect(open.filename, open.arrangement_index);
+        }
+        if (data.generated > 0) {
+            _ddNotify(
+                'Ladder regenerated',
+                data.generated === 1 ? 'Updated 1 arrangement.' : 'Updated ' + data.generated + ' arrangements.'
+            );
+        } else if (data.failed) {
+            _ddNotify('Regenerate failed', 'See the plugin log.', 'warn');
+        } else {
+            _ddNotify('Nothing to regenerate', 'No supported arrangement could be laddered.');
+        }
+        return { ok: true, data: data };
+    }
+
     async function onGenerateClick() {
         if (_generating) return; // guard: one in-flight generate at a time
         var status = currentTargetStatus();
@@ -3691,22 +3835,13 @@
         _generateBtn.disabled = true;
         setGenerateLabel('Generating…', null);
         try {
-            var resp = await fetch('/api/plugins/' + PLUGIN_ID + '/generate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(target),
-            });
-            var data = null;
-            try { data = await resp.json(); } catch (_) { /* noop */ }
-            if (!resp.ok || !data || data.error) {
-                console.warn('[difficulty_ladder] generate failed:', (data && data.error) || resp.status);
+            var res = await performGenerate(target, { force: false });
+            if (!res.ok) {
+                console.warn('[difficulty_ladder] generate failed:', res.error);
                 setGenerateLabel('Generate failed', 2500);
                 return;
             }
-            // /generate is song-wide and returns one authoritative classifier
-            // per arrangement, including already-authored ladders. Persist all
-            // supported rows before any generated/skipped early return.
-            rememberGeneratedInstruments(target.filename, target.arrangement_index, data);
+            var data = res.data;
             // /generate processes the full song.  A pack can mix guitar,
             // bass and keys arrangements; scoring.py classifies each one and
             // intentionally skips drums.  Do not treat a partial skip as a
@@ -3730,7 +3865,7 @@
                 hw.reconnect(target.filename, target.arrangement_index);
             }
         } catch (e) {
-            console.warn('[difficulty_ladder] generate request failed:', e);
+            console.warn('[difficulty_ladder] generate failed:', e);
             setGenerateLabel('Generate failed', 2500);
         } finally {
             _generating = false;
@@ -3860,9 +3995,10 @@
     // plugins load alphabetically and window.feedBack.libraryCardActions may
     // not exist the instant this script runs, so try now and again on the
     // next couple of lifecycle events that fire regardless of whether the
-    // user ever opens the player — registerLibraryCardBadge() is idempotent,
-    // so extra calls after the first success are free no-ops.
+    // user ever opens the player — both registerers are idempotent, so extra
+    // calls after the first success are free no-ops.
     registerLibraryCardBadge();
+    registerLibraryCardRegenerateAction();
 
     if (window.feedBack && typeof window.feedBack.on === 'function') {
         window.feedBack.on('song:ready', onSongEvent);
@@ -3873,7 +4009,10 @@
         // internals.
         startSplitScreenHookSubscription();
         startPlayerContextSubscriptions();
-        window.feedBack.on('library:changed', registerLibraryCardBadge);
+        window.feedBack.on('library:changed', function () {
+            registerLibraryCardBadge();
+            registerLibraryCardRegenerateAction();
+        });
         window.feedBack.on('highway:created', mountControls);
         window.feedBack.on('highway:visibility', function (ev) {
             var detail = ev && ev.detail;
@@ -4022,6 +4161,11 @@
             _maybeRestoreSongMastery, _resumeStartPct,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
+            // #183: library-card regenerate action — registration + run handler
+            // exported so the authored-ladder confirmation flow is testable
+            // without a host.
+            registerLibraryCardBadge, registerLibraryCardRegenerateAction,
+            regenerateDifficultyLadder, _clampedGenerateLevels,
             _applySettingsChange,
             // #157 tier rail (standalone guide): exported so the event-driven
             // render and its accessibility contract are unit-testable without

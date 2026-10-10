@@ -2453,9 +2453,153 @@ def test_generate_one_ignores_a_non_string_manifest_type_override():
     assert result["ok"] is True  # nosec B101 - pytest assertion
 
 
+# ---------------------------------------------------------------------------
+# Provenance marker and authored-ladder safety (issue #183)
+#
+# Regenerating writes `arr["phrases"]` back into the pack, so before this the
+# only thing standing between a one-click regenerate and a hand-authored ladder
+# was the caller's discipline about `force`. These tests pin the marker stamped
+# on generated ladders and the rule that an existing ladder with no marker
+# (authored, or written before the marker existed) is never overwritten unless
+# the request also carries the explicit `overwrite_authored` confirmation.
+# ---------------------------------------------------------------------------
+
+def _authored_phrases():
+    return [{
+        "index": 0, "start_time": 0.0, "end_time": 2.0, "max_difficulty": 2,
+        "levels": [{"difficulty": 0, "notes": []}, {"difficulty": 2, "notes": []}],
+    }]
+
+
+def test_generate_one_stamps_the_provenance_marker(tmp_path):
+    arr = _arrangement(_simple_notes(0, 4), n_beats=16)
+    pack_dir = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+
+    result = routes._generate_one(pack_dir, 0, n_levels=4, force=False, log=_TEST_LOG, scoring=scoring)
+
+    assert result.get("phrases", 0) > 0  # nosec B101 - pytest assertion
+    persisted = json.loads((pack_dir / "arrangements/lead.json").read_text())
+    marker = persisted.get("x_difficulty_ladder")
+    assert isinstance(marker, dict)  # nosec B101 - pytest assertion
+    assert marker["version"] == 1  # nosec B101 - pytest assertion
+    assert marker["levels"] == 4  # nosec B101 - pytest assertion
+
+
+def test_generate_one_regenerates_a_marked_ladder_in_place(tmp_path):
+    # A ladder this plugin generated carries the marker, so a force regenerate
+    # replaces it without needing the authored-ladder confirmation.
+    arr = _arrangement(_simple_notes(0, 4), n_beats=16)
+    arr["phrases"] = _authored_phrases()
+    arr["x_difficulty_ladder"] = {"version": 1, "levels": 2, "generated_at": "2020-01-01T00:00:00Z"}
+    pack_dir = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+
+    result = routes._generate_one(pack_dir, 0, n_levels=4, force=True, log=_TEST_LOG, scoring=scoring)
+
+    assert not result.get("needs_confirmation")  # nosec B101 - pytest assertion
+    assert result.get("phrases", 0) > 0  # nosec B101 - pytest assertion
+    persisted = json.loads((pack_dir / "arrangements/lead.json").read_text())
+    assert persisted["x_difficulty_ladder"]["levels"] == 4  # nosec B101 - pytest assertion
+
+
+def test_generate_one_refuses_to_clobber_an_unmarked_ladder_without_confirmation(tmp_path):
+    arr = _arrangement(_simple_notes(0, 4), n_beats=16)
+    original = _authored_phrases()
+    arr["phrases"] = original
+    pack_dir = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+
+    result = routes._generate_one(pack_dir, 0, n_levels=4, force=True, log=_TEST_LOG, scoring=scoring)
+
+    assert result["skipped"] == "authored-ladder-needs-confirmation"  # nosec B101 - pytest assertion
+    assert result["needs_confirmation"] is True  # nosec B101 - pytest assertion
+    persisted = json.loads((pack_dir / "arrangements/lead.json").read_text())
+    assert persisted["phrases"] == original  # nosec B101 - pytest assertion
+    assert "x_difficulty_ladder" not in persisted  # nosec B101 - pytest assertion
+
+
+def test_generate_one_overwrites_an_unmarked_ladder_when_confirmed(tmp_path):
+    arr = _arrangement(_simple_notes(0, 4), n_beats=16)
+    arr["phrases"] = _authored_phrases()
+    pack_dir = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+
+    result = routes._generate_one(
+        pack_dir, 0, n_levels=4, force=True, overwrite_authored=True, log=_TEST_LOG, scoring=scoring,
+    )
+
+    assert not result.get("needs_confirmation")  # nosec B101 - pytest assertion
+    assert result.get("phrases", 0) > 0  # nosec B101 - pytest assertion
+    persisted = json.loads((pack_dir / "arrangements/lead.json").read_text())
+    assert persisted["phrases"] != _authored_phrases()  # nosec B101 - pytest assertion
+    assert persisted["x_difficulty_ladder"]["version"] == 1  # nosec B101 - pytest assertion
+
+
+@pytest.mark.parametrize("bad_marker", [True, "generated", 1, {"version": 99}, []])
+def test_generate_one_treats_an_invalid_marker_as_authored(tmp_path, bad_marker):
+    # A marker that isn't a dict with the current version is not proof this
+    # plugin generated the ladder — it must still ask before overwriting.
+    arr = _arrangement(_simple_notes(0, 4), n_beats=16)
+    arr["phrases"] = _authored_phrases()
+    arr["x_difficulty_ladder"] = bad_marker
+    pack_dir = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+
+    result = routes._generate_one(pack_dir, 0, n_levels=4, force=True, log=_TEST_LOG, scoring=scoring)
+
+    assert result.get("needs_confirmation") is True  # nosec B101 - pytest assertion
+
+
+def test_generate_song_skips_drums_and_flags_only_the_unmarked_ladder(tmp_path):
+    authored = _arrangement(_simple_notes(0, 4), n_beats=16)
+    authored["phrases"] = _authored_phrases()
+    drum = _arrangement([], n_beats=16)
+    drum.update(type="drums", name="Drums")
+    pack = _write_pack(tmp_path, "song.feedpak", [
+        ("arrangements/lead.json", authored),
+        ("arrangements/drums.json", drum),
+    ])
+    manifest_path = pack / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["arrangements"][1]["type"] = "drums"
+    manifest_path.write_text(yaml.safe_dump(manifest))
+
+    summary = routes._generate_song(pack, n_levels=4, force=True, log=_TEST_LOG, scoring=scoring)
+
+    assert summary["generated"] == 0  # nosec B101 - pytest assertion
+    assert summary["needs_confirmation"] == 1  # nosec B101 - pytest assertion
+    assert summary["unsupported"] == 1  # nosec B101 - pytest assertion
+    assert summary["failed"] == 0  # nosec B101 - pytest assertion
+
+
+def test_generate_song_failed_write_leaves_the_existing_ladder_intact(tmp_path):
+    # A marked ladder (so force actually reaches the write path) plus a write
+    # that fails: the original bytes must be untouched and the failure reported,
+    # never a half-written pack.
+    arr = _arrangement(_simple_notes(0, 4), n_beats=16)
+    arr["phrases"] = _authored_phrases()
+    arr["x_difficulty_ladder"] = {"version": 1, "levels": 2, "generated_at": "2020-01-01T00:00:00Z"}
+    pack = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
+    before = (pack / "arrangements/lead.json").read_bytes()
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    with patch.object(routes, "_write_member_bytes", side_effect=_boom):
+        summary = routes._generate_song(pack, n_levels=4, force=True, log=_TEST_LOG, scoring=scoring)
+
+    assert summary["failed"] == 1  # nosec B101 - pytest assertion
+    assert summary["generated"] == 0  # nosec B101 - pytest assertion
+    assert (pack / "arrangements/lead.json").read_bytes() == before  # nosec B101 - pytest assertion
+
+
+def test_generate_in_rejects_string_boolean_for_overwrite_authored():
+    with pytest.raises(ValidationError):
+        routes.GenerateIn(filename="song.feedpak", overwrite_authored="true")
+
+
 # Chordr's service can be stubbed: these tests pin the preview's HTTP and
 # forwarding contract without requiring the sibling plugin to be installed.
 _CHORD_PREVIEW_URL = f"/api/plugins/{routes.PLUGIN_ID}/analyze-chords"
+
+
+
 
 
 def _preview(client, filename="song.feedpak", arrangement_index=0):
