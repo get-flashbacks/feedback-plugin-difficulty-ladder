@@ -1012,6 +1012,41 @@ test('the mastery-updated event is dropped silently when the host bus is absent'
         'the new best is recorded even though no event could be emitted');
 });
 
+// #83 review: the emit read must resolve the SAME node the write targets. A
+// migrated legacy-unscoped node under 'legacy-unknown' is a DIFFERENT node
+// than the exact instrument/skill node writeProgress writes; the pre-write
+// read must not fall through to it, or a genuine first best is silently
+// suppressed and `previous_best` names a value the written node never held.
+test('a cross-node legacy migration value does not decide the mastery-updated emit', () => {
+    const mod = freshPlugin();
+    const legacy = playerContext({
+        player_id: 'player-legacy', instrument: 'legacy-unknown', role: 'instrumental', skill: 'overall',
+    });
+    mod.writeProgress(legacy, {
+        bestMastery: 50, legacyUnscoped: true, legacy_claim_player_id: 'player-legacy',
+    });
+
+    // Same player/song/arrangement, but a fresh exact node under 'keys'.
+    const ctx = playerContext({
+        player_id: 'player-legacy', instrument: 'keys', role: 'lead', skill: 'overall',
+    });
+    const events = collectEmits();
+
+    // 40 mastery on the fresh exact node is a first best: it must emit with
+    // previous_best null even though the legacy node happens to hold 50.
+    assert.equal(mod._updateBestMastery(ctx, { getMastery: () => 0.4 }, 1), true);
+    const first = lastEvent(events, 'difficulty:mastery-updated');
+    assert.ok(first, 'the exact node advanced, so it must emit');
+    assert.equal(first.detail.best_mastery, 40);
+    assert.equal(first.detail.previous_best, null,
+        "previous_best is the written node's predecessor, not another node's value");
+    assert.equal(mod.readProgress(ctx).bestMastery, 40, 'the write landed on the exact node');
+
+    // A later raise reports the exact node's previous best (40), not 50.
+    mod._updateBestMastery(ctx, { getMastery: () => 1 }, 1);
+    assert.equal(lastEvent(events, 'difficulty:mastery-updated').detail.previous_best, 40);
+});
+
 test('an explicit null currentDifficulty is not coerced into a false 0%', () => {
     const mod = freshPlugin();
     const ctx = playerContext();

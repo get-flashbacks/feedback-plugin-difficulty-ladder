@@ -494,6 +494,10 @@
         var store = loadProgressStore();
         var exact = _readExactProgress(store, ctx);
         if (exact) return exact;
+        // `exactOnly` callers (the #83 emit read) want the one node they are
+        // about to write to; neither the overall-skill nor the legacy-unscoped
+        // fallback may stand in for it.
+        if (options && options.exactOnly) return null;
         if ((!options || options.overallFallback !== false) && ctx.skill !== 'overall') {
             exact = _readExactProgress(store, Object.assign({}, ctx, { skill: 'overall' }));
             if (exact) return exact;
@@ -2026,12 +2030,14 @@
         var ctx = normalizePlayerContext(context);
         var mastery = _phraseMasteryPct(highway, ratio);
         if (!ctx || mastery === null) return false;
-        // The standing best, read off the exact skill node the write targets
-        // (no overall fallback, or a fallback node's value could be compared
-        // against a different node's write). writeProgress enforces the
-        // monotonic best itself, so this read backs the emit decision: fire
-        // only when this write is an actual new best.
-        var previous = readProgress(ctx, { overallFallback: false });
+        // The standing best, read off the exact skill node the write targets.
+        // `exactOnly` bypasses both the overall-skill and the legacy-unscoped
+        // fallbacks: either could resolve a DIFFERENT node than the write
+        // targets, and a fallback node's value must not decide this node's
+        // emit (nor be named as its `previous_best`). writeProgress enforces
+        // the monotonic best itself, so this read backs the emit decision:
+        // fire only when this write is an actual new best.
+        var previous = readProgress(ctx, { exactOnly: true });
         var previousBest = previous ? _pct(previous.bestMastery) : null;
         var wrote = writeProgress(ctx, { bestMastery: mastery });
         if (wrote && (previousBest === null || mastery > previousBest)) {
