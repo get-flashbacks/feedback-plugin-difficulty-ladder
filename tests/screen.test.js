@@ -931,6 +931,29 @@ test('contributeDiagnostics exposes the last Elo observation', () => {
     assert.equal(contributed[0].elo.last_observation.actual_outcome, 1);
 });
 
+test('a song change clears the cached Elo observation so diagnostics cannot cross songs', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const phrase = { start_time: 0, end_time: 10, max_difficulty: 3, difficulty_cost: 0.5 };
+    const highway = stubHighwayForSectionDifficulty({ phrases: [phrase], sections: [], mastery: 0.5 });
+    const ms = mod._mainScore();
+    ms.curPhraseIdx = 0; ms.phraseTotal = 2; ms.phraseHits = 2; ms.phraseJudgments = [];
+    mod.recordPhraseAttempt(1, ctx, ms, highway);
+    assert.ok(ms.lastElo, 'the observation is cached while the song is playing');
+
+    // onSongEvent -> resetPerSongState() -> contributeDiagnostics(): the new
+    // song's first payload must not name the previous song's phrase_id.
+    mod.resetPerSongState();
+    assert.equal(mod._mainScore().lastElo, null, 'a song change drops the cached observation');
+});
+
+test('the split initializer carries and clears the same Elo observation field as the main state', () => {
+    const mod = freshPlugin();
+    const split = mod.newSplitScoreState(playerContext());
+    assert.equal('lastElo' in split, true, 'field parity: lastElo is declared on both initializers');
+    assert.equal(split.lastElo, null);
+});
+
 test('the v2 event still emits byte-for-byte what Section Map consumes today', () => {
     const mod = freshPlugin();
     global.window.highway = stubHighwayForSectionDifficulty({

@@ -154,12 +154,24 @@
         };
     }
 
-    // The generator's own difficulty estimate for a phrase, as a success
-    // probability at the seed rating (1.0 = trivially hittable).
+    // The generator's own difficulty estimate for a phrase, as a starting
+    // success probability at the seed rating (1.0 = trivially hittable).
     // `difficulty_cost` is the generator's mechanical cost of the phrase's
     // full content (#72/B1, ~0..1+, deliberately unclamped); higher cost means
     // less likely to be hit cleanly. A host that predates the field, or an
     // authored ladder with no cost, seeds at a neutral 0.5.
+    //
+    // CALIBRATION CAVEAT -- load-bearing for #55/#56, not for this PR:
+    // README documents `difficulty_cost` as a WITHIN-SONG RELATIVE ranking,
+    // "not a calibrated absolute score", and it may exceed 1.0. Mapping
+    // `1 - cost` onto an absolute probability therefore yields a
+    // play-corrected PRIOR, not ground truth: the clamp below collapses every
+    // cost >= 0.98 onto one seed (expected_win_chance 0.02), and a cost above
+    // 1.0 is indistinguishable from 0.98. That is correct for "don't guess on
+    // the first play" -- Elo washes the seed out after a few attempts -- but a
+    // downstream simulation (#55) or human-session report (#56) must NOT read
+    // `expected_win_chance` as a calibrated absolute probability without first
+    // ground-truthing this prior against real hit data (#31).
     function _eloSeedChance(phrase) {
         var cost = Number(phrase && phrase.difficulty_cost);
         if (!isFinite(cost) || cost < 0) return 0.5;
@@ -1681,6 +1693,7 @@
         emaHitRate: null,
         lastObservedMasteryPct: null,
         lastAutoAction: null,
+        lastElo: null,
         rampDirection: null,
         rampProgress: 0,
         downStreak: 0,
@@ -2846,6 +2859,11 @@
         _mainScore.emaHitRate = null;
         _mainScore.lastObservedMasteryPct = null;
         _mainScore.lastAutoAction = null;
+        // #113: drop the cached Elo observation on every song/state reset so
+        // `elo.last_observation` can never name a previous song's phrase_id on
+        // the next song's first diagnostics payload (the diagnostic is emitted
+        // right after this reset on song:ready).
+        _mainScore.lastElo = null;
         _mainScore.rampDirection = null;
         _mainScore.rampProgress = 0;
         _mainScore.downStreak = 0;
@@ -3174,6 +3192,9 @@
         // step and the field-parity test treat both initializers alike. Never
         // populated on split -- panels contribute no diagnostics payload.
         state.lastAutoAction = null;
+        // Same #113 field on both initializers: cleared on every reset so a
+        // reused panel state can't carry a prior song's observation forward.
+        state.lastElo = null;
         state.rampDirection = null;
         state.rampProgress = 0;
         state.downStreak = 0;
