@@ -59,7 +59,71 @@ from safepath import safe_join
 PLUGIN_ID = "difficulty_ladder"
 MAX_PROCESSING_SECONDS = 120  # hard cap per /generate-library call to bound CPU/DoS risk
 
+# Provenance marker (issue #183): a namespaced extension key stamped onto every
+# arrangement this plugin generates a ladder for, so a later regenerate can tell
+# a plugin-generated `phrases` array apart from a hand-authored one. The feedpak
+# spec requires readers to ignore unknown extension keys and the arrangement
+# schema is `additionalProperties: true`, so this is additive to the pack. An
+# arrangement with `phrases` but no valid marker is treated as authored/unknown
+# provenance and is never overwritten without the explicit `overwrite_authored`
+# confirmation.
+GENERATED_MARKER_KEY = "x_difficulty_ladder"
+GENERATED_MARKER_VERSION = 1
+
+
+def _current_plugin_version() -> str | None:
+    try:
+        metadata = json.loads((Path(__file__).resolve().parent / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    version = metadata.get("version") if isinstance(metadata, dict) else None
+    return version.strip() if isinstance(version, str) and version.strip() else None
+
+
+def _ladder_provenance(arr: dict) -> dict:
+    if not arr.get("phrases"):
+        return {"status": "missing", "origin": "none"}
+    marker = arr.get(GENERATED_MARKER_KEY)
+    if not _is_generated_ladder(arr):
+        return {
+            "status": "present",
+            "origin": "unknown",
+            "marker_status": "invalid" if GENERATED_MARKER_KEY in arr else "missing",
+        }
+    return {
+        "status": "present",
+        "origin": "difficulty_ladder",
+        "generator_version": marker.get("generator_version") if isinstance(marker.get("generator_version"), str) else None,
+        "marker_version": marker["version"],
+        "levels": marker.get("levels"),
+        "generated_at": marker.get("generated_at"),
+    }
+
+
 _ZIP_ROOT = Path("/_dd_root").resolve()
+
+
+def _is_generated_ladder(arr: dict) -> bool:
+    """True when `arr`'s existing `phrases` were written by this plugin's own
+    generator, i.e. carry the current provenance marker. An authored ladder —
+    or one written before the marker existed — has no marker and is treated as
+    unknown provenance."""
+    marker = arr.get(GENERATED_MARKER_KEY)
+    if not isinstance(marker, dict):
+        return False
+    version = marker.get("version")
+    return isinstance(version, int) and not isinstance(version, bool) and version == GENERATED_MARKER_VERSION
+
+
+def _stamp_generated_marker(arr: dict, n_levels: int) -> None:
+    """Record that this plugin generated `arr`'s ladder — the marker that lets
+    a later regenerate tell it apart from an authored one."""
+    arr[GENERATED_MARKER_KEY] = {
+        "version": GENERATED_MARKER_VERSION,
+        "generator_version": _current_plugin_version(),
+        "levels": n_levels,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
 
 
 def _safe_member_name(rel: str) -> str | None:
@@ -189,7 +253,8 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
 
 
 def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log,
-                  scoring, section_times: list[float] | None = None, staged_chords: bool = False) -> dict:
+                  scoring, section_times: list[float] | None = None, staged_chords: bool = False,
+                  overwrite_authored: bool = False, preview: bool = False) -> dict:
     # Hold the pack's lock across the whole read-modify-write span. Without
     # this, two requests touching the same pack (a library sweep + a manual
     # click, or two arrangements of one multi-arrangement song) can each read
@@ -224,10 +289,29 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
                 "ok": True, "skipped": "unsupported-instrument-type",
                 "arrangement_index": arrangement_index, "instrument": instrument,
             }
+        if preview:
+            provenance = _ladder_provenance(arr)
+            return {
+                "ok": True, "arrangement_index": arrangement_index, "instrument": instrument,
+                "ladder_provenance": provenance,
+                "needs_confirmation": provenance["status"] == "present" and provenance["origin"] == "unknown",
+            }
         if not force and arr.get("phrases"):
             return {
                 "ok": True, "skipped": "already-has-phrases",
                 "arrangement_index": arrangement_index, "instrument": instrument,
+            }
+        # #183: `force` replaces an existing ladder, but it must never silently
+        # clobber a ladder this plugin did not generate. An arrangement with
+        # `phrases` and no (valid) provenance marker is treated as authored or
+        # unknown — it needs the explicit `overwrite_authored` confirmation,
+        # otherwise this arrangement is reported back unwritten.
+        if force and arr.get("phrases") and not overwrite_authored and not _is_generated_ladder(arr):
+            return {
+                "ok": True, "skipped": "authored-ladder-needs-confirmation",
+                "arrangement_index": arrangement_index, "instrument": instrument,
+                "needs_confirmation": True,
+                "ladder_provenance": _ladder_provenance(arr),
             }
 
         # Score against the EFFECTIVE tuning/name/type (manifest entry
@@ -257,6 +341,7 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
             }
 
         arr["phrases"] = phrases
+        _stamp_generated_marker(arr, n_levels)
         new_bytes = json.dumps(arr, ensure_ascii=False).encode("utf-8")
         _write_member_bytes(pack_path, rel, new_bytes)
     log.info("difficulty_ladder: generated %d phrases for %s arrangement %d",
@@ -339,7 +424,8 @@ def _canonical_section_times(pack_path: Path, manifest: dict) -> list[float]:
 
 
 def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
-                    scoring, staged_chords: bool = False) -> dict:
+                    scoring, staged_chords: bool = False, overwrite_authored: bool = False,
+                    preview: bool = False) -> dict:
     """Generate every eligible arrangement in one song.
 
     Arrangement indices are manifest/storage indices, not the player UI's
@@ -348,12 +434,16 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
     drums (or another unsupported instrument type — issue #66) are
     explicitly reported as skipped, broken out from ``skipped`` into their
     own ``unsupported`` count.
+
+    With ``force`` and no ``overwrite_authored``, an arrangement whose
+    existing ladder lacks this plugin's provenance marker (#183) is reported
+    under ``needs_confirmation`` and left unwritten.
     """
     manifest = sloppak.load_manifest(pack_path)
     entries = manifest.get("arrangements", []) or []
     section_times = _canonical_section_times(pack_path, manifest)
     results = []
-    generated = skipped = failed = unsupported = 0
+    generated = skipped = failed = unsupported = needs_confirmation = 0
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             results.append({"arrangement_index": index, "skipped": "malformed-arrangement"})
@@ -363,6 +453,7 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
             result = _generate_one(
                 pack_path, index, n_levels=n_levels, force=force, log=log, scoring=scoring,
                 section_times=section_times or None, staged_chords=staged_chords,
+                overwrite_authored=overwrite_authored, preview=preview,
             )
         except HTTPException as exc:
             # A bad arrangement must not prevent the remaining arrangements
@@ -380,18 +471,27 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
                 )
             result = {"arrangement_index": index, "error": str(exc)}
         results.append(result)
+        if result.get("needs_confirmation"):
+            needs_confirmation += 1
         if result.get("skipped") or result.get("error"):
             skipped += 1
             if result.get("error"):
                 failed += 1
             elif scoring._is_unsupported_skip(result.get("skipped")):
                 unsupported += 1
-        else:
+        elif not preview:
             generated += 1
-    return {
+    summary = {
         "ok": True, "generated": generated, "skipped": skipped,
-        "unsupported": unsupported, "failed": failed, "arrangements": results,
+        "unsupported": unsupported, "failed": failed,
+        "needs_confirmation": needs_confirmation, "arrangements": results,
     }
+    if preview:
+        provenance = [row.get("ladder_provenance") for row in results if row.get("ladder_provenance")]
+        summary["preview"] = True
+        summary["existing_ladders"] = sum(item["status"] == "present" for item in provenance)
+        summary["missing_ladders"] = sum(item["status"] == "missing" for item in provenance)
+    return summary
 
 
 # ── Request models ───────────────────────────────────────────────────────────
@@ -406,6 +506,8 @@ class GenerateIn(BaseModel):
     filename: str
     levels: int = Field(default=4, ge=2, le=8)
     force: StrictBool = False
+    overwrite_authored: StrictBool = False
+    preview: StrictBool = False
     # #103/B10, opt-in: drops a repeated occurrence of an already-Chordr-
     # identified chord at the bottom tier, keeping only its longest-
     # sustained ("landmark") occurrence per phrase. False (the default)
@@ -427,6 +529,9 @@ class GenerateLibraryIn(BaseModel):
     600s ceiling."""
     levels: int = Field(default=4, ge=2, le=8)
     force: StrictBool = False
+    # #183: same authored-ladder guard as GenerateIn — a force sweep does not
+    # clobber an unmarked ladder unless this is explicitly set.
+    overwrite_authored: StrictBool = False
     max_songs: int = Field(default=500, ge=1, le=2000)
     max_processing_seconds: int = Field(default=MAX_PROCESSING_SECONDS, ge=1, le=600)
     staged_chords: StrictBool = False  # #103/B10, opt-in — see GenerateIn
@@ -536,6 +641,8 @@ def setup(app, context):
         n_levels = body.levels
         force = body.force
         staged_chords = body.staged_chords
+        overwrite_authored = body.overwrite_authored
+        preview = body.preview
 
         dlc_root = get_dlc_dir()
         if dlc_root is None:
@@ -545,7 +652,7 @@ def setup(app, context):
         try:
             return _generate_song(
                 pack_path, n_levels=n_levels, force=force, log=log, scoring=scoring,
-                staged_chords=staged_chords,
+                staged_chords=staged_chords, overwrite_authored=overwrite_authored, preview=preview,
             )
         except HTTPException:
             raise
@@ -563,6 +670,7 @@ def setup(app, context):
         max_songs = body.max_songs
         max_processing_seconds = body.max_processing_seconds
         staged_chords = body.staged_chords
+        overwrite_authored = body.overwrite_authored
 
         dlc_root = get_dlc_dir()
         if dlc_root is None:
@@ -570,6 +678,7 @@ def setup(app, context):
         root = Path(dlc_root)
 
         generated, skipped, unsupported, failed = 0, 0, 0, []
+        needs_confirmation = 0
         scanned = 0
         time_limit_reached = False
         start_time = time.monotonic()
@@ -623,6 +732,7 @@ def setup(app, context):
                     result = _generate_one(
                         entry, idx, n_levels=n_levels, force=force, log=log, scoring=scoring,
                         section_times=section_times or None, staged_chords=staged_chords,
+                        overwrite_authored=overwrite_authored,
                     )
                 except HTTPException as e:
                     failed.append({"filename": label, "arrangement_index": idx, "error": e.detail})
@@ -630,6 +740,8 @@ def setup(app, context):
                 except Exception as e:  # noqa: BLE001 — keep the sweep going
                     failed.append({"filename": label, "arrangement_index": idx, "error": str(e)})
                     continue
+                if result.get("needs_confirmation"):
+                    needs_confirmation += 1
                 if result.get("skipped"):
                     skipped += 1
                     if scoring._is_unsupported_skip(result.get("skipped")):
@@ -642,5 +754,6 @@ def setup(app, context):
         return {
             "ok": True, "scanned": scanned, "generated": generated,
             "skipped": skipped, "unsupported": unsupported, "failed": failed,
+            "needs_confirmation": needs_confirmation,
             "time_limit_reached": time_limit_reached,
         }
