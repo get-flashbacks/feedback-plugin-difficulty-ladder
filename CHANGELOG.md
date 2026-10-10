@@ -9,29 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Per-song **Regenerate difficulty ladder** library-card menu action (#183):
-  forces a fresh ladder for that sloppak through the existing `/generate`
-  route. To make regeneration safe, every ladder this plugin writes is now
-  stamped with a provenance marker (`x_difficulty_ladder` on the arrangement),
-  and both `/generate` and `/generate-library` refuse to overwrite an existing
-  ladder that carries no marker — a hand-authored ladder, or one written before
-  the marker existed — unless the request also sets the new
-  `overwrite_authored: true` field (default `false`, `StrictBool`). The card
-  action sends `force` first, and only adds `overwrite_authored` after an
-  explicit in-app confirmation when the backend reports
-  `needs_confirmation`; declining leaves the authored ladder byte-for-byte
-  intact. Drums/unsupported arrangements are still skipped, the highway
-  reconnects only when the regenerated song is the one open in the player, and
-  the shared request/response path was factored out of `onGenerateClick` so
-  both callers agree. Backend: `_is_generated_ladder` / `_stamp_generated_marker`
-  in `routes.py`; frontend: `performGenerate`, `regenerateDifficultyLadder`,
-  `registerLibraryCardRegenerateAction` in `screen.js`. Tested in
-  `tests/test_dd_generation.py` (marker stamped, marked ladder regenerates,
-  unmarked refused-then-overwrites-when-confirmed, invalid/non-dict markers
-  treated as authored, drums skipped while only the unmarked sibling is
-  flagged, failed write leaves the original intact) and `tests/screen.test.js`
-  (registration shape, idempotency, confirm accept/decline, reconnect-only-
-  if-open, no-filename and backend-error paths). README documents the marker,
-  the `overwrite_authored` field and the action. Version 0.31.4 -> 0.32.0.
+  a read-only `/generate` preview reports each existing ladder's provenance
+  before any write. New `x_difficulty_ladder` markers record both marker schema
+  and Difficulty Ladder plugin version. The confirmation identifies the
+  recorded plugin version where available; missing/invalid markers are shown as
+  unknown (possibly handmade or generated before provenance tracking), not
+  asserted to be handmade. Every existing ladder requires confirmation before
+  replacement, and `/generate` plus `/generate-library` still require
+  `overwrite_authored: true` to overwrite an unmarked ladder. Drums/unsupported
+  arrangements are skipped and the highway reconnects only for the song open in
+  the player. Backend: `_ladder_provenance`, `_is_generated_ladder`, and
+  `_stamp_generated_marker` in `routes.py`; frontend: `performGenerate`,
+  `regenerateDifficultyLadder`, and `registerLibraryCardRegenerateAction` in
+  `screen.js`. Python and JavaScript tests cover version metadata, read-only
+  preview, generated/unknown classification, confirmation, and declined writes.
+  Version 0.31.4 -> 0.32.0.
 - Calibrated keys hand-split threshold (`_KEYS_HAND_SPLIT_SEMITONES`) and melody bonus (`_KEYS_MELODY_LINE_BONUS`) against 8 synthetic piano fixtures (two-hand, Alberti bass, stride, crossed hands, ballad, block chords, solo runs, arpeggio) — zero nesting violations, zero collapsed tiers, tier-0 melody always present across full sweep (hand_split 8-14, melody_bonus 0.04-0.12); current defaults (10, 0.08) retained pending real-chart validation; see `tests/CALIBRATION_REPORT.md` and `tests/calibration_results.json` (#176)
 - Documented `difficulty:mastery-updated` event (schema
   `difficulty_ladder.mastery-updated.v1`) closing #83's remaining acceptance

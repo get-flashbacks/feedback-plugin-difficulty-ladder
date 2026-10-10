@@ -42,18 +42,19 @@ contract.
   2000, via the request body) — it stops there rather than sweeping every
   song in an arbitrarily large library in one call.
 - Never touches an arrangement that already has phrase data unless `force`
-  is set. Every ladder this plugin writes is stamped with a provenance marker
-  (`x_difficulty_ladder` on the arrangement), and a `force` regenerate still
-  refuses to overwrite a ladder that has no marker — a hand-authored ladder, or
-  one written before the marker existed — unless the request *also* carries
-  `overwrite_authored: true`. A hand-authored ladder is therefore never
-  clobbered silently: the confirmation is explicit and comes from the caller.
+  is set. Every ladder this plugin writes is stamped with `x_difficulty_ladder`,
+  including the marker schema version, the Difficulty Ladder plugin version,
+  level count, and generation time. Existing markers from before plugin-version
+  tracking still identify the generator, but do not identify its release.
 - Each library card's menu offers **Regenerate difficulty ladder**
-  (`difficulty_ladder.regenerate`, `placement: 'menu'`, destructive): it forces
-  a refresh of that song through `/generate` and, when the backend reports an
-  authored ladder, asks before overwriting. Drums and other unsupported
-  arrangements are still skipped, and the highway reconnects only if the
-  regenerated song is the one currently open in the player.
+  (`difficulty_ladder.regenerate`, `placement: 'menu'`, destructive). Before any
+  write, it previews the song's existing ladders and confirms the overwrite.
+  The prompt identifies Difficulty Ladder-generated ladders and their recorded
+  plugin version. A missing or invalid marker is shown as **unknown**—possibly
+  handmade or generated before provenance tracking—and requires explicit
+  confirmation (`overwrite_authored: true`) before `/generate` can replace it.
+  Drums and other unsupported arrangements are skipped, and the highway
+  reconnects only if the regenerated song is currently open in the player.
 - Both routes report `generated` / `unsupported` / `skipped` / `failed`
   counts in their response, so a caller can tell "nothing to do" (already had
   phrases, too little content) apart from "this generator doesn't support
@@ -637,12 +638,19 @@ arrangement that already has phrases unless the request also sets
 `force`, matching `/generate`'s existing regenerate-only-on-request
 behavior.
 
+`preview: true` on `/generate` returns per-arrangement provenance without
+writing the pack. A ladder with a valid `x_difficulty_ladder` marker reports
+its recorded Difficulty Ladder plugin version; an older marker without that
+field reports the generator but not its release. A ladder without a valid
+marker has unknown provenance: it may be handmade or generated before marker
+tracking existed, so the plugin cannot reliably identify it as handmade.
+
 `overwrite_authored` is an additional `/generate` and `/generate-library`
-request field — `false` by default — that is the explicit confirmation
-required before `force` may overwrite a ladder carrying no
-`x_difficulty_ladder` marker. It is what the library-card **Regenerate
-difficulty ladder** action sends after the user accepts the browser prompt,
-and it never overrides the skip for drums/unsupported arrangements.
+request field — `false` by default — required before `force` may overwrite a
+ladder with unknown provenance. The library-card action first previews all
+arrangements, shows the available provenance in its confirmation, then sends
+`overwrite_authored: true` only if an unknown ladder was included and the user
+confirmed. This flag never overrides the skip for drums/unsupported arrangements.
 
 **Library card badge** — songs with a remembered per-song difficulty (see above) show a small
 indicator on their library card via `window.feedBack.libraryCardActions` (`placement: 'overlay'`,

@@ -2161,16 +2161,23 @@ def test_stripped_bend_clears_a_release_bt_too_even_though_release_alone_is_spar
 # ---------------------------------------------------------------------------
 
 def test_generate_in_accepts_a_well_formed_body():
-    body = routes.GenerateIn(filename="song.feedpak", levels=6, force=True)
+    body = routes.GenerateIn(filename="song.feedpak", levels=6, force=True, preview=True)
     assert body.filename == "song.feedpak"
     assert body.levels == 6
     assert body.force is True
+    assert body.preview is True
 
 
-def test_generate_in_defaults_levels_and_force_when_omitted():
+def test_generate_in_defaults_levels_force_and_preview_when_omitted():
     body = routes.GenerateIn(filename="song.feedpak")
     assert body.levels == 4
     assert body.force is False
+    assert body.preview is False
+
+
+def test_generate_in_rejects_string_boolean_for_preview():
+    with pytest.raises(ValidationError):
+        routes.GenerateIn(filename="song.feedpak", preview="true")
 
 
 def test_generate_in_rejects_string_boolean_for_force():
@@ -2249,6 +2256,18 @@ def test_generate_route_rejects_malformed_levels_with_no_write(tmp_path):
     assert resp.status_code == 422
     generate_song.assert_not_called()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_generate_route_passes_read_only_preview_flag(tmp_path):
+    client = _client_for(tmp_path)
+    pack = _write_pack(tmp_path, "preview.feedpak", [("arrangements/lead.json", _arrangement([]))])
+    with patch.object(routes, "_generate_song", return_value={"ok": True, "preview": True}) as generate_song:
+        resp = client.post(
+            f"/api/plugins/{routes.PLUGIN_ID}/generate",
+            json={"filename": pack.name, "preview": True},
+        )
+    assert resp.status_code == 200
+    assert generate_song.call_args.kwargs["preview"] is True
 
 
 def test_generate_library_route_rejects_out_of_range_max_songs_with_no_write(tmp_path):
@@ -2483,7 +2502,53 @@ def test_generate_one_stamps_the_provenance_marker(tmp_path):
     marker = persisted.get("x_difficulty_ladder")
     assert isinstance(marker, dict)  # nosec B101 - pytest assertion
     assert marker["version"] == 1  # nosec B101 - pytest assertion
+    assert marker["generator_version"] == routes._current_plugin_version()  # nosec B101 - pytest assertion
     assert marker["levels"] == 4  # nosec B101 - pytest assertion
+
+
+def test_generate_song_preview_reports_generated_version_unknown_origin_and_missing_without_writes(tmp_path):
+    generated = _arrangement(_simple_notes(0, 4), n_beats=16)
+    generated["phrases"] = _authored_phrases()
+    generated["x_difficulty_ladder"] = {
+        "version": 1, "generator_version": "0.31.4", "levels": 4,
+        "generated_at": "2026-01-02T03:04:05Z",
+    }
+    unknown = _arrangement(_simple_notes(0, 4), n_beats=16)
+    unknown["phrases"] = _authored_phrases()
+    missing = _arrangement(_simple_notes(0, 4), n_beats=16)
+    pack = _write_pack(tmp_path, "preview.feedpak", [
+        ("arrangements/generated.json", generated),
+        ("arrangements/unknown.json", unknown),
+        ("arrangements/missing.json", missing),
+    ])
+    before = {
+        name: (pack / name).read_bytes()
+        for name in (
+            "arrangements/generated.json",
+            "arrangements/unknown.json",
+            "arrangements/missing.json",
+        )
+    }
+
+    result = routes._generate_song(
+        pack, n_levels=4, force=True, preview=True, log=_TEST_LOG, scoring=scoring,
+    )
+
+    assert result["preview"] is True  # nosec B101 - pytest assertion
+    assert result["generated"] == 0  # nosec B101 - pytest assertion
+    assert result["existing_ladders"] == 2  # nosec B101 - pytest assertion
+    assert result["missing_ladders"] == 1  # nosec B101 - pytest assertion
+    rows = {row["arrangement_index"]: row for row in result["arrangements"]}
+    assert rows[0]["ladder_provenance"] == {
+        "status": "present", "origin": "difficulty_ladder", "generator_version": "0.31.4",
+        "marker_version": 1, "levels": 4, "generated_at": "2026-01-02T03:04:05Z",
+    }  # nosec B101 - pytest assertion
+    assert rows[1]["ladder_provenance"] == {
+        "status": "present", "origin": "unknown", "marker_status": "missing",
+    }  # nosec B101 - pytest assertion
+    assert rows[1]["needs_confirmation"] is True  # nosec B101 - pytest assertion
+    assert rows[2]["ladder_provenance"] == {"status": "missing", "origin": "none"}  # nosec B101 - pytest assertion
+    assert {name: (pack / name).read_bytes() for name in before} == before  # nosec B101 - pytest assertion
 
 
 def test_generate_one_regenerates_a_marked_ladder_in_place(tmp_path):

@@ -70,6 +70,36 @@ MAX_PROCESSING_SECONDS = 120  # hard cap per /generate-library call to bound CPU
 GENERATED_MARKER_KEY = "x_difficulty_ladder"
 GENERATED_MARKER_VERSION = 1
 
+
+def _current_plugin_version() -> str | None:
+    try:
+        metadata = json.loads((Path(__file__).resolve().parent / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    version = metadata.get("version") if isinstance(metadata, dict) else None
+    return version.strip() if isinstance(version, str) and version.strip() else None
+
+
+def _ladder_provenance(arr: dict) -> dict:
+    if not arr.get("phrases"):
+        return {"status": "missing", "origin": "none"}
+    marker = arr.get(GENERATED_MARKER_KEY)
+    if not _is_generated_ladder(arr):
+        return {
+            "status": "present",
+            "origin": "unknown",
+            "marker_status": "invalid" if GENERATED_MARKER_KEY in arr else "missing",
+        }
+    return {
+        "status": "present",
+        "origin": "difficulty_ladder",
+        "generator_version": marker.get("generator_version") if isinstance(marker.get("generator_version"), str) else None,
+        "marker_version": marker["version"],
+        "levels": marker.get("levels"),
+        "generated_at": marker.get("generated_at"),
+    }
+
+
 _ZIP_ROOT = Path("/_dd_root").resolve()
 
 
@@ -90,6 +120,7 @@ def _stamp_generated_marker(arr: dict, n_levels: int) -> None:
     a later regenerate tell it apart from an authored one."""
     arr[GENERATED_MARKER_KEY] = {
         "version": GENERATED_MARKER_VERSION,
+        "generator_version": _current_plugin_version(),
         "levels": n_levels,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -223,7 +254,7 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
 
 def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log,
                   scoring, section_times: list[float] | None = None, staged_chords: bool = False,
-                  overwrite_authored: bool = False) -> dict:
+                  overwrite_authored: bool = False, preview: bool = False) -> dict:
     # Hold the pack's lock across the whole read-modify-write span. Without
     # this, two requests touching the same pack (a library sweep + a manual
     # click, or two arrangements of one multi-arrangement song) can each read
@@ -258,6 +289,13 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
                 "ok": True, "skipped": "unsupported-instrument-type",
                 "arrangement_index": arrangement_index, "instrument": instrument,
             }
+        if preview:
+            provenance = _ladder_provenance(arr)
+            return {
+                "ok": True, "arrangement_index": arrangement_index, "instrument": instrument,
+                "ladder_provenance": provenance,
+                "needs_confirmation": provenance["status"] == "present" and provenance["origin"] == "unknown",
+            }
         if not force and arr.get("phrases"):
             return {
                 "ok": True, "skipped": "already-has-phrases",
@@ -273,6 +311,7 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
                 "ok": True, "skipped": "authored-ladder-needs-confirmation",
                 "arrangement_index": arrangement_index, "instrument": instrument,
                 "needs_confirmation": True,
+                "ladder_provenance": _ladder_provenance(arr),
             }
 
         # Score against the EFFECTIVE tuning/name/type (manifest entry
@@ -385,7 +424,8 @@ def _canonical_section_times(pack_path: Path, manifest: dict) -> list[float]:
 
 
 def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
-                    scoring, staged_chords: bool = False, overwrite_authored: bool = False) -> dict:
+                    scoring, staged_chords: bool = False, overwrite_authored: bool = False,
+                    preview: bool = False) -> dict:
     """Generate every eligible arrangement in one song.
 
     Arrangement indices are manifest/storage indices, not the player UI's
@@ -413,7 +453,7 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
             result = _generate_one(
                 pack_path, index, n_levels=n_levels, force=force, log=log, scoring=scoring,
                 section_times=section_times or None, staged_chords=staged_chords,
-                overwrite_authored=overwrite_authored,
+                overwrite_authored=overwrite_authored, preview=preview,
             )
         except HTTPException as exc:
             # A bad arrangement must not prevent the remaining arrangements
@@ -439,13 +479,19 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
                 failed += 1
             elif scoring._is_unsupported_skip(result.get("skipped")):
                 unsupported += 1
-        else:
+        elif not preview:
             generated += 1
-    return {
+    summary = {
         "ok": True, "generated": generated, "skipped": skipped,
         "unsupported": unsupported, "failed": failed,
         "needs_confirmation": needs_confirmation, "arrangements": results,
     }
+    if preview:
+        provenance = [row.get("ladder_provenance") for row in results if row.get("ladder_provenance")]
+        summary["preview"] = True
+        summary["existing_ladders"] = sum(item["status"] == "present" for item in provenance)
+        summary["missing_ladders"] = sum(item["status"] == "missing" for item in provenance)
+    return summary
 
 
 # ── Request models ───────────────────────────────────────────────────────────
@@ -460,10 +506,8 @@ class GenerateIn(BaseModel):
     filename: str
     levels: int = Field(default=4, ge=2, le=8)
     force: StrictBool = False
-    # #183: the explicit second confirmation required to overwrite an existing
-    # ladder that carries no provenance marker (authored/unknown). A bare
-    # `force: true` regenerates only ladders this plugin generated.
     overwrite_authored: StrictBool = False
+    preview: StrictBool = False
     # #103/B10, opt-in: drops a repeated occurrence of an already-Chordr-
     # identified chord at the bottom tier, keeping only its longest-
     # sustained ("landmark") occurrence per phrase. False (the default)
@@ -598,6 +642,7 @@ def setup(app, context):
         force = body.force
         staged_chords = body.staged_chords
         overwrite_authored = body.overwrite_authored
+        preview = body.preview
 
         dlc_root = get_dlc_dir()
         if dlc_root is None:
@@ -607,7 +652,7 @@ def setup(app, context):
         try:
             return _generate_song(
                 pack_path, n_levels=n_levels, force=force, log=log, scoring=scoring,
-                staged_chords=staged_chords, overwrite_authored=overwrite_authored,
+                staged_chords=staged_chords, overwrite_authored=overwrite_authored, preview=preview,
             )
         except HTTPException:
             raise
