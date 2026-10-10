@@ -188,7 +188,7 @@ def _load_manifest_and_arrangement(pack_path: Path, arrangement_index: int):
     return rel, arr, entry, None
 
 
-def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, log,
+def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, force: bool, confirm: bool, log,
                   scoring, section_times: list[float] | None = None, staged_chords: bool = False) -> dict:
     # Hold the pack's lock across the whole read-modify-write span. Without
     # this, two requests touching the same pack (a library sweep + a manual
@@ -229,6 +229,16 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
                 "ok": True, "skipped": "already-has-phrases",
                 "arrangement_index": arrangement_index, "instrument": instrument,
             }
+        # If force=true and there's an existing ladder, check for provenance marker.
+        # If no marker (potentially hand-authored) and not confirmed, return a signal for client to prompt.
+        if force and not confirm and arr.get("phrases") and not arr.get("x_difficulty_ladder"):
+            return {
+                "ok": True,
+                "skipped": "unmarked-ladder",
+                "arrangement_index": arrangement_index,
+                "instrument": instrument,
+                "message": "This arrangement has an existing difficulty ladder that may be hand-authored. Overwrite?",
+            }
 
         # Score against the EFFECTIVE tuning/name/type (manifest entry
         # override, when present) on a shallow copy, so the override --
@@ -257,6 +267,14 @@ def _generate_one(pack_path: Path, arrangement_index: int, *, n_levels: int, for
             }
 
         arr["phrases"] = phrases
+        # Provenance marker for generated ladders (issue #183):
+        # x_difficulty_ladder lets the library card action detect generated
+        # vs hand-authored ladders and prompt before overwriting authored ones.
+        arr["x_difficulty_ladder"] = {
+            "version": 1,
+            "levels": n_levels,
+            "generated_at": int(time.time()),
+        }
         new_bytes = json.dumps(arr, ensure_ascii=False).encode("utf-8")
         _write_member_bytes(pack_path, rel, new_bytes)
     log.info("difficulty_ladder: generated %d phrases for %s arrangement %d",
@@ -338,7 +356,7 @@ def _canonical_section_times(pack_path: Path, manifest: dict) -> list[float]:
     return []
 
 
-def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
+def _generate_song(pack_path: Path, *, n_levels: int, force: bool, confirm: bool, log,
                     scoring, staged_chords: bool = False) -> dict:
     """Generate every eligible arrangement in one song.
 
@@ -361,7 +379,7 @@ def _generate_song(pack_path: Path, *, n_levels: int, force: bool, log,
             continue
         try:
             result = _generate_one(
-                pack_path, index, n_levels=n_levels, force=force, log=log, scoring=scoring,
+                pack_path, index, n_levels=n_levels, force=force, confirm=confirm, log=log, scoring=scoring,
                 section_times=section_times or None, staged_chords=staged_chords,
             )
         except HTTPException as exc:
@@ -406,6 +424,10 @@ class GenerateIn(BaseModel):
     filename: str
     levels: int = Field(default=4, ge=2, le=8)
     force: StrictBool = False
+    # confirm=true bypasses the unmarked-ladder check (issue #183).
+    # Client sends this after user confirms overwriting a potentially
+    # hand-authored ladder.
+    confirm: StrictBool = False
     # #103/B10, opt-in: drops a repeated occurrence of an already-Chordr-
     # identified chord at the bottom tier, keeping only its longest-
     # sustained ("landmark") occurrence per phrase. False (the default)
@@ -427,6 +449,9 @@ class GenerateLibraryIn(BaseModel):
     600s ceiling."""
     levels: int = Field(default=4, ge=2, le=8)
     force: StrictBool = False
+    # confirm=true bypasses the unmarked-ladder check (issue #183).
+    # For bulk operations, this allows force-overwriting unmarked ladders.
+    confirm: StrictBool = False
     max_songs: int = Field(default=500, ge=1, le=2000)
     max_processing_seconds: int = Field(default=MAX_PROCESSING_SECONDS, ge=1, le=600)
     staged_chords: StrictBool = False  # #103/B10, opt-in — see GenerateIn
@@ -535,6 +560,7 @@ def setup(app, context):
             raise HTTPException(400, "filename required")
         n_levels = body.levels
         force = body.force
+        confirm = body.confirm
         staged_chords = body.staged_chords
 
         dlc_root = get_dlc_dir()
@@ -544,7 +570,7 @@ def setup(app, context):
 
         try:
             return _generate_song(
-                pack_path, n_levels=n_levels, force=force, log=log, scoring=scoring,
+                pack_path, n_levels=n_levels, force=force, confirm=confirm, log=log, scoring=scoring,
                 staged_chords=staged_chords,
             )
         except HTTPException:
@@ -560,6 +586,7 @@ def setup(app, context):
         pack must never abort the whole sweep."""
         n_levels = body.levels
         force = body.force
+        confirm = body.confirm
         max_songs = body.max_songs
         max_processing_seconds = body.max_processing_seconds
         staged_chords = body.staged_chords
@@ -621,7 +648,7 @@ def setup(app, context):
                     break
                 try:
                     result = _generate_one(
-                        entry, idx, n_levels=n_levels, force=force, log=log, scoring=scoring,
+                        entry, idx, n_levels=n_levels, force=force, confirm=confirm, log=log, scoring=scoring,
                         section_times=section_times or None, staged_chords=staged_chords,
                     )
                 except HTTPException as e:

@@ -831,6 +831,107 @@
         });
     }
 
+    // ---- Library card action: Regenerate difficulties (issue #183) ----
+    // Registers a menu action that lets users regenerate difficulty ladders
+    // for songs that already have one. Uses force: true to overwrite existing
+    // phrases. Prompts before overwriting unmarked (potentially hand-authored)
+    // ladders. Reuses onGenerateClick's result handling and toasts.
+    function registerLibraryCardRegenerate() {
+        var fb = window.feedBack;
+        if (!fb || !fb.libraryCardActions || typeof fb.libraryCardActions.register !== 'function') return;
+        if (window.__ddCardRegenerateRegistered) return; // idempotent
+        window.__ddCardRegenerateRegistered = true;
+
+        // Check if an arrangement has the provenance marker for a generated ladder
+        function _hasGeneratedMarker(song) {
+            // The library card action receives a song object with filename.
+            // We can't directly read the pack from here; the check happens
+            // server-side in the generate endpoint. The applies() predicate
+            // just needs to show the action for sloppak/feedpak songs.
+            return song && song.filename;
+        }
+
+        fb.libraryCardActions.register({
+            id: 'difficulty_ladder.regenerate',
+            pluginId: PLUGIN_ID,
+            label: 'Regenerate difficulties…',
+            icon: '🔄',
+            placement: 'menu',
+            order: 10,
+            applies: _hasGeneratedMarker,
+            run: function (song) {
+                // The library card action runs in the library view, not the player.
+                // We need to call the generate endpoint with force: true.
+                // Reuse the result handling from onGenerateClick.
+                if (!song || !song.filename) {
+                    return Promise.resolve({ ok: false, error: 'No song filename' });
+                }
+
+                // Determine arrangement index — library cards don't expose this,
+                // but the generate endpoint processes all arrangements in the song.
+                // The song-wide generate endpoint handles all arrangements.
+                var target = {
+                    filename: song.filename,
+                    arrangement_index: 0, // generate endpoint processes all
+                    levels: parseInt(settings.generateLevels, 10) || 4,
+                };
+
+                function doGenerate(confirm) {
+                    var body = Object.assign({}, target, { force: true });
+                    if (confirm) body.confirm = true;
+                    return fetch('/api/plugins/' + PLUGIN_ID + '/generate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    })
+                        .then(function (resp) { return resp.json(); })
+                        .then(function (data) {
+                            if (!data || data.error) {
+                                return { ok: false, error: (data && data.error) || 'Generate failed' };
+                            }
+                            // Handle unmarked-ladder response: prompt user to confirm overwrite
+                            if (data.arrangements) {
+                                var unmarked = data.arrangements.filter(function (a) {
+                                    return a.skipped === 'unmarked-ladder';
+                                });
+                                if (unmarked.length > 0 && !confirm) {
+                                    var msg = unmarked[0].message || 'This arrangement has an existing difficulty ladder that may be hand-authored. Overwrite?';
+                                    if (!window.confirm(msg)) {
+                                        return { ok: false, error: 'Cancelled by user', cancelled: true };
+                                    }
+                                    // User confirmed — retry with confirm=true
+                                    return doGenerate(true);
+                                }
+                            }
+                            // Reuse onGenerateClick's result handling logic
+                            if (data.generated === 0) {
+                                var msg = data.failed ? 'Generate failed' : 'Difficulties already exist';
+                                return { ok: false, error: msg, data: data };
+                            }
+                            var msg = data.generated === 1
+                                ? 'Generated 1 arrangement'
+                                : 'Generated ' + data.generated + ' arrangements';
+                            // If this song is currently open in the player, reconnect highway
+                            var hw = window.highway;
+                            if (hw && typeof hw.reconnect === 'function' && hw.getSongInfo) {
+                                var si = hw.getSongInfo() || {};
+                                if (si.filename === song.filename) {
+                                    hw.reconnect(song.filename, si.arrangement_index || 0);
+                                }
+                            }
+                            return { ok: true, message: msg, data: data };
+                        })
+                        .catch(function (e) {
+                            console.warn('[difficulty_ladder] regenerate request failed:', e);
+                            return { ok: false, error: 'Generate failed' };
+                        });
+                }
+
+                return doGenerate(false);
+            },
+        });
+    }
+
     // Live difficulty changes since this PR write only to the v2 progress
     // store — loadSongMasteryMap() (the v1 map) is legacy/read-only. Reading
     // v1 alone here would leave the Profile baseline card frozen for
@@ -3863,6 +3964,7 @@
     // user ever opens the player — registerLibraryCardBadge() is idempotent,
     // so extra calls after the first success are free no-ops.
     registerLibraryCardBadge();
+    registerLibraryCardRegenerate();
 
     if (window.feedBack && typeof window.feedBack.on === 'function') {
         window.feedBack.on('song:ready', onSongEvent);
@@ -3874,6 +3976,7 @@
         startSplitScreenHookSubscription();
         startPlayerContextSubscriptions();
         window.feedBack.on('library:changed', registerLibraryCardBadge);
+        window.feedBack.on('library:changed', registerLibraryCardRegenerate);
         window.feedBack.on('highway:created', mountControls);
         window.feedBack.on('highway:visibility', function (ev) {
             var detail = ev && ev.detail;
