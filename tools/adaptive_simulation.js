@@ -23,25 +23,41 @@ const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
 const rmse = xs => xs.length ? Math.sqrt(mean(xs.map(x => x * x))) : null;
 const sd = xs => xs.length ? Math.sqrt(mean(xs.map(x => (x - mean(xs)) ** 2))) : null;
 
-function configWith(overrides = {}) {
-    const c = { ...DEFAULTS, ...overrides };
-    for (const key of ['sessions', 'phrasesPerSession', 'items', 'maxTier', 'convergenceWindow']) {
-        if (!Number.isSafeInteger(c[key]) || c[key] < 1) throw new Error(`${key} must be a positive integer`);
+function positiveIntegers(config, keys) {
+    for (const key of keys) {
+        if (!Number.isSafeInteger(config[key]) || config[key] < 1) {
+            throw new Error(`${key} must be a positive integer`);
+        }
     }
-    if (c.items < 3) throw new Error('items must be at least 3');
-    if (!Array.isArray(c.noteCounts) || !c.noteCounts.length
-        || c.noteCounts.some(n => !Number.isSafeInteger(n) || n < 1)) {
+}
+
+function finiteRange(value, key, min, max) {
+    if (!Number.isFinite(value) || value < min || value > max) {
+        throw new Error(`${key} must be in [${min},${max}]`);
+    }
+}
+
+function validateNoteCounts(counts) {
+    if (!Array.isArray(counts) || !counts.length
+        || counts.some(n => !Number.isSafeInteger(n) || n < 1)) {
         throw new Error('noteCounts must contain positive integers');
     }
+}
+
+function configWith(overrides = {}) {
+    const c = { ...DEFAULTS, ...overrides };
+    positiveIntegers(c, ['sessions', 'phrasesPerSession', 'items', 'maxTier', 'convergenceWindow']);
+    if (c.items < 3) throw new Error('items must be at least 3');
+    validateNoteCounts(c.noteCounts);
     for (const key of ['exploration', 'convergenceThreshold']) {
-        if (!Number.isFinite(c[key]) || c[key] < 0 || c[key] > 1) throw new Error(`${key} must be in [0,1]`);
+        finiteRange(c[key], key, 0, 1);
     }
     for (const key of ['sensitivity', 'reactionSpeed']) {
         if (![1, 2, 3].includes(c[key])) throw new Error(`${key} must be 1, 2 or 3`);
     }
     if (typeof c.dropResistance !== 'boolean') throw new Error('dropResistance must be boolean');
     if (!Number.isFinite(c.downStepRatio) || c.downStepRatio <= 0) throw new Error('downStepRatio must be positive');
-    if (!Number.isFinite(c.startPct) || c.startPct < 0 || c.startPct > 100) throw new Error('startPct must be in [0,100]');
+    finiteRange(c.startPct, 'startPct', 0, 100);
     return c;
 }
 
