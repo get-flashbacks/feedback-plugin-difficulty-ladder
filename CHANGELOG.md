@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Documentation
+- Added the Phase 2 adaptive-difficulty simulation scaffold (#55, parent #31):
+  reproducible changing-skill/item traces, variable note counts, exploration,
+  pre-update EMA metrics, seed-level baseline results and an estimator replay seam.
+  Research tooling only; candidate ranking/adoption and real-player validation remain open.
 - Added `TECHNIQUE_WEIGHTING.md`, the design note C7-1 (#167, roadmap #103
   item C7) requires #122 to resolve before any code lands. It answers the two
   open questions — neutral cold start (weight is exactly `1.0` with no
