@@ -5136,26 +5136,27 @@ def test_keys_split_resolves_interleaved_ties_to_the_balanced_seam():
     assert [scoring._note_midi_keys(n) for n in hi] == [72]  # nosec B101 - pytest assertion
 
 
-def test_keys_tier0_anticollapse_never_restores_a_required_group():
-    # Direct policy pin (#180): when the only demotion separating two newly
-    # identical tiers is a required group, the guard leaves it at tier 0 and
-    # lets `_collapse_identical_levels` merge the duplicate tier rather than
-    # undo the guarantee.
-    groups = [
-        {"type": "chord", "notes": [_midi_note(0.0, 60), _midi_note(0.0, 64)],
-         "chord": None, "time": 0.0, "cost": 0.0, "value": 0.0,
-         "retention_score": 0.1, "level": 0, "melody": False,
-         "hand_split": False, "hand": "lower"},
-        {"type": "note", "notes": [_midi_note(1.0, 72)],
-         "chord": None, "time": 1.0, "cost": 0.0, "value": 0.0,
-         "retention_score": 0.9, "level": 0, "melody": True,
-         "hand_split": False, "hand": "upper"},
-    ]
-    original = [0, 1]  # the required group sat at level 1 before demotion
-    scoring._keys_tier0_anticollapse(
-        groups, [1], {1}, original, frozenset(), 2,
-    )
-    assert groups[1]["level"] == 0  # nosec B101 - the requirement survives
+def test_keys_tier0_anticollapse_prefers_a_non_required_restoration():
+    # Policy pin (#180): the guard breaks a new identical tier pair by
+    # restoring a demotion, preferring a non-required one so a required group
+    # keeps its tier-0 place; the ladder without the collapsed tier still wins.
+    def _group(midi, level):
+        return {"type": "note", "notes": [_midi_note(0.0, midi)], "chord": None,
+                "time": float(midi), "cost": 0.0, "value": 0.0,
+                "retention_score": 0.5, "level": level, "melody": False,
+                "hand_split": False, "hand": "lower"}
+
+    # A required (1) and a non-required (2) group both demoted from level 1.
+    groups = [_group(60, 0), _group(64, 0), _group(67, 0)]
+    scoring._keys_tier0_anticollapse(groups, [1, 2], {1}, [0, 1, 1], frozenset(), 1)
+    assert groups[1]["level"] == 0  # nosec B101 - required group keeps tier 0
+    assert groups[2]["level"] == 1  # nosec B101 - non-required one restored
+
+    # With only the required group able to separate the boundary it is
+    # restored too: keeping the ladder's tier count outranks the guarantee.
+    groups = [_group(60, 0), _group(67, 0)]
+    scoring._keys_tier0_anticollapse(groups, [1], {1}, [0, 1], frozenset(), 1)
+    assert groups[1]["level"] == 1  # nosec B101 - avoid a collapsed tier
 
 
 

@@ -220,20 +220,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are *staggered* (never sounding together, hence never split).
   (3) `_split_keys_hands` split at the widest internal gap, but with several
   equal gaps -- the crossed case -- the first is not necessarily the seam:
-  `[36, 48, 60, 72]` (left hand 36+48+60, right hand 72) split at the first of
-  three equal 12-semitone gaps, pairing 60 with the right hand. Candidate seams
-  are now ranked by widest gap then by balance (the split whose larger part
-  spans least), so ties resolve to the seam that leaves each hand most compact;
-  among seams that leave both parts within a hand's reach (a 9th) that ranking
-  applies, and a genuine split is never dropped for being wide -- the widest
-  gap is still the fallback. The bass-root and per-hand demotions only relabel
-  levels downwards (and the anti-collapse guard never restores a required
-  group, so the #181 no-new-identical-pair contract holds); the split change is
-  upstream of tiering -- it affects which notes share a group and their
-  hand/melody labels, and therefore scoring -- and is covered by the nesting
-  tests plus the `_split_keys_hands` unit tests. Fixtures for Alberti bass,
-  stride and crossed-hand passages pin tiers 0-2 and nesting in
-  `tests/test_dd_generation.py`. Version 0.31.0 -> 0.31.1.
+  `[36, 48, 60, 72]` has three equal 12-semitone gaps and taking the first
+  returned a lower part spanning 24 semitones -- two octaves, impossible for one
+  hand. Candidate seams are now ranked by widest gap then by balance (the split
+  whose larger part spans least), so ties resolve to the most compact split
+  (`[36, 48] | [60, 72]` here, each part within a hand); among seams that leave
+  both parts within a hand's reach (a 9th) that ranking applies, and a genuine
+  split is never dropped for being wide -- the widest gap is still the fallback.
+  The bass-root and per-hand demotions only relabel levels downwards; the
+  anti-collapse guard prefers restoring a non-required demotion so a required
+  group normally keeps its tier-0 place, and restores a required one only when
+  nothing else can separate an otherwise-identical pair -- keeping the ladder's
+  full tier count, which outranks the guarantee when the two conflict (leaving
+  the pair would let the floor create 22 new identical tier pairs across these
+  fixtures). The split change is upstream of tiering -- it affects which notes
+  share a group and their hand/melody labels, and therefore scoring -- and is
+  covered by the nesting tests plus the `_split_keys_hands` unit tests. Fixtures
+  for Alberti bass, stride and crossed-hand passages pin tiers 0-2 and nesting
+  in `tests/test_dd_generation.py`. Version 0.31.0 -> 0.31.1.
 - Keys/piano ladders no longer generate a degenerate, near-empty
   bottom tier (#181, item 6 of the keys roadmap #175). The
   proportional tier floor in `_assign_tiers` guarantees tier 0 a

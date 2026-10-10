@@ -3375,26 +3375,37 @@ def _keys_tier0_anticollapse(phrase_groups, demotions, protected,
 
     A pair already identical BEFORE the floor is a pre-existing collapse
     (issue #70's territory, which `_collapse_identical_levels` exists to
-    merge); a pair the floor made identical gets the most recently demoted
-    group of the level it lost back, one restoration per threatened boundary.
+    merge); a pair the floor made identical gets a demoted group of the level
+    it lost back, one restoration per threatened boundary. The ladder without
+    the collapsed tier wins (#181): the guard breaks every new pair, so the
+    floor never costs a tier.
 
-    A #180 required group (bass root, per-hand) is never restored: the whole
-    point of the guarantee is that it sits at tier 0, and restoring it would
-    silently undo it. A non-required demotion is preferred, and when none
-    separates the boundary the pair is left to collapse -- the required root
-    or hand keeps its place and `_collapse_identical_levels` merges the
-    duplicate tier, which is the outcome #180 asks for."""
+    A NON-required demotion is preferred, so a #180 required group (bass root,
+    per-hand) is normally left at tier 0. Only when every group demoted from
+    that level is required -- so nothing else can separate the boundary -- is a
+    required group restored, at the documented cost of that phrase's bass-root
+    or per-hand guarantee: keeping the full ladder is the higher-priority
+    contract, and the alternative (leaving the pair identical) makes
+    `_collapse_identical_levels` silently merge a tier, which pullfrog measured
+    on the #180 fixtures (22 new identical pairs across Alberti/stride/crossed
+    with the protection unconditional)."""
     for k in range(top_tier - 1, -1, -1):
         if k in pre_floor_pairs:
             continue
         if k not in _keys_identical_tier_pairs(phrase_groups, top_tier):
             continue
+        fallback = None
         for i in reversed(demotions):
-            if original_levels[i] != k + 1 or i in protected:
+            if original_levels[i] != k + 1:
                 continue
-            phrase_groups[i]["level"] = original_levels[i]
-            demotions.remove(i)
-            break
+            if i not in protected:
+                fallback = i
+                break
+            if fallback is None:
+                fallback = i
+        if fallback is not None:
+            phrase_groups[fallback]["level"] = original_levels[fallback]
+            demotions.remove(fallback)
 
 
 def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
@@ -3448,8 +3459,9 @@ def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
     a bass root (the lowest-pitch group of each strong position's
     onset) and a per-hand floor (one group per hand). See
     `_keys_tier0_required` for what each guarantees and its bounds,
-    and `_keys_tier0_anticollapse` for why a required group is never
-    restored by the anti-collapse guard.
+    and `_keys_tier0_anticollapse` for how the anti-collapse guard
+    protects them (preferring to restore a non-required demotion, so
+    the ladder keeps its tier count when the two contracts collide).
     """
     if not phrase_groups:
         return

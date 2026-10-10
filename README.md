@@ -365,21 +365,25 @@ contract.
   *staggered* (never sounding together, hence never split) are covered too.
   (3) *Crossed / interleaved hands.* `_split_keys_hands` split at the widest
   internal gap, but with several equal gaps — the crossed case — the first is
-  not necessarily the seam: `[36, 48, 60, 72]` (left hand 36+48+60, right hand
-  72) split at the first of three equal 12-semitone gaps, pairing 60 with the
-  right hand. Candidate seams are now ranked by widest gap and then by
-  balance (the split whose larger part spans least), so ties resolve to the
-  seam that leaves each hand most compact; among seams that leave both parts
-  within a hand's reach (`_KEYS_HAND_SPAN_SEMITONES`, a 9th) that ranking is
-  applied, and a genuine split is never dropped for being wide — the widest
-  gap is still the fallback. Fixtures for Alberti bass, stride, and
-  crossed-hand passages pin tiers 0-2 and nesting in
-  `tests/test_dd_generation.py`. The bass-root and per-hand *demotions* only
-  relabel levels downwards (and the anti-collapse guard never restores them),
-  so the #181 anti-collapse contract holds; the split change is upstream of
-  tiering — it affects which notes share a group and their hand/melody labels,
-  and therefore scoring — and is covered by the nesting tests plus the
-  unchanged `_split_keys_hands` unit tests.
+  not necessarily the seam: `[36, 48, 60, 72]` has three equal 12-semitone
+  gaps, and taking the first returned a lower part spanning 24 semitones —
+  two octaves, impossible for one hand. Candidate seams are now ranked by
+  widest gap and then by balance (the split whose larger part spans least), so
+  ties resolve to the most compact split (`[36, 48] | [60, 72]` here, each part
+  within a hand); among seams that leave both parts within a hand's reach
+  (`_KEYS_HAND_SPAN_SEMITONES`, a 9th) that ranking is applied, and a genuine
+  split is never dropped for being wide — the widest gap is still the
+  fallback. Fixtures for Alberti bass, stride, and crossed-hand passages pin
+  tiers 0-2 and nesting in `tests/test_dd_generation.py`. The bass-root and
+  per-hand *demotions* only relabel levels downwards; the anti-collapse guard
+  prefers restoring a non-required demotion, so a required group normally keeps
+  its tier-0 place, and restores a required one only when nothing else can
+  separate an otherwise-identical pair — keeping the ladder's full tier count,
+  which outranks the guarantee when the two conflict (leaving the pair would
+  let the floor create 22 new identical tier pairs across these fixtures). The
+  split change is upstream of tiering — it affects which notes share a group
+  and their hand/melody labels, and therefore scoring — and is covered by the
+  nesting tests plus the `_split_keys_hands` unit tests.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
