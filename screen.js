@@ -173,7 +173,9 @@
     // `expected_win_chance` as a calibrated absolute probability without first
     // ground-truthing this prior against real hit data (#31).
     function _eloSeedChance(phrase) {
-        var cost = Number(phrase && phrase.difficulty_cost);
+        var raw = phrase && phrase.difficulty_cost;
+        if (raw == null || raw === '') return 0.5;
+        var cost = Number(raw);
         if (!isFinite(cost) || cost < 0) return 0.5;
         return Math.max(0.02, Math.min(0.98, 1 - cost));
     }
