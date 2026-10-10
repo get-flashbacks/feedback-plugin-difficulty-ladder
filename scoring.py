@@ -2349,19 +2349,43 @@ _KEYS_BLACK_KEY_MAX_BONUS = 0.02
 
 def _split_keys_hands(ns):
     """Split one simultaneous onset into (lower, upper) hand parts, or
-    (ns, []) when it reads as a single hand. Splits at the widest internal
-    interval when that interval is too wide for one hand to cover."""
+    (ns, []) when it reads as a single hand.
+
+    The seam must be a GENUINE two-hand boundary, not merely the widest
+    internal interval (#180). An onset's widest gap can fall where the
+    hands interleave rather than between them: `[48, 60, 64, 72]`, with the
+    right hand on 48+72 and the left on 60+64, has its widest gap (48->60)
+    INSIDE the right hand's reach, so splitting there pulls 72 into the
+    left hand and labels an octave-spanning "hand" that neither human hand
+    plays. A split is accepted only when it leaves each part narrower than
+    the seam itself -- a hand's own reach is always less than the interval
+    that separates it from the other hand -- which is exactly the property
+    an interleaved onset lacks. Among the gaps that qualify, the widest is
+    taken (the earliest on a tie, matching the ascending scan). When none
+    qualifies the onset reads as one hand and is returned unsplit, to be
+    thinned by pitch like any other single-hand chord rather than carved
+    into two mislabelled halves."""
     if len(ns) < 2:
         return list(ns), []
     ranked = sorted(ns, key=_note_midi_keys)
-    gaps = [
-        (_note_midi_keys(ranked[i + 1]) - _note_midi_keys(ranked[i]), i)
-        for i in range(len(ranked) - 1)
-    ]
-    gap, at = max(gaps)
-    if gap < _KEYS_HAND_SPLIT_SEMITONES:
+    best = None
+
+    def _span(part):
+        return _note_midi_keys(part[-1]) - _note_midi_keys(part[0])
+
+    for at in range(len(ranked) - 1):
+        gap = _note_midi_keys(ranked[at + 1]) - _note_midi_keys(ranked[at])
+        if gap < _KEYS_HAND_SPLIT_SEMITONES:
+            continue
+        lower, upper = ranked[:at + 1], ranked[at + 1:]
+        if _span(lower) >= gap or _span(upper) >= gap:
+            continue
+        if best is None or gap > best[0]:
+            best = (gap, lower, upper)
+    if best is None:
         return ranked, []
-    return ranked[: at + 1], ranked[at + 1:]
+    return best[1], best[2]
+
 
 
 def _keys_leap_bonus(distance, available_seconds, tempo):
@@ -3175,6 +3199,13 @@ def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
     of sixteenths straddling the beat -- go to the cheaper group, the
     one the ladder already prefers at tier 0, then to the earlier
     group, so the choice is deterministic.
+
+    #180 adds two more demotions on top of the #181 skeleton, both
+    before the density backstop so they count toward its target:
+    a bass root (the lowest-pitch group of each strong position's
+    onset) and a per-hand floor (one group per hand that plays a
+    genuine two-hand onset). See the Part 1b / Part 1c comments in
+    the body for why each is needed and what it is bounded by.
     """
     if not phrase_groups:
         return
@@ -3199,6 +3230,9 @@ def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
         )
     demotions = []
     chosen = set()
+    onset_members = {}
+    for i in coverable:
+        onset_members.setdefault(float(phrase_groups[i]["time"]), []).append(i)
     for pos in positions:
         cover = min(
             coverable,
@@ -3212,6 +3246,65 @@ def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
         if cover not in chosen and original_levels[cover] > 0:
             chosen.add(cover)
             demotions.append(cover)
+        # Part 1b (#180): the bass root. Part 1 keeps ONE group per strong
+        # position -- whichever sits nearest it -- which on a two-hand onset
+        # is usually the upper (melody) group, because the melody tends to
+        # score cheaper than the accompaniment. That left the downbeat bass
+        # root out of the bottom tier even while it sounded (measured: a
+        # stride phrase's tier 0 carried the right-hand chord but not the
+        # downbeat bass note under it). Also keep the lowest-pitch group of
+        # the SAME onset as the cover, so the easiest tier carries its
+        # metrical bass landmark. Only groups sounding at that onset are
+        # considered, so a position with no bass note under it -- a rest, or
+        # a right-hand-only bar -- keeps nothing extra and no note is forced
+        # into a sparse window.
+        onset = onset_members[float(phrase_groups[cover]["time"])]
+        bass = min(
+            onset,
+            key=lambda i: (
+                min(_note_midi_keys(n) for n in phrase_groups[i]["notes"]),
+                i,
+            ),
+        )
+        if bass not in chosen and original_levels[bass] > 0:
+            chosen.add(bass)
+            demotions.append(bass)
+
+    # Part 1c (#180): a per-hand floor. Parts 1 and 1b keep one group per
+    # strong position, and Part 2 below tops tier 0 up to a GLOBAL note
+    # share -- neither reasons about hands, so on a texture where one hand
+    # plays a dense run and the other only a few widely spaced notes
+    # (measured: right-hand sixteenths under a left-hand bass sounding only
+    # on off-beats), the dense hand's many cheap groups satisfy the skeleton
+    # and the note-share target on their own and the sparse hand is absent
+    # from EVERY reduced tier but the top. Keep each hand that plays a
+    # genuine two-hand onset at least one of its groups at tier 0 (its
+    # cheapest), so one hand's density cannot starve the other. A "genuine
+    # two-hand onset" is a `hand_split` group -- the only unambiguous hand
+    # identity the split produces -- so a phrase with no split onset has one
+    # hand and no floor to apply; this keys off `hand_split` rather than
+    # every group's register-guessed `hand`.
+    split_hands = {}
+    for i in coverable:
+        g = phrase_groups[i]
+        if g.get("hand_split") and g.get("hand") in ("lower", "upper"):
+            split_hands.setdefault(g["hand"], []).append(i)
+    if len(split_hands) >= 2:
+        for members in split_hands.values():
+            if any(int(phrase_groups[i]["level"]) == 0 or i in chosen for i in members):
+                continue
+            cheapest = min(
+                members,
+                key=lambda i: (
+                    phrase_groups[i]["retention_score"],
+                    float(phrase_groups[i]["time"]),
+                    i,
+                ),
+            )
+            if cheapest not in chosen and original_levels[cheapest] > 0:
+                chosen.add(cheapest)
+                demotions.append(cheapest)
+
     for i in demotions:
         phrase_groups[i]["level"] = 0
 

@@ -5044,6 +5044,172 @@ def test_keys_authored_note_over_authored_chord_keeps_turning_point_candidacy():
     assert idx in scoring._melody_turning_points_keys(groups, tempo)  # nosec B101 - pytest assertion
 
 
+# ── Keys: voice-aware reduction (#180) ─────────────────────────
+
+def _voice_texture(notes, bars, spb=0.5):
+    beats = []
+    for bar in range(bars):
+        for b in range(4):
+            beats.append({"time": round(bar * 4 * spb + b * spb, 3), "measure": bar if b == 0 else -1})
+    return {
+        "type": "keys", "name": "Keys", "notes": notes, "chords": [],
+        "beats": beats, "sections": [], "tuning": [],
+    }, spb
+
+
+def _alberti_bass_arrangement(bars=4, spb=0.5):
+    """LH Alberti C-G-E-G eighths (a bass root on every downbeat) under an
+    RH quarter-note melody -- the textbook broken-chord accompaniment whose
+    downbeat root the voice-aware reduction must keep at the bottom tier."""
+    melody = [72, 74, 76, 77]
+    lh = [48, 55, 52, 55, 48, 55, 52, 55]
+    notes = []
+    for bar in range(bars):
+        base = bar * 4 * spb
+        for e in range(8):
+            notes.append(_midi_note(base + e * spb / 2, lh[(e + bar) % 8]))
+        for k in range(4):
+            notes.append(_midi_note(base + k * spb, melody[(bar + k) % 4], 0.5))
+    return _voice_texture(notes, bars, spb)
+
+
+def _stride_arrangement(bars=4, spb=0.5):
+    """LH stride: a single bass note on beats 1 and 3, a chord on 2 and 4,
+    under an RH melody sustained on 1 and 3 -- the texture where the bottom
+    tier used to keep the right-hand note and drop the downbeat bass
+    sounding under it."""
+    notes = []
+    for bar in range(bars):
+        base = bar * 4 * spb
+        notes.append(_midi_note(base, 36 if bar % 2 == 0 else 41, 0.5))
+        notes.append(_midi_note(base + 2 * spb, 43 if bar % 2 == 0 else 46, 0.5))
+        for k in (1, 3):
+            for m in (48, 52, 55):
+                notes.append(_midi_note(base + k * spb, m, 0.3))
+        for k, m in ((0, 72), (2, 74)):
+            notes.append(_midi_note(base + k * spb, m, 0.9))
+    return _voice_texture(notes, bars, spb)
+
+
+def _crossed_hand_arrangement(bars=4, spb=0.5):
+    """The hands swap registers: a high melody over a low accompaniment, in
+    the opposite hands to the usual assignment. The local pitch-gap split
+    cannot see the crossover, so the reduction must still keep both the
+    upper melody and the lower accompaniment in the low tiers."""
+    mel = [72, 74, 76, 77]
+    low = [48, 52, 55, 52]
+    notes = []
+    for bar in range(bars):
+        base = bar * 4 * spb
+        for k in range(4):
+            notes.append(_midi_note(base + k * spb, mel[(bar + k) % 4], 0.5))
+            notes.append(_midi_note(base + k * spb, low[(bar + k) % 4]))
+    return _voice_texture(notes, bars, spb)
+
+
+def _downbeat_bass_present(level_notes, spb):
+    """True when a sounding note below middle C lands on a bar downbeat."""
+    bar = 4 * spb
+    return any(
+        scoring._note_midi_keys(n) < 60
+        and abs(float(n["t"]) - round(float(n["t"]) / bar) * bar) < 1e-6
+        for n in level_notes
+    )
+
+
+def test_keys_split_rejects_an_interleaved_onset_the_widest_gap_mislabels():
+    # Right hand on 48+72, left hand on 60+64: the widest gap (48->60) falls
+    # INSIDE the right hand's reach, so the old widest-gap rule pulled 72 into
+    # the left hand and reported an octave-spanning "hand". No genuine seam
+    # exists, so the onset reads as one hand rather than two mislabelled ones.
+    notes = [_midi_note(0.0, m) for m in (48, 60, 64, 72)]
+    lower, upper = scoring._split_keys_hands(notes)
+    assert upper == []  # nosec B101 - pytest assertion
+    assert [scoring._note_midi_keys(n) for n in lower] == [48, 60, 64, 72]  # nosec B101 - unchanged
+    # A genuine two-hand seam still splits, at the same widest gap.
+    lo, hi = scoring._split_keys_hands([_midi_note(0.0, m) for m in (48, 72)])
+    assert [scoring._note_midi_keys(n) for n in lo] == [48]  # nosec B101 - pytest assertion
+    assert [scoring._note_midi_keys(n) for n in hi] == [72]  # nosec B101 - pytest assertion
+
+
+def test_keys_alberti_bass_keeps_the_downbeat_root_in_the_bottom_tier():
+    arr, spb = _alberti_bass_arrangement()
+    phrases = scoring.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[i * 4 * spb for i in range(4)],
+    )
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        assert _downbeat_bass_present(p["levels"][0]["notes"], spb)  # nosec B101 - bass root kept
+
+
+def test_keys_stride_keeps_the_downbeat_bass_under_the_right_hand_chord():
+    arr, spb = _stride_arrangement()
+    phrases = scoring.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[i * 4 * spb for i in range(4)],
+    )
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        bottom = [scoring._note_midi_keys(n) for n in p["levels"][0]["notes"]]
+        assert _downbeat_bass_present(p["levels"][0]["notes"], spb)  # nosec B101 - root kept
+        assert any(m >= 60 for m in bottom)  # nosec B101 - and the RH chord kept
+
+
+def test_keys_per_hand_floor_stops_a_dense_hand_starving_a_sparse_one():
+    # Dense right-hand sixteenths with the left hand sounding only on two
+    # off-beats. Without the per-hand floor the run's many cheap groups
+    # satisfy the skeleton and the note-share target alone, and the left hand
+    # is absent from every reduced tier but the top.
+    spb = 0.5
+    notes = []
+    for bar in range(4):
+        base = bar * 4 * spb
+        for e in range(16):
+            notes.append(_midi_note(base + e * spb / 4, 67 + (e % 3)))
+        for k in (1.5, 3.5):
+            notes.append(_midi_note(base + k * spb, 42, 0.5))
+    arr, spb = _voice_texture(notes, 4, spb)
+    phrases = scoring.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[i * 4 * spb for i in range(4)],
+    )
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        bottom = [scoring._note_midi_keys(n) for n in p["levels"][0]["notes"]]
+        assert any(m < 60 for m in bottom)  # nosec B101 - the sparse hand is represented
+        assert any(m >= 60 for m in bottom)  # nosec B101 - the dense hand is still represented
+
+
+def test_keys_crossed_hands_keep_both_registers_in_the_low_tiers():
+    arr, spb = _crossed_hand_arrangement()
+    phrases = scoring.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[i * 4 * spb for i in range(4)],
+    )
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        for lvl in p["levels"][:3]:
+            midis = [scoring._note_midi_keys(n) for n in lvl["notes"]]
+            assert any(m >= 72 for m in midis)  # nosec B101 - upper melody kept
+            assert any(m < 60 for m in midis)  # nosec B101 - lower accompaniment kept
+
+
+def test_keys_voice_aware_reduction_textures_stay_nested():
+    for arr, spb in (
+        _alberti_bass_arrangement(),
+        _stride_arrangement(),
+        _crossed_hand_arrangement(),
+    ):
+        phrases = scoring.generate_phrases_for_arrangement(
+            arr, n_levels=5, section_times=[i * 4 * spb for i in range(4)],
+        )
+        assert phrases  # nosec B101 - pytest assertion
+        for p in phrases:
+            identities = [
+                {(n["t"], scoring._note_midi_keys(n)) for n in lvl["notes"]}
+                for lvl in p["levels"]
+            ]
+            for lower, higher in pairwise(identities):
+                assert lower <= higher  # nosec B101 - higher tiers are supersets
+
+
 # ── Keys: bottom-tier density floor (#181) ─────────────────
 
 def _keys_arrangement(notes, beats):

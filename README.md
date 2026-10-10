@@ -341,6 +341,37 @@ contract.
   two-voice chords, any demotion at all would create a new identical pair,
   so the floor leaves the tier assignment untouched. The floor is keys-only;
   the fretted path is untouched.
+- **Keys/piano reduction is voice-aware (#180, item 5 of the keys roadmap
+  #175).** Three gaps in the hand-aware thinning above, each measured on a
+  synthetic fixture. (1) *Bass root on downbeats.* The #181 strong-beat
+  skeleton keeps ONE group per strong position — whichever sits nearest it —
+  and on a two-hand onset that is usually the melody, which tends to score
+  cheaper than the accompaniment; the downbeat bass root was then left out of
+  the bottom tier while still sounding (measured: an Alberti-bass phrase's
+  tier 0 held the melody but not the downbeat root under it). The skeleton now
+  also keeps the lowest-pitch group of the same onset. Only groups sounding at
+  that onset qualify, so a position with no bass note under it — a rest, or a
+  right-hand-only bar — forces nothing into a sparse window. (2) *Per-hand
+  floor.* The skeleton and the note-density backstop both reason about groups
+  GLOBALLY, so on a texture where one hand plays a dense run and the other
+  only a few widely spaced notes, the dense hand's many cheap groups satisfy
+  both on their own and the sparse hand is absent from every reduced tier but
+  the top (measured: right-hand sixteenths under a left-hand bass sounding
+  only on two off-beats put the left hand at the top tier alone). Tier 0 now
+  keeps one group from each hand that plays a genuine (split) two-hand onset,
+  so one hand's density cannot starve the other. (3) *Crossed / interleaved
+  hands.* `_split_keys_hands` split at the widest internal gap, but on an
+  interleaved onset that gap can fall INSIDE one hand's reach: `[48, 60, 64,
+  72]` (right hand on 48+72, left on 60+64) was split at 48→60, pulling 72
+  into a left hand reported as spanning an octave it never plays. A split is
+  now accepted only when it leaves each part narrower than the seam itself —
+  a hand's own reach is always less than the gap that separates it from the
+  other hand — which is exactly what an interleaved onset lacks; when none
+  qualifies the onset is thinned as one hand rather than carved into two
+  mislabelled halves. Fixtures for Alberti bass, stride, and crossed-hand
+  passages pin tiers 0-2 and nesting in `tests/test_dd_generation.py`. All
+  three parts only relabel levels downwards, so nesting and the #181
+  anti-collapse guard are unaffected.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty

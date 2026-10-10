@@ -200,6 +200,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer describe the setting in glass terms.
 
 ### Fixed
+- Keys/piano reduction is now voice-aware: it keeps the downbeat bass root,
+  budgets tier 0 per hand, and no longer mislabels crossed/interleaved hands
+  (#180, item 5 of the keys roadmap #175). Three measured gaps.
+  (1) The #181 strong-beat skeleton kept ONE group per strong position
+  (whichever sat nearest it), which on a two-hand onset is usually the melody
+  -- the cheaper-scoring voice -- so the downbeat bass root was dropped from
+  the bottom tier even while sounding (measured: an Alberti-bass phrase's
+  tier 0 held the melody but not the root under it). The skeleton now also
+  keeps the lowest-pitch group of the same onset; only groups sounding at that
+  onset qualify, so no note is forced into a sparse window.
+  (2) The skeleton and the note-density backstop reason about groups globally,
+  so on a texture where one hand plays a dense run and the other only a few
+  widely spaced notes the dense hand satisfied both alone and the sparse hand
+  was absent from EVERY reduced tier but the top (measured: right-hand
+  sixteenths under a left-hand bass on two off-beats). Tier 0 now keeps one
+  group from each hand that plays a genuine (split) two-hand onset.
+  (3) `_split_keys_hands` split at the widest internal gap, but on an
+  interleaved onset that gap can fall inside one hand's reach -- `[48, 60, 64,
+  72]` (right hand on 48+72, left on 60+64) split at 48->60 and reported an
+  octave-spanning left hand that is never played. A split is now accepted only
+  when each part is narrower than the seam itself (a hand's reach is always
+  less than the gap separating it from the other hand), which an interleaved
+  onset lacks; otherwise the onset is thinned as one hand. All three parts only
+  relabel levels downwards, so nesting and the #181 anti-collapse guard are
+  unaffected. Fixtures for Alberti bass, stride and crossed-hand passages pin
+  tiers 0-2 and nesting in `tests/test_dd_generation.py`. Version 0.31.0 ->
+  0.31.1.
 - Keys/piano ladders no longer generate a degenerate, near-empty
   bottom tier (#181, item 6 of the keys roadmap #175). The
   proportional tier floor in `_assign_tiers` guarantees tier 0 a
