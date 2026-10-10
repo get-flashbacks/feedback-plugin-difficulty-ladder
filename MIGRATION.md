@@ -42,7 +42,7 @@ All keys live in `localStorage`, prefixed `difficulty_ladder.` (`LS_PREFIX`,
 | `difficulty_ladder.progress.v2` | schema `difficulty_ladder.progress.v2`, version 2: `profiles → players → songs → arrangements → instruments → roles → skills` nodes (`currentDifficulty`, `bestMastery`, `updatedAt`) plus a `migrations` map | live scoring, migration | canonical; replaced `songMastery` |
 | `difficulty_ladder.phraseAttempts.v2` | schema `difficulty_ladder.phrase_attempts.v2`, version 2 | live scoring | canonical; replaced `phraseAttempts.v1` |
 | `difficulty_ladder.player_context.v1` | schema `difficulty_ladder.player_context.v1` | runtime | player-context identity |
-| `difficulty_ladder.songMastery` | legacy per-song map, `filename::arrangement` → numeric or `{instrument, role}` record | **read-only at runtime** (`screen.js:97`) | legacy migration source; retained (`source_retained: true`) for rollback |
+| `difficulty_ladder.songMastery` | legacy per-song map, `filename::arrangement` → numeric or `{mastery, instrument}` record | read by migration and the badge; **also written** by `_rememberSongInstrument` (`screen.js:1678`) and **pruned** by stale-label cleanup `_clearStaleSongInstrument` (`screen.js:614`) | legacy migration source. Not strictly read-only: the difficulty value is migrated+retained, but its `instrument` label is rewritten on contact and an entry judged stale is deleted, so rollback is best-effort, not guaranteed (§7) |
 | `difficulty_ladder.phraseAttempts.v1` | legacy attempt array | read-only left shift during migration (`screen.js:98`) | legacy migration source; retained |
 | `difficulty_ladder.autoAdjust`, `.dropResistance`, `.levelUpOnly`, `.sensitivity`, `.downStepRatio`, `.reactionSpeed`, `.minMastery`, `.maxMastery`, `.generateLevels`, `.showDifficultyGuide` | booleans / numbers | settings UI | current settings. `showGlasses` is the renamed predecessor of `showDifficultyGuide` and is migrated forward once (`_resolveDifficultyGuideSetting`, `screen.js:78`) |
 
@@ -66,10 +66,19 @@ One-time, idempotent, claim-once migration (`migrateLegacyData`,
   (`screen.js:1930`), and `phraseStore.migrations.phraseAttemptsV1`
   (`screen.js:1975`). The marker is the record that the cutover happened and
   which profile/player claimed it; the migration never runs twice.
+- **The marker is written even when the legacy source is absent or empty:** the
+  marker write is outside the per-key loop, so a compatibility context that
+  runs before any legacy data exists still records completion, and legacy
+  entries added later (a restored backup, a re-installed prior plugin) are
+  **not** imported — the migration is gated on the marker, not on the source.
+  Treat the marker as "the one-time window has passed", not "the source was
+  present".
 - Each legacy key is 1:1 with `(song, arrangement)`; a claim marker stamps the
   migrated node with `legacy_claim_player_id`, so only the claiming player can
   read it and another player on the same profile cannot inherit it.
-- **Source keys are retained**, never deleted — the rollback path (§7).
+- **Source keys are retained** by the migration itself (it never deletes them),
+  but they are not frozen afterwards: see §7 for the runtime paths that can
+  still rewrite or prune a legacy entry.
 - The migration writes `currentDifficulty` only when the target node's
   `currentDifficulty` is still unset, and never writes `bestMastery`.
 
@@ -89,8 +98,9 @@ runtime*, distinct from the data cutover marker above.
 | **Difficulty Ladder-only user** | No-op; migration marker absent, nothing to read | **verified in code** |
 | **Both plugins installed** | See §5 (conflict decision). No cross-writes; duplicate badge prevention is by distinct action id + the idempotency guard | **partially verified** — depends on the Host's card rendering; not run here |
 | **Missing Note Detection** (`window.createNoteDetector` absent) | Standalone operation: slider + authored difficulty still work; no live mastery/best-mastery updates, auto-adjust idle, badge shows only remembered values | Documented in README ("Requirements"); README `## Requirements` (line ~489); **verified in code (feature-detected)** |
-| **Missing phrase data** | Tier rail renders from authored difficulty + manual mastery only; generation (`/generate`) still available | README peer matrix; **verified in code** |
+| **Missing phrase data** (`hasPhraseData()` false) | The tier rail is **hidden** — `_railHighwaySnapshot` returns null on `!hasPhraseData()` (`screen.js:3418`). The manual mastery slider and ladder generation (`/generate`) still work | **verified in code** (corrected: the rail does not fall back to authored difficulty without phrase data) |
 | **Multiple arrangements** | Each `(song, arrangement)` migrates independently; a live phrase finalization does not leak across arrangements | Tests named in `CHANGELOG.md` (#82/#83 edge cases): "two arrangements of the same song migrating independently", "a live phrase finalization not leaking across arrangements"; **verified** |
+| **Concurrent tabs** | **Known limitation, not handled:** every store flushes its whole cached object, so if two tabs both load the store and then write, the later flush replaces the earlier one's profile or `migrations.songMasteryV1` marker, and can lower `bestMastery` (breaking its monotonicity) or drop migrated progress | `flushProgressStore` whole-object write, `screen.js`; **OPEN** — not cross-tab-serialised today |
 | **Private-mode / storage unavailable** | Writes fail quota-safely: bounded exponential retry (`PERSISTENCE_RETRY_MAX = 3`), then give up until the next save; no unbounded loop | `PERSISTENCE_FLUSH_MS` / `PERSISTENCE_RETRY_MAX`, `screen.js:106`; **verified in code** |
 | **Host has no `window.feedBack.libraryCardActions`** | Badge registration no-ops cleanly | `registerLibraryCardBadge` capability check; **verified in code** |
 | **Cross-plugin upgrade from the *separate* Song Mastery plugin's own storage** | **Unverified here**: the Song Mastery repository is not present in this workspace, so its storage schema cannot be inspected. This is the one row that must be validated before the deprecation step | **OPEN — blocks §8** |
@@ -98,10 +108,12 @@ runtime*, distinct from the data cutover marker above.
 ## 5. Conflict behaviour when both plugins are installed
 
 **Decision: read-only compatibility mode.** Difficulty Ladder never reads,
-writes, or deletes Song Mastery's storage, and registers its own card action
-under a distinct id (`difficulty_ladder.mastery_badge`) behind the idempotency
-guard, so it cannot double-register itself. It does not call any Song Mastery
-global.
+writes, or deletes the *separate Song Mastery plugin's* storage, and registers
+its own card action under a distinct id (`difficulty_ladder.mastery_badge`)
+behind the idempotency guard, so it cannot double-register itself. It does not
+call any Song Mastery global. (This is about the other plugin's storage —
+Difficulty Ladder's *own* legacy `difficulty_ladder.songMastery` key is still
+read and, for instrument labels, written; see §2.)
 
 The alternatives were rejected for concrete reasons:
 
@@ -140,20 +152,32 @@ tracked in #85.
 
 ## 7. Rollback path
 
-Rollback is non-destructive by construction:
+Rollback is **best-effort, not guaranteed** — the migration itself is
+non-destructive, but two runtime paths can still change the legacy source:
 
-1. Legacy source keys (`difficulty_ladder.songMastery`,
-   `difficulty_ladder.phraseAttempts.v1`) are **retained**
-   (`source_retained: true`), so reinstalling the prior plugin release finds its
-   data intact.
+1. The migration retains the legacy source keys
+   (`source_retained: true`) and never deletes them, so for entries it touched
+   the difficulty value survives a reinstall of the prior release.
 2. The canonical `progress.v2` / `phraseAttempts.v2` stores are **additive**:
    migration writes nodes only where `currentDifficulty` was unset and never
    touches `bestMastery` produced by live scoring.
 3. The cutover marker (`migrations.songMasteryV1`) records that migration ran;
    reverting keeps the legacy keys and ignores the v2 tree.
 
-There is no code path that deletes a legacy key or the migrated tree during
-normal operation, so rollback needs no special tooling.
+Caveats that make rollback best-effort rather than guaranteed:
+
+- `_rememberSongInstrument` (`screen.js:1678`) **rewrites** a legacy entry to
+  `{ mastery, instrument }` when a song is played, so the record shape can
+  change after migration.
+- `_clearStaleSongInstrument` (`screen.js:614`) **deletes** a legacy entry
+  judged to carry a stale instrument label.
+- Neither path is user-facing data loss for the canonical store (the migrated
+  v2 node keeps the value), but a reinstall of the prior release, which reads
+  only the legacy map, can therefore miss an entry that runtime paths rewrote
+  or pruned.
+
+There is no rollback tooling beyond the retained keys; capture a manual backup
+of `localStorage` before uninstalling if exact restoration matters.
 
 ## 8. Removal timeline (gated)
 
@@ -162,6 +186,8 @@ eventual removal of any shim are gated on:
 
 - [ ] The **cross-plugin upgrade row** in §4 verified against the actual Song
       Mastery storage schema (blocked: that repository is not available here).
+- [ ] The **empty-source marker** caveat (§3) and the **concurrent-tab**
+      whole-store flush (§4) resolved or explicitly accepted and documented.
 - [ ] #84 session-summary item landed and its contract fixtures passing.
 - [ ] #85 live settings reconciliation landed with regression tests.
 - [ ] The v2 sections event retired only after Section Map migrates to v3
@@ -200,10 +226,19 @@ With representative **Lead / Bass / Rhythm / Keys** arrangements:
    plugin still loads, the slider and ladder still work, and auto-adjust stays
    idle without errors.
 6. **Missing phrase data** — open a song with no phrase data; confirm the tier
-   rail renders from authored difficulty only.
+   rail is **hidden** (not rendered from authored difficulty) and generation
+   still works.
 7. **Private mode** — run with `localStorage` full/unavailable; confirm the
    bounded retry gives up cleanly with no console loop and no gameplay stall.
 8. **Rollback** — reinstall the prior release; confirm the `songMastery` map is
-   still present and the prior plugin reads it.
+   still present for entries the runtime did not rewrite/prune and the prior
+   plugin reads it (§7).
+9. **Empty-source marker** — with no legacy data present, open a song, then
+   inject a `songMastery` entry and reload; confirm it is **not** imported
+   (§3), documenting the one-time window.
+10. **Concurrent tabs** — load the same store in two tabs, write in each, and
+    confirm the known whole-store clobber (§4): the later tab's write wins.
+
+Record the outcome of rows 2–8 per arrangement; any failure blocks §8.
 
 Record the outcome of rows 2–7 per arrangement; any failure blocks §8.

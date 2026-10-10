@@ -576,15 +576,17 @@ the same facts, not an independent source.
 
 This plugin absorbed the Slopsmith-era **Song Mastery** plugin's per-song
 difficulty memory, long-term best mastery, and library-card badge. The
-consolidation, the exact storage/migration contract (including the
-`migrations.songMasteryV1` cutover marker and the retained legacy
-`songMastery` key that gives a rollback path), the end-to-end compatibility
-matrix, and the gated removal timeline are recorded in
-[`MIGRATION.md`](MIGRATION.md). The two plugins coexist in **read-only
-compatibility mode**: this plugin never reads or writes Song Mastery's
-storage, and registers its own card action under a distinct id. **The separate
-Song Mastery plugin is not declared obsolete** — that step is gated on the
-matrix's cross-plugin upgrade row passing and on #84/#85.
+consolidation record — what was absorbed, the exact storage/migration contract
+(the `migrations.songMasteryV1` cutover marker and its "one-time window"
+caveat, the runtime-rewritten legacy `songMastery` key, and the best-effort
+rollback path), an end-to-end compatibility matrix (including the unhandled
+concurrent-tab clobber), the both-installed conflict decision, and the gated
+removal timeline — is in [`MIGRATION.md`](MIGRATION.md). The two plugins
+coexist in **read-only compatibility mode**: this plugin never reads or writes
+the *separate Song Mastery plugin's* storage, and registers its own card action
+under a distinct id. **The separate Song Mastery plugin is not declared
+obsolete** — that step is gated on the matrix's cross-plugin upgrade row
+passing and on #84/#85.
 
 ## Settings
 
