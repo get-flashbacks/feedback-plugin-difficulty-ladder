@@ -470,6 +470,12 @@ track the long-term score from the event stream without reading the store. It ri
 same discrete phrase-commit write as the record — never a per-frame path — and a host
 without the event bus drops it silently.
 
+The same best is surfaced in two places: as a small chip on the song's library card (see
+**Library card badge** below), and — at the end of a scored play — as one `★ N% mastery`
+row on the Note Detect results card. That row distinguishes a new best (or a first play)
+from a below-best session and never stacks a duplicate. It is injected from Note Detect's
+synchronous `notedetect:session` event, so no `MutationObserver` or polling is involved.
+
 **Live auto-adjustment**
 - Reads live per-note hit/miss judgments from whichever note-detection scorer
   is active (e.g. the `note_detect` plugin) via `highway.getNoteStateProvider()`
@@ -652,13 +658,15 @@ arrangements, shows the available provenance in its confirmation, then sends
 `overwrite_authored: true` only if an unknown ladder was included and the user
 confirmed. This flag never overrides the skip for drums/unsupported arrangements.
 
-**Library card badge** — songs with a remembered per-song difficulty (see above) show a small
-indicator on their library card via `window.feedBack.libraryCardActions` (`placement: 'overlay'`,
-never a `MutationObserver`). The exact saved percentage is available via the action's click
-result/title rather than as on-card text — see this repo's `COMPLIANCE.md`-adjacent note in
-`screen.js` (`registerLibraryCardBadge`) for why: the card-actions capability's `label`/`icon` are
-static per registration, not computed per song, so a literal "shows N%" on-card text isn't
-expressible through it as it exists today.
+**Library card badge** — each arrangement's **best mastery** (see above) shows as a small chip on
+the song's library card via `window.feedBack.libraryCardActions` (`placement: 'overlay'`, never a
+`MutationObserver`). The chip's visible text is the compact best (`★ 80%`); its title/aria label
+lists every scored arrangement (`Lead 80% · Rhythm 55%`), because the capability renders one element
+per card rather than one per arrangement. Mastery, not the remembered difficulty, is what is shown:
+a song whose node holds only a live difficulty target and no score stays unbadged, while a score
+migrated off the old Song Mastery plugin is surfaced from its claim-stamped `currentDifficulty`.
+`label`/`icon` are `(song) -> string` readers, so each card reflects its own song — the capability
+passes functions through (`_normalize`) and calls them per card.
 
 **Profile baseline card** — the v3 Profile screen shows the average and median
 remembered difficulty for fretted and keys arrangements. The card is read-only,

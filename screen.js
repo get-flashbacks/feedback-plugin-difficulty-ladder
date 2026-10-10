@@ -738,26 +738,33 @@
     }
     /* eslint-enable security/detect-object-injection */
 
-    // ---- Library card badge (issue #4) ----
-    // Surfaces the songMastery map above as a library-card decoration via the
-    // Host's registration API (window.feedBack.libraryCardActions) — never a
+    // ---- Library card badge (issue #4, repurposed for mastery in #84) ----
+    // Surfaces each arrangement's BEST mastery as a library-card decoration via
+    // the Host's registration API (window.feedBack.libraryCardActions) — never a
     // MutationObserver on library DOM (CLAUDE.md's performance section calls
     // that anti-pattern out explicitly; this is exactly the extension point
     // the capability exists to replace it with).
     //
-    // Known limitation (documented, not silently worked around): the
-    // registered action's `label`/`icon` are static strings fixed at
-    // register()-time — core's `list(song)` returns the SAME label/icon for
-    // every card the predicate applies to, with no per-song text hook in this
-    // capability's v1 shape (checked static/capabilities/library-card-actions.js
-    // and static/v3/songs.js's songCard() rendering — `label`/`icon` come from
-    // the registered spec object itself, not a value computed per `song`).
-    // A literal "badge showing this song's exact N%" therefore isn't
-    // expressible through `libraryCardActions` as it exists today; this
-    // registers an applies()-gated indicator (visible only on cards that HAVE
-    // a remembered difficulty) with the exact percentage in its title/aria
-    // label, and a generic glyph otherwise — the closest faithful
-    // approximation, with the exact-text gap filed as a follow-up.
+    // The current capability DOES accept `label`/`icon` as `(song) -> string`
+    // functions: core's `_normalize()` wraps plain strings but passes functions
+    // through, and `list(song)` calls them per card. So the badge can show this
+    // song's own score instead of one string frozen at register()-time. The
+    // capability still renders exactly ONE overlay chip per card (there is no
+    // per-arrangement element), so `label` enumerates every scored arrangement
+    // ("Lead 80% · Rhythm 55%", used as the chip's title/aria text) and `icon`
+    // carries the compact best ("★ 80%") that is actually visible.
+    //
+    // Mastery is deliberately NOT the remembered currentDifficulty: a node's
+    // `bestMastery`, or the score the Song Mastery cutover wrote into
+    // `currentDifficulty` and stamped with `legacy_claim_player_id`, is the
+    // only value shown. A node that merely remembers a target difficulty with
+    // no score stays unbadged, so "mastery" reads as achievement, not as the
+    // live difficulty target.
+    //
+    // Known gap (documented, not silently worked around): with one chip per
+    // card, a song with several scored arrangements lists them in the chip's
+    // title rather than rendering one chip each.
+    //
     // ak/ik/rk below are Object.keys() of already-enumerated store nodes —
     // reads of own properties already discovered, not externally-chosen
     // keys — plus every other bracket access is _nodeKey()/_profileKey()-derived.
@@ -807,26 +814,140 @@
     }
     /* eslint-enable security/detect-object-injection */
 
+    // The score to show for one skill node: the standing best, or — for a user
+    // migrated off the old Song Mastery plugin — the score the cutover wrote
+    // into currentDifficulty before any bestMastery existed. Gated on the
+    // migration stamp so a plain remembered difficulty target is never shown
+    // as an earned score.
+    function _bestMasteryOf(node) {
+        if (!_plainObject(node)) return null;
+        var best = _pct(node.bestMastery);
+        if (best !== null) return best;
+        return node.legacy_claim_player_id ? _pct(node.currentDifficulty) : null;
+    }
+
+    function _formatMasteryPct(value) {
+        return String(Math.round(_pct(value) * 100) / 100);
+    }
+
+    // Every scored arrangement of `song` in the active profile's store, as
+    // { arrangement_id -> best mastery across instruments/roles }. Empty when
+    // no profile context/store is available.
+    /* eslint-disable security/detect-object-injection */
+    function _songArrangementValues(song, ctxBase) {
+        var values = {};
+        var store = loadProgressStore();
+        var profile = store.profiles[_profileKey(ctxBase)];
+        var player = _profilePlayerNode(profile, ctxBase, false);
+        var songNode = player && player.songs[_nodeKey(song.filename)];
+        var arrangements = songNode && songNode.arrangements;
+        if (!_plainObject(arrangements)) return values;
+        Object.keys(arrangements).forEach(function (ak) {
+            var arrangementNode = _plainObject(arrangements[ak]);
+            if (!arrangementNode) return;
+            var instruments = _plainObject(arrangementNode.instruments) ? arrangementNode.instruments : null;
+            if (!instruments) return;
+            var best = null;
+            Object.keys(instruments).forEach(function (ik) {
+                var instrumentNode = _plainObject(instruments[ik]);
+                var roles = instrumentNode && _plainObject(instrumentNode.roles) ? instrumentNode.roles : null;
+                if (!roles) return;
+                Object.keys(roles).forEach(function (rk) {
+                    var roleNode = _plainObject(roles[rk]);
+                    var skills = roleNode && _plainObject(roleNode.skills) ? roleNode.skills : null;
+                    if (!skills) return;
+                    var value = _bestMasteryOf(skills[_nodeKey('overall')]);
+                    if (value !== null && (best === null || value > best)) best = value;
+                });
+            });
+            if (best !== null) values[_id(arrangementNode.arrangement_id, ak)] = best;
+        });
+        return values;
+    }
+
+    // Per-arrangement entries for `song`, in the card's own arrangement order
+    // when it exposes one (v3 library cards carry song.arrangements =
+    // [{index, name}]), else in store order with a synthesized label. Falls
+    // back to the plugin's own legacy per-song map before any profile context
+    // exists, so pre-upgrade installs keep their badge.
+    function _songArrangementMastery(song) {
+        if (!song || !song.filename) return [];
+        var base = _mainPlayerContext;
+        if (!base) {
+            if (_profileApisPresent()) return []; // identity not ready yet
+            var legacy = _dominantSongMastery(song);
+            if (legacy === null) return [];
+            var firstMeta = Array.isArray(song.arrangements) && song.arrangements.length ? song.arrangements[0] : null;
+            return [{ index: 0, label: _id(firstMeta && firstMeta.name, 'Overall'), value: legacy }];
+        }
+        var ctxBase = normalizePlayerContext(Object.assign({}, base, { song_id: song.filename, skill: 'overall' }));
+        if (!ctxBase) return [];
+        var values = _songArrangementValues(song, ctxBase);
+        var meta = Array.isArray(song.arrangements) ? song.arrangements : null;
+        var out = [];
+        if (meta && meta.length) {
+            meta.forEach(function (arrangement, i) {
+                var index = arrangement && arrangement.index != null ? arrangement.index : i;
+                var value = values[String(index)];
+                if (value === undefined) return;
+                out.push({ index: index, label: _id(arrangement && arrangement.name, 'Arrangement ' + (i + 1)), value: value });
+            });
+            return out;
+        }
+        Object.keys(values).forEach(function (id) {
+            out.push({ index: id, label: 'Arrangement ' + id, value: values[id] });
+        });
+        return out;
+    }
+    /* eslint-enable security/detect-object-injection */
+
+    // The single overlay chip's text: a per-arrangement title and the compact
+    // best figure that is visible on the card. Null when nothing is scored.
+    function _songMasteryBadge(song) {
+        var entries = _songArrangementMastery(song);
+        if (!entries.length) return null;
+        var best = null;
+        var parts = entries.map(function (entry) {
+            if (best === null || entry.value > best) best = entry.value;
+            return entry.label + ' ' + _formatMasteryPct(entry.value) + '%';
+        });
+        return {
+            best: best,
+            arrangements: entries,
+            label: 'Best mastery — ' + parts.join(' · '),
+            icon: '★ ' + _formatMasteryPct(best) + '%',
+        };
+    }
+
     function registerLibraryCardBadge() {
         var fb = window.feedBack;
         if (!fb || !fb.libraryCardActions || typeof fb.libraryCardActions.register !== 'function') return;
         if (window.__ddCardBadgeRegistered) return; // idempotent — see plugin-runtime-idempotent.v1 guard at top of file
         window.__ddCardBadgeRegistered = true;
+        // label/icon are (song)->string functions (see the capability's
+        // `_normalize`): core calls them once per visible card, so the chip
+        // reflects each song's own score. Store reads are cached, and the walk
+        // is bounded by the song's own arrangements, per the capability's
+        // light-per-card contract.
         fb.libraryCardActions.register({
             id: 'difficulty_ladder.mastery_badge',
             pluginId: PLUGIN_ID,
-            label: 'Last played at a remembered difficulty (see this song\'s card menu for the exact %)',
-            icon: '🥃',
+            label: function (song) {
+                var badge = _songMasteryBadge(song);
+                return badge ? badge.label : 'Song mastery';
+            },
+            icon: function (song) {
+                var badge = _songMasteryBadge(song);
+                return badge ? badge.icon : '';
+            },
             placement: 'overlay',
             order: 90,
-            // O(1)/allocation-light per card, per the capability's own contract
-            // (list(song) runs this once per visible card on every re-render).
-            applies: function (song) { return _dominantSongMastery(song) !== null; },
-            // Purely informational — nothing to run. Re-affirms the saved value
-            // so a click is harmless rather than surprising.
+            applies: function (song) { return _songMasteryBadge(song) !== null; },
+            // Purely informational — nothing to run. Re-affirms the value the
+            // chip already shows so a click is harmless rather than surprising.
             run: function (song) {
-                var pct = _dominantSongMastery(song);
-                return { ok: true, mastery: pct };
+                var badge = _songMasteryBadge(song);
+                return { ok: true, mastery: badge ? badge.best : null };
             },
         });
     }
@@ -2073,6 +2194,84 @@
             _emitMasteryUpdated(ctx, mastery, previousBest);
         }
         return wrote;
+    }
+
+    // ---- Note Detect session-summary mastery row (#84) ----
+    // Note Detect publishes `notedetect:session` synchronously from
+    // showSummary() AFTER it appends `.nd-summary-overlay`, so a plain event
+    // listener can decorate the finished card directly — no MutationObserver,
+    // no setTimeout/poll retry loop (the old Song Mastery plugin needed both).
+    // One row per overlay: the duplicate guard is a presence check, and a
+    // retry/loop that fires a second session event on the same overlay is a
+    // no-op rather than a stacked second row.
+    function _injectSessionMasteryRow(result) {
+        if (typeof document === 'undefined'
+            || typeof document.createElement !== 'function'
+            || typeof document.querySelector !== 'function') return false;
+        var overlay = document.querySelector('.nd-summary-overlay');
+        if (!overlay || typeof overlay.querySelector !== 'function'
+            || typeof overlay.appendChild !== 'function') return false;
+        if (overlay.querySelector('.dd-mastery-row')) return false; // already decorated
+        var row = document.createElement('div');
+        row.className = 'dd-mastery-row';
+        // Self-contained style (no plugin stylesheet is loaded on this host),
+        // matching the results card's centred, bordered row rhythm.
+        row.style.cssText = 'border-top:1px solid #374151;margin-top:0.75rem;'
+            + 'padding-top:0.75rem;text-align:center;font-weight:600;color:#818cf8;';
+        var note = result.isNewBest
+            ? (result.previousBest === null ? 'first play' : '▲ new best')
+            : '(best ' + _formatMasteryPct(result.previousBest) + '%)';
+        row.textContent = '★ ' + _formatMasteryPct(result.mastery) + '% mastery — ' + note;
+        // Sit with the other result rows, above the action buttons (which are
+        // always present on the finished card).
+        var actions = overlay.querySelector('.nd-sum-actions');
+        if (actions && actions.parentNode && typeof actions.parentNode.insertBefore === 'function') {
+            actions.parentNode.insertBefore(row, actions);
+        } else {
+            overlay.appendChild(row);
+        }
+        return true;
+    }
+
+    // The highway a context scores against: the one the context itself carries
+    // (the main compatibility context and split/registered contexts do), else
+    // the one registered for its session/player key, else the main highway as a
+    // last resort. Without this a Split Screen panel's finished song would be
+    // scored against the main player's slider.
+    function _highwayForContext(ctx) {
+        if (ctx.highway && typeof ctx.highway.getMastery === 'function') return ctx.highway;
+        var registered = _playerContexts.get(playerContextKey(ctx));
+        if (registered && registered.highway && typeof registered.highway.getMastery === 'function') {
+            return registered.highway;
+        }
+        return window.highway;
+    }
+
+    // Fold one finished session into the standing best (through the same
+    // monotonic write + emit path phrase commits use) and decorate the summary
+    // card. The session's difficulty is the live slider value at completion —
+    // the same source `_phraseMasteryPct` reads per phrase — times the
+    // session's overall accuracy.
+    function _onNoteDetectSession(event) {
+        var detail = _plainObject(event && event.detail) || _plainObject(event);
+        if (!detail) return false;
+        var accuracy = Number(detail.accuracy);
+        if (!isFinite(accuracy)) return false;
+        var ctx = normalizePlayerContext(detail.player_context) || _mainPlayerContext;
+        if (!ctx) return false;
+        var highway = _highwayForContext(ctx);
+        if (!highway || typeof highway.getMastery !== 'function') return false;
+        var ratio = Math.max(0, Math.min(1, accuracy / 100));
+        var mastery = _phraseMasteryPct(highway, ratio);
+        if (mastery === null) return false;
+        var previous = readProgress(ctx, { exactOnly: true });
+        var previousBest = previous ? _pct(previous.bestMastery) : null;
+        var isNewBest = previousBest === null || mastery > previousBest;
+        if (isNewBest) _updateBestMastery(ctx, highway, ratio);
+        _injectSessionMasteryRow({
+            mastery: mastery, previousBest: previousBest, isNewBest: isNewBest,
+        });
+        return true;
     }
 
     // The shared ramp/commit step: fold one completed phrase into `state`'s
@@ -4114,6 +4313,9 @@
     // event is the stable extension seam and must remain subscribed while the
     // player itself is hidden.
     document.addEventListener('v3:profile-rendered', renderProfileBaseline);
+    // #84: decorate the Note Detect results card with this session's mastery.
+    // The listener is inert where Note Detect isn't loaded.
+    window.addEventListener('notedetect:session', _onNoteDetectSession);
 
     // The reaction to a changed setting is the same on both notification paths:
     // a foreign tab's `storage` write names one key, this tab's
@@ -4199,6 +4401,11 @@
             _resolveDifficultyGuideSetting,
             _normalizeMasteryBounds,
             _dominantSongMastery,
+            // #84: per-arrangement best-mastery badge + Note Detect session
+            // summary, exported so the card text, migration fallback, and the
+            // synchronous summary injection are testable without a host.
+            _songMasteryBadge, _songArrangementMastery, _bestMasteryOf,
+            _onNoteDetectSession, _injectSessionMasteryRow,
             aggregateMasteryByInstrument, renderProfileBaseline,
             _masteryPct, _rememberSongInstrument, _instrumentKind,
             loadSongMasteryMap, saveSongMasteryMap,

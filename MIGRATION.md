@@ -26,8 +26,12 @@ master difficulty, and showed it as a library-card badge. Both were absorbed:
   `README.md`).
 - **Library-card badge** — one registration through the Host
   `window.feedBack.libraryCardActions` capability
-  (`registerLibraryCardBadge`, `screen.js:798`; action id
-  `difficulty_ladder.mastery_badge`).
+  (`registerLibraryCardBadge`; action id `difficulty_ladder.mastery_badge`),
+  now showing each arrangement's **best mastery** (with a claim-stamped
+  migrated score surfaced) rather than the remembered difficulty.
+- **Note Detect session summary** — one `★ N% mastery` row added to the finished
+  results card from Note Detect's synchronous `notedetect:session` event
+  (`_onNoteDetectSession`, `_injectSessionMasteryRow`).
 - **Adaptive-difficulty behaviour** — the Song Mastery controller is replaced
   by Difficulty Ladder's section-aware controller; the settings mapping is
   recorded in §6.
@@ -41,7 +45,7 @@ All keys live in `localStorage`, prefixed `difficulty_ladder.` (`LS_PREFIX`,
 |---|---|---|---|
 | `difficulty_ladder.progress.v2` | schema `difficulty_ladder.progress.v2`, version 2: `profiles → players → songs → arrangements → instruments → roles → skills` nodes (`currentDifficulty`, `bestMastery`, `updatedAt`) plus a `migrations` map | live scoring, migration | canonical; replaced `songMastery` |
 | `difficulty_ladder.phraseAttempts.v2` | schema `difficulty_ladder.phrase_attempts.v2`, version 2 | live scoring | canonical; replaced `phraseAttempts.v1` |
-| `difficulty_ladder.songMastery` | legacy per-song map, `filename::arrangement` → numeric or `{mastery, instrument}` record | read by migration and the badge; **also written** by `_rememberSongInstrument` (`screen.js:545`) and **pruned** by stale-label cleanup `_clearStaleSongInstrument` (`screen.js:618`) | legacy migration source. Not strictly read-only: the difficulty value is migrated+retained, but its `instrument` label is rewritten on contact and an entry judged stale is deleted, so rollback is best-effort, not guaranteed (§7) |
+| `difficulty_ladder.songMastery` | legacy per-song map, `filename::arrangement` → numeric or `{mastery, instrument}` record | read by migration (and, only before a profile context exists, by the badge's fallback); **also written** by `_rememberSongInstrument` (`screen.js:545`) and **pruned** by stale-label cleanup `_clearStaleSongInstrument` (`screen.js:618`) | legacy migration source. Not strictly read-only: the difficulty value is migrated+retained, but its `instrument` label is rewritten on contact and an entry judged stale is deleted, so rollback is best-effort, not guaranteed (§7) |
 | `difficulty_ladder.phraseAttempts.v1` | legacy attempt array | read-only left shift during migration (`screen.js:98`) | legacy migration source; retained |
 | `difficulty_ladder.autoAdjust`, `.dropResistance`, `.levelUpOnly`, `.sensitivity`, `.downStepRatio`, `.reactionSpeed`, `.minMastery`, `.maxMastery`, `.generateLevels`, `.showDifficultyGuide` | booleans / numbers | settings UI | current settings. `showGlasses` is the renamed predecessor of `showDifficultyGuide` and is migrated forward once (`_resolveDifficultyGuideSetting`, `screen.js:78`) |
 
@@ -195,7 +199,7 @@ eventual removal of any shim are gated on:
       Mastery storage schema (blocked: that repository is not available here).
 - [ ] The **empty-source marker** caveat (§3) and the **concurrent-tab**
       whole-store flush (§4) resolved or explicitly accepted and documented.
-- [ ] #84 session-summary item landed and its contract fixtures passing.
+- [x] #84 session-summary item landed and its contract fixtures passing.
 - [ ] #85 live settings reconciliation landed with regression tests.
 - [ ] The v2 sections event retired only after Section Map migrates to v3
       (#159; depends on feedback-plugin-sectionmap#14 — **still open**).
