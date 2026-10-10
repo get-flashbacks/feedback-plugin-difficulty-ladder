@@ -67,6 +67,24 @@ test('Split Screen inactive: an ownSource panel does not register', () => {
     assert.equal(mod._splitScoreStateForHighway(hw), undefined);
 });
 
+test('legacy Split Screen (slopsmithSplitscreen fallback): a panel still registers', () => {
+    // The gate is `window.feedBackSplitscreen || window.slopsmithSplitscreen`
+    // (screen.js:3051), keeping Split Screen v1.10.6 — which only exposes the
+    // slopsmith alias — inside the documented floor. Without this case the
+    // suite only exercises feedBackSplitscreen, so removing the fallback would
+    // stay green while legacy panels silently stopped registering.
+    const mod = freshPlugin();
+    global.window.slopsmithSplitscreen = { isActive: () => true };
+    const wrapped = withNoteDetectFactory(mod, () => ({ destroy() {} }));
+
+    const hw = {};
+    const context = { session_id: 's1', player_id: 'p1', profile_id: 'prof1' };
+    wrapped({ ownSource: true, highway: hw, player_context: context });
+    const state = mod._splitScoreStateForHighway(hw);
+    assert.ok(state, 'the slopsmithSplitscreen fallback must still register a panel');
+    assert.equal(state.playerKey, mod.playerContextKey(context));
+});
+
 test('non-ownSource detectors never register even when Split Screen is active', () => {
     const mod = freshPlugin();
     global.window.feedBackSplitscreen = { isActive: () => true };

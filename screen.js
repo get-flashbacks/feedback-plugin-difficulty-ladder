@@ -3987,6 +3987,10 @@
             // a browser.
             _syncDifficultyRail, _buildRailCell, _difficultyRailVisible,
             _hideDifficultyRail, ensureRailEl,
+            // Legacy canvas glass HUD (retired in #159): exported so a test
+            // can drive the real draw path and assert its fill reflects the
+            // phrase's pTop rather than max_difficulty (#199 review).
+            drawHud,
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
             registerSplitHighway, tickOneSplitHighway: tickOneSplitHighway,
             _splitScoreStateForHighway,

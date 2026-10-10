@@ -768,6 +768,53 @@ test('host-contract: on a collapsed ladder v3 caps at full detail while the atte
         'the attempt log records the same uncapped tier the HUD maps from mastery');
 });
 
+test('host-contract: drawHud fills a collapsed ladder from pTop, not max_difficulty', () => {
+    // The collapsed-ladder assertion above reads `_tierFillFrac` directly, so
+    // it would stay green if drawHud passed `max_difficulty` as the glass top.
+    // Drive the real draw path (Sourcery #199) and read the fill it emits.
+    const fills = [];
+    const canvas = {
+        isConnected: true, width: 0, height: 0, style: {},
+        getContext: () => ({
+            setTransform() {}, clearRect() {}, beginPath() {}, rect() {},
+            roundRect() {}, stroke() {}, fill() {}, fillText() {},
+            measureText: () => ({ width: 0 }),
+            fillRect(x, y, w, h) { fills.push(h); },
+        }),
+    };
+    const player = { isConnected: true, classList: { contains: () => true }, appendChild() {} };
+    global.window = { addEventListener() {}, devicePixelRatio: 1 };
+    global.document = {
+        addEventListener: () => {},
+        getElementById: (id) => (id === 'player' ? player : null),
+        createElement: () => canvas,
+    };
+    global.localStorage = { getItem: () => null, setItem() {} };
+    global.requestAnimationFrame = () => 1;
+    const file = path.join(__dirname, '..', 'screen.js');
+    delete require.cache[require.resolve(file)];
+    const mod = require(file);
+
+    const phrase = { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 };
+    global.window.highway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [phrase],
+        getTime: () => 1,
+        getMastery: () => 0.5,
+    };
+    mod.settings.showDifficultyGuide = true;
+
+    mod.drawHud();
+
+    // Single phrase, top === max -> glassH = GLASS_MAX_H (44). pTop = 1 at
+    // mastery 0.5 -> _tierFillFrac idxLevel 2, fillFrac min(1, 2/1) = 1 ->
+    // fillH = 44 - 1 = 43. A max_difficulty (3) regression -> fillFrac 2/3 ->
+    // fillH ~= 28.
+    assert.ok(fills.length >= 1, 'drawHud must fill the glass');
+    assert.equal(Math.round(fills[0]), 43,
+        'the drawn fill reflects pTop (full here), not max_difficulty');
+});
+
 test('contributeDiagnostics reports the host tier-semantics signal', () => {
     const mod = freshPlugin();
     const contributed = [];
