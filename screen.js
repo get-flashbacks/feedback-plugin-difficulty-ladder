@@ -3733,8 +3733,12 @@
             console.warn('[difficulty_ladder] generate request failed:', e);
             return { ok: false, error: String(e) };
         }
-        if (!resp.ok || !data || data.error) {
-            return { ok: false, status: resp.status, error: (data && data.error) || resp.status };
+        // FastAPI serialises a route's HTTPException as `{detail: ...}`; the
+        // `error` key is a fallback for any other shape. Stringify so the
+        // caller's `res.error` is always a message, never a bare status code.
+        if (!resp.ok || !data || data.error || data.detail) {
+            var message = (data && (data.detail || data.error)) || ('HTTP ' + resp.status);
+            return { ok: false, status: resp.status, error: String(message) };
         }
         // /generate is song-wide and returns one authoritative classifier per
         // arrangement, including already-authored ladders. Persist all supported
@@ -3815,6 +3819,10 @@
         var data = res.data;
         if (data.needs_confirmation > 0) {
             if (!_confirmAuthoredOverwrite(data.needs_confirmation)) {
+                // The first request may already have rewritten marked/empty
+                // siblings, so the open player is stale even though this
+                // arrangement was left untouched.
+                _reconnectIfOpen(filename);
                 _ddNotify('Regeneration cancelled', 'The authored ladder was left untouched.');
                 return { ok: false, cancelled: true };
             }

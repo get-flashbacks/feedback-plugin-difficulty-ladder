@@ -79,7 +79,10 @@ def _is_generated_ladder(arr: dict) -> bool:
     or one written before the marker existed — has no marker and is treated as
     unknown provenance."""
     marker = arr.get(GENERATED_MARKER_KEY)
-    return isinstance(marker, dict) and marker.get("version") == GENERATED_MARKER_VERSION
+    if not isinstance(marker, dict):
+        return False
+    version = marker.get("version")
+    return isinstance(version, int) and not isinstance(version, bool) and version == GENERATED_MARKER_VERSION
 
 
 def _stamp_generated_marker(arr: dict, n_levels: int) -> None:

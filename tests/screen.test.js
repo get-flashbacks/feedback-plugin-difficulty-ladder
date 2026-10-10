@@ -4632,28 +4632,39 @@ test('regenerateDifficultyLadder forces generation without prompting when nothin
 test('regenerateDifficultyLadder prompts before an authored overwrite and re-issues with overwrite_authored', async () => {
     const mod = freshPlugin();
     const bodies = [];
+    const calls = [];
     global.fetch = async (url, opts) => {
         bodies.push(JSON.parse(opts.body));
+        calls.push('fetch');
         return bodies.length === 1
             ? { ok: true, json: async () => ({ generated: 0, needs_confirmation: 1 }) }
             : { ok: true, json: async () => ({ generated: 1, needs_confirmation: 0 }) };
     };
-    global.window.confirm = () => true;
+    global.window.confirm = () => { calls.push('confirm'); return true; };
 
     const res = await mod.regenerateDifficultyLadder({ filename: 'song.feedpak' });
 
     assert.equal(res.ok, true);
     assert.equal(bodies.length, 2);
+    assert.deepEqual(calls, ['fetch', 'confirm', 'fetch'], 'the overwrite request is only fired after an explicit confirmation');
     assert.equal(bodies[0].overwrite_authored, undefined, 'the first request never pre-authorizes an overwrite');
     assert.equal(bodies[1].overwrite_authored, true, 'the confirmed retry carries the explicit overwrite flag');
 });
 
-test('regenerateDifficultyLadder leaves the authored ladder alone when the prompt is declined', async () => {
+test('regenerateDifficultyLadder leaves the authored ladder alone when the prompt is declined, but still reloads an open player', async () => {
     const mod = freshPlugin();
     const bodies = [];
+    const reconnectCalls = [];
+    global.window.highway = {
+        getSongInfo: () => ({ filename: 'song.feedpak', arrangement_index: 0 }),
+        hasPhraseData: () => false,
+        reconnect: (filename, idx) => reconnectCalls.push([filename, idx]),
+    };
     global.fetch = async (url, opts) => {
         bodies.push(JSON.parse(opts.body));
-        return { ok: true, json: async () => ({ generated: 0, needs_confirmation: 1 }) };
+        // The first request regenerated a marked/empty sibling but flagged an
+        // authored one, which the user then declines.
+        return { ok: true, json: async () => ({ generated: 1, needs_confirmation: 1 }) };
     };
     global.window.confirm = () => false;
 
@@ -4661,6 +4672,7 @@ test('regenerateDifficultyLadder leaves the authored ladder alone when the promp
 
     assert.equal(res.cancelled, true);
     assert.equal(bodies.length, 1, 'declining must not fire the overwrite request');
+    assert.deepEqual(reconnectCalls, [['song.feedpak', 0]], 'the first request already changed the pack, so the open player must reload on decline too');
 });
 
 test('regenerateDifficultyLadder reconnects only when the regenerated song is the one open in the player', async () => {
@@ -4693,7 +4705,8 @@ test('regenerateDifficultyLadder refuses a song with no filename without hitting
 
 test('regenerateDifficultyLadder reports a backend error without throwing', async () => {
     const mod = freshPlugin();
-    global.fetch = async () => ({ ok: false, status: 422, json: async () => ({ error: 'bad filename' }) });
+    // FastAPI serialises the route's HTTPException as `{detail: ...}`.
+    global.fetch = async () => ({ ok: false, status: 422, json: async () => ({ detail: 'bad filename' }) });
 
     const res = await mod.regenerateDifficultyLadder({ filename: 'song.feedpak' });
 

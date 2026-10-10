@@ -2479,6 +2479,7 @@ def test_generate_one_stamps_the_provenance_marker(tmp_path):
 
     assert result.get("phrases", 0) > 0  # nosec B101 - pytest assertion
     persisted = json.loads((pack_dir / "arrangements/lead.json").read_text())
+    assert len(persisted["phrases"]) == result["phrases"]  # nosec B101 - pytest assertion
     marker = persisted.get("x_difficulty_ladder")
     assert isinstance(marker, dict)  # nosec B101 - pytest assertion
     assert marker["version"] == 1  # nosec B101 - pytest assertion
@@ -2498,6 +2499,8 @@ def test_generate_one_regenerates_a_marked_ladder_in_place(tmp_path):
     assert not result.get("needs_confirmation")  # nosec B101 - pytest assertion
     assert result.get("phrases", 0) > 0  # nosec B101 - pytest assertion
     persisted = json.loads((pack_dir / "arrangements/lead.json").read_text())
+    assert len(persisted["phrases"]) == result["phrases"]  # nosec B101 - pytest assertion
+    assert persisted["phrases"] != _authored_phrases()  # nosec B101 - pytest assertion
     assert persisted["x_difficulty_ladder"]["levels"] == 4  # nosec B101 - pytest assertion
 
 
@@ -2532,18 +2535,24 @@ def test_generate_one_overwrites_an_unmarked_ladder_when_confirmed(tmp_path):
     assert persisted["x_difficulty_ladder"]["version"] == 1  # nosec B101 - pytest assertion
 
 
-@pytest.mark.parametrize("bad_marker", [True, "generated", 1, {"version": 99}, []])
+@pytest.mark.parametrize("bad_marker", [True, "generated", 1, {"version": 99}, [], {"version": True}, {"version": 1.0}])
 def test_generate_one_treats_an_invalid_marker_as_authored(tmp_path, bad_marker):
     # A marker that isn't a dict with the current version is not proof this
     # plugin generated the ladder — it must still ask before overwriting.
+    # `{"version": True}` and `{"version": 1.0}` are included because Python
+    # treats both as `== 1`, so they must be rejected as non-integer versions.
     arr = _arrangement(_simple_notes(0, 4), n_beats=16)
-    arr["phrases"] = _authored_phrases()
+    original = _authored_phrases()
+    arr["phrases"] = original
     arr["x_difficulty_ladder"] = bad_marker
     pack_dir = _write_pack(tmp_path, "song.feedpak", [("arrangements/lead.json", arr)])
 
     result = routes._generate_one(pack_dir, 0, n_levels=4, force=True, log=_TEST_LOG, scoring=scoring)
 
     assert result.get("needs_confirmation") is True  # nosec B101 - pytest assertion
+    persisted = json.loads((pack_dir / "arrangements/lead.json").read_text())
+    assert persisted["phrases"] == original  # nosec B101 - pytest assertion
+    assert persisted["x_difficulty_ladder"] == bad_marker  # nosec B101 - pytest assertion
 
 
 def test_generate_song_skips_drums_and_flags_only_the_unmarked_ladder(tmp_path):
