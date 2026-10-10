@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (registration shape, idempotency, confirm accept/decline, reconnect-only-
   if-open, no-filename and backend-error paths). README documents the marker,
   the `overwrite_authored` field and the action. Version 0.31.4 -> 0.32.0.
+- Calibrated keys hand-split threshold (`_KEYS_HAND_SPLIT_SEMITONES`) and melody bonus (`_KEYS_MELODY_LINE_BONUS`) against 8 synthetic piano fixtures (two-hand, Alberti bass, stride, crossed hands, ballad, block chords, solo runs, arpeggio) — zero nesting violations, zero collapsed tiers, tier-0 melody always present across full sweep (hand_split 8-14, melody_bonus 0.04-0.12); current defaults (10, 0.08) retained pending real-chart validation; see `tests/CALIBRATION_REPORT.md` and `tests/calibration_results.json` (#176)
 - Documented `difficulty:mastery-updated` event (schema
   `difficulty_ladder.mastery-updated.v1`) closing #83's remaining acceptance
   item (#81/M4): each NEW best mastery — `phrase difficulty × hit rate`, rounded
