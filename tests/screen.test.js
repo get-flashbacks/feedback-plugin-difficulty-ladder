@@ -755,8 +755,8 @@ test('host-contract: on a collapsed ladder v3 caps at full detail while the atte
     // fill formulation hits 1, while at 0.5 idxLevel = floor(0.5 * 4) = 2,
     // so the pTop-based fill is min(1, 2/1) = 1 but a max_difficulty-based
     // fill would be (2+1)/(3+1) = 3/4. The assertion reads the production
-    // path's own argument (pTop), not a hand-supplied 1, so a drawHud
-    // regression to max_difficulty fails here.
+    // path's own argument (pTop), not a hand-supplied 1, so a regression in
+    // the pTop-scaled fill fails here.
     var collapsedTop = mod._phraseTopDifficulty(phrase);
     assert.equal(collapsedTop, 1);
     assert.equal(mod._tierFillFrac(0.5, 3, collapsedTop).fillFrac, 1);
