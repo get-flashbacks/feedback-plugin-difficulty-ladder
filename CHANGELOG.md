@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- Added `TECHNIQUE_WEIGHTING.md`, the design note C7-1 (#167, roadmap #103
+  item C7) requires #122 to resolve before any code lands. It answers the two
+  open questions — neutral cold start (weight is exactly `1.0` with no
+  evidence, never an assumed weakness) and composition with the existing
+  controller settings (bounded pre-scaling of a phrase's accuracy evidence
+  before the EMA; Sensitivity/Reaction speed/Resist keep their jobs) — with a
+  rejected alternative for each, states the technique vocabulary reused from
+  `_tech_score`/`_TECH_GATE_FRAC`, and records the weak evidence confidence and
+  the gate: C5 (#113) must ship and log data first.
+
 ### Added
 - Per-song **Regenerate difficulty ladder** library-card menu action (#183):
   a read-only `/generate` preview reports each existing ladder's provenance
