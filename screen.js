@@ -474,19 +474,22 @@
             && node.legacy_claim_player_id !== patch.legacy_claim_player_id) {
             node.legacy_claim_player_id = patch.legacy_claim_player_id; changed = true;
         }
-        // The migrated legacy score, preserved separately from the mutable
-        // currentDifficulty (which the difficulty paths rewrite freely): it is
-        // the only field the mastery surface may read as the migrated value.
-        // Immutable once written, so a later difficulty change can never be
-        // mistaken for the score the cutover carried over.
-        if (Object.prototype.hasOwnProperty.call(patch, 'migratedMastery')) {
-            var migratedMastery = _pct(patch.migratedMastery);
-            if (migratedMastery !== null && _pct(node.migratedMastery) === null) {
-                node.migratedMastery = migratedMastery; changed = true;
-            }
-        }
+        if (_patchMigratedMastery(node, patch)) changed = true;
         if (changed) node.updatedAt = patch.updatedAt || new Date().toISOString();
         return changed;
+    }
+
+    // The migrated legacy score, preserved separately from the mutable
+    // currentDifficulty (which the difficulty paths rewrite freely): it is the
+    // only field the mastery surface may read as the migrated value. Immutable
+    // once written, so a later difficulty change can never be mistaken for the
+    // score the cutover carried over.
+    function _patchMigratedMastery(node, patch) {
+        if (!Object.prototype.hasOwnProperty.call(patch, 'migratedMastery')) return false;
+        var migratedMastery = _pct(patch.migratedMastery);
+        if (migratedMastery === null || _pct(node.migratedMastery) !== null) return false;
+        node.migratedMastery = migratedMastery;
+        return true;
     }
 
     function writeProgress(context, patch) {
@@ -2307,6 +2310,33 @@
         return window.highway;
     }
 
+    // Resolve the player context + highway a finished session scores against.
+    // The event may name its own context: one that does not normalize at all,
+    // or a non-main context with no highway of its own, drops the session
+    // rather than folding it into another player's. An absent context resolves
+    // to the main player, which may fall back to window.highway. Null when the
+    // session cannot be scored.
+    function _resolveSessionContext(explicitRaw) {
+        if (!explicitRaw) {
+            if (!_mainPlayerContext) return null;
+            var main = Object.assign({}, _mainPlayerContext);
+            var mainHighway = _highwayForContext(main);
+            if (!mainHighway || typeof mainHighway.getMastery !== 'function') return null;
+            return { ctx: main, highway: mainHighway };
+        }
+        // An explicit context must carry or have a registered highway of its
+        // own: an explicit NON-main context is never scored against the main
+        // player's highway, and an explicit main context (player matching the
+        // registered main one) may resolve to window.highway like any
+        // unadorned single-player session.
+        var ctx = normalizePlayerContext(explicitRaw);
+        if (!ctx) return null;
+        var isMain = !!_mainPlayerContext && ctx.player_id === _mainPlayerContext.player_id;
+        var highway = _highwayForContext(ctx, { requireOwnHighway: !isMain });
+        if (!highway || typeof highway.getMastery !== 'function') return null;
+        return { ctx: ctx, highway: highway };
+    }
+
     // Fold one finished session into the standing best and decorate the summary
     // card. The session's difficulty is the live slider value at completion —
     // the same source `_phraseMasteryPct` reads per phrase — times the
@@ -2329,28 +2359,9 @@
         if (!isFinite(accuracy)) return false;
         var explicitRaw = detail.player_context || detail.playerContext
             || detail.player;
-        var ctx = normalizePlayerContext(explicitRaw);
-        var highway = null;
-        if (explicitRaw) {
-            // The event named its own context. If it does not normalize at all
-            // it must not be folded into another player's session, so an
-            // explicit but unresolvable context drops the event.
-            if (!ctx) return false;
-            // ... and it must carry or have a registered highway of its own.
-            // An explicit NON-main context is never scored against the main
-            // player's highway; an explicit main context (player matching the
-            // registered main one) may resolve to window.highway like any
-            // unadorned single-player session.
-            var isMain = !!_mainPlayerContext && ctx.player_id === _mainPlayerContext.player_id;
-            highway = _highwayForContext(ctx, { requireOwnHighway: !isMain });
-            if (!highway || typeof highway.getMastery !== 'function') return false;
-        } else if (!_mainPlayerContext) {
-            return false;
-        } else {
-            ctx = Object.assign({}, _mainPlayerContext);
-            highway = _highwayForContext(ctx);
-        }
-        if (!ctx || !highway || typeof highway.getMastery !== 'function') return false;
+        var resolved = _resolveSessionContext(explicitRaw);
+        if (!resolved) return false;
+        var ctx = resolved.ctx, highway = resolved.highway;
         var ratio = Math.max(0, Math.min(1, accuracy / 100));
         var mastery = _phraseMasteryPct(highway, ratio);
         if (mastery === null) return false;
