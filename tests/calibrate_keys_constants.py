@@ -10,9 +10,10 @@ import sys
 import json
 from copy import deepcopy
 from itertools import product
+from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, "/workspace/app")
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import scoring
 
@@ -172,24 +173,6 @@ FIXTURES = {
 
 def _note_midi_keys(n):
     return n["s"] * 24 + n["f"]
-
-
-def _generate_with_constants(arr, hand_split, melody_bonus, n_levels=4):
-    """Generate phrases with overridden constants."""
-    # Temporarily override module constants
-    old_split = scoring._KEYS_HAND_SPLIT_SEMITONES
-    old_melody = scoring._KEYS_MELODY_LINE_BONUS
-    scoring._KEYS_HAND_SPLIT_SEMITONES = hand_split
-    scoring._KEYS_MELODY_LINE_BONUS = melody_bonus
-    try:
-        phrases = scoring.generate_phrases_for_arrangement(
-            arr, n_levels=n_levels,
-            section_times=[i * 4 * arr[1]["spb"] if "spb" in arr[1] else i * 2.0 for i in range(4)]
-        )
-        return phrases
-    finally:
-        scoring._KEYS_HAND_SPLIT_SEMITONES = old_split
-        scoring._KEYS_MELODY_LINE_BONUS = old_melody
 
 
 def _group_and_score(arr_dict):
@@ -393,14 +376,15 @@ def main():
               f"non_empty={m['non_empty_tiers']}/{m['total_tiers']}")
 
     # Save results to JSON
-    with open("/workspace/app/tests/calibration_results.json", "w") as f:
+    output_path = Path(__file__).parent / "calibration_results.json"
+    with open(output_path, "w") as f:
         json_results = {}
         for fixture, data in results.items():
             json_results[fixture] = {}
             for (hs, mb), m in data.items():
                 json_results[fixture][f"hs{hs}_mb{mb:.2f}"] = m
         json.dump(json_results, f, indent=2)
-    print("\nResults saved to tests/calibration_results.json")
+    print(f"\nResults saved to {output_path}")
 
 
 if __name__ == "__main__":
