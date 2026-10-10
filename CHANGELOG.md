@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Consolidation/cutover documentation for the absorbed Song Mastery plugin
+  (#86, parent #81): new `MIGRATION.md` records what was absorbed (per-song
+  difficulty memory, monotonic best mastery, library-card badge, adaptive
+  behaviour), the exact storage contract (`difficulty_ladder.progress.v2` /
+  `.phraseAttempts.v2`, the legacy `difficulty_ladder.songMastery` /
+  `.phraseAttempts.v1` sources and how runtime still rewrites/prunes the
+  former, and every settings key), the one-shot `migrations.songMasteryV1` /
+  `phraseAttemptsV1` cutover markers with their claim rules and the
+  "marker-written-even-when-source-empty" caveat, an end-to-end compatibility
+  matrix across fresh install, legacy upgrade, Difficulty-Ladder-only, both
+  plugins installed, missing Note Detection, missing phrase data (the rail is
+  hidden, not derived from authored difficulty), multiple arrangements,
+  private-mode storage, and unhandled concurrent tabs, the conflict decision
+  (read-only compatibility mode toward the other plugin's storage), the
+  best-effort rollback path, the gated removal timeline, and a release
+  checklist plus manual QA script. `README.md` gains a "Song Mastery
+  consolidation" section pointing at it. This is a validation artefact: it
+  records which matrix rows are verified in code/tests and which are still
+  open (the cross-plugin upgrade row is unverified because the Song Mastery
+  repository is not available here), so **Song Mastery is not declared
+  obsolete**; that stays gated on the matrix passing and on #84/#85. Version
+  0.31.1 -> 0.31.2.
 - Actionable host-compatibility diagnostic and host-contract coverage for
   phrase-tier semantics (#129, M1). `contributeDiagnostics` now publishes
   `host_reports_phrase_tiers` — `true` when the host exposes

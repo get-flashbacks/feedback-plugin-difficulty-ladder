@@ -572,6 +572,22 @@ numbers and is this repo's own warning that they're moving targets under
 active audit in #129/#130; treat this README section as that snapshot for
 the same facts, not an independent source.
 
+## Song Mastery consolidation
+
+This plugin absorbed the Slopsmith-era **Song Mastery** plugin's per-song
+difficulty memory, long-term best mastery, and library-card badge. The
+consolidation record — what was absorbed, the exact storage/migration contract
+(the `migrations.songMasteryV1` cutover marker and its "one-time window"
+caveat, the runtime-rewritten legacy `songMastery` key, and the best-effort
+rollback path), an end-to-end compatibility matrix (including the unhandled
+concurrent-tab clobber), the both-installed conflict decision, and the gated
+removal timeline — is in [`MIGRATION.md`](MIGRATION.md). The two plugins
+coexist in **read-only compatibility mode**: this plugin never reads or writes
+the *separate Song Mastery plugin's* storage, and registers its own card action
+under a distinct id. **The separate Song Mastery plugin is not declared
+obsolete** — that step is gated on the matrix's cross-plugin upgrade row
+passing and on #84/#85.
+
 ## Settings
 
 Exposed via Settings → Plugins → Difficulty Ladder:
