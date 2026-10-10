@@ -25,6 +25,14 @@
     const SECTIONS_EVENT_V2 = 'difficulty:sections-updated';
     const SECTIONS_EVENT_V3 = 'difficulty:sections-updated-v3';
 
+    // Best-mastery contract (#83): one event per NEW best, so a UI/integration
+    // that wants the long-term score does not have to read the progress store.
+    // It rides the same discrete phrase-commit write as the record itself --
+    // never a per-note or per-frame path -- and fires only when the stored
+    // best actually advances.
+    const MASTERY_SCHEMA_V1 = 'difficulty_ladder.mastery-updated.v1';
+    const MASTERY_EVENT_V1 = 'difficulty:mastery-updated';
+
     // Section Map's released integration probe predates this plugin's rename
     // from dynamic_difficulty.  It subscribes to our public
     // `difficulty:sections-updated` event only after seeing this capability
@@ -1998,11 +2006,38 @@
         return Math.round(difficulty * 100 * hitRate * 100) / 100;
     }
 
+    // One documented emit per NEW best (#83). Emitted from this write path
+    // only, and only when the store actually advanced, so event consumers see
+    // exactly the monotonic history the record holds: `previous_best` is null
+    // for a first best, otherwise the value just surpassed. A host without the
+    // event bus drops it silently — the write already succeeded.
+    function _emitMasteryUpdated(ctx, mastery, previousBest) {
+        var fb = window.feedBack;
+        if (!fb || typeof fb.emit !== 'function') return;
+        fb.emit(MASTERY_EVENT_V1, {
+            schema: MASTERY_SCHEMA_V1,
+            player_context: _contextEventPayload(ctx),
+            best_mastery: mastery,
+            previous_best: previousBest,
+        });
+    }
+
     function _updateBestMastery(context, highway, ratio) {
         var ctx = normalizePlayerContext(context);
         var mastery = _phraseMasteryPct(highway, ratio);
         if (!ctx || mastery === null) return false;
-        return writeProgress(ctx, { bestMastery: mastery });
+        // The standing best, read off the exact skill node the write targets
+        // (no overall fallback, or a fallback node's value could be compared
+        // against a different node's write). writeProgress enforces the
+        // monotonic best itself, so this read backs the emit decision: fire
+        // only when this write is an actual new best.
+        var previous = readProgress(ctx, { overallFallback: false });
+        var previousBest = previous ? _pct(previous.bestMastery) : null;
+        var wrote = writeProgress(ctx, { bestMastery: mastery });
+        if (wrote && (previousBest === null || mastery > previousBest)) {
+            _emitMasteryUpdated(ctx, mastery, previousBest);
+        }
+        return wrote;
     }
 
     // The shared ramp/commit step: fold one completed phrase into `state`'s
@@ -3991,6 +4026,10 @@
             // can drive the real draw path and assert its fill reflects the
             // phrase's pTop rather than max_difficulty (#199 review).
             drawHud,
+            // #83: the best-mastery write + emit path, exported so the event
+            // contract (new best only, previous_best documented, dropped
+            // without a bus) is testable without a host.
+            _updateBestMastery,
             newSplitScoreState: newSplitScoreState, commitSplitPhraseResult: commitSplitPhraseResult,
             registerSplitHighway, tickOneSplitHighway: tickOneSplitHighway,
             _splitScoreStateForHighway,

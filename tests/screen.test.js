@@ -953,6 +953,65 @@ test('progress v2 keeps current difficulty distinct from best mastery', () => {
     assert.equal(mod.readProgress(ctx).bestMastery, 48, 'best mastery is monotonic');
 });
 
+test('a new best mastery emits exactly one documented difficulty:mastery-updated event', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const events = collectEmits();
+    const highway = { getMastery: () => 0.7 };
+
+    // 70% difficulty x a 50% hit rate = 35 mastery, rounded to 2dp.
+    assert.equal(mod._updateBestMastery(ctx, highway, 0.5), true);
+    const first = lastEvent(events, 'difficulty:mastery-updated');
+    assert.ok(first, 'a first best emits the event consumers document against');
+    assert.equal(first.detail.schema, 'difficulty_ladder.mastery-updated.v1');
+    assert.equal(first.detail.best_mastery, 35);
+    assert.equal(first.detail.previous_best, null, 'a first best documents no predecessor');
+    assert.equal(first.detail.player_context.player_id, 'player-1');
+    assert.equal(first.detail.player_context.session_id, 'session-1');
+
+    // A weaker phrase is not a new best: the record and the event stream are
+    // both unchanged, so a consumer sees the same monotonic history the store
+    // holds.
+    const after = events.length;
+    assert.equal(mod._updateBestMastery(ctx, highway, 0.2), true);
+    assert.equal(mod.readProgress(ctx).bestMastery, 35, 'best mastery is monotonic');
+    assert.equal(lastEvent(events, 'difficulty:mastery-updated'), first, 'no event on a weaker session');
+    assert.equal(events.length, after);
+
+    // A better phrase raises the best and documents the value it surpassed.
+    assert.equal(mod._updateBestMastery(ctx, { getMastery: () => 1.0 }, 1.0), true);
+    const raised = lastEvent(events, 'difficulty:mastery-updated');
+    assert.notEqual(raised, first);
+    assert.equal(raised.detail.best_mastery, 100);
+    assert.equal(raised.detail.previous_best, 35);
+});
+
+test('an unfinalized or invalid session records no mastery and emits nothing', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const events = collectEmits();
+
+    // Note absent / mastery unreadable / ratio not a number / no player
+    // context: each is the "unfinalized or invalid session" case — nothing
+    // recorded, nothing emitted.
+    assert.equal(mod._updateBestMastery(ctx, null, 0.5), false);
+    assert.equal(mod._updateBestMastery(ctx, { getMastery: () => NaN }, 0.5), false);
+    assert.equal(mod._updateBestMastery(ctx, { getMastery: () => 0.7 }, Number('nope')), false);
+    assert.equal(mod._updateBestMastery(null, { getMastery: () => 0.7 }, 0.5), false);
+    assert.equal(mod.readProgress(ctx), null);
+    assert.equal(events.length, 0);
+});
+
+test('the mastery-updated event is dropped silently when the host bus is absent', () => {
+    const mod = freshPlugin(); // no window.feedBack installed
+    const ctx = playerContext();
+
+    mod.writeProgress(ctx, { bestMastery: 10 });
+    assert.equal(mod._updateBestMastery(ctx, { getMastery: () => 0.7 }, 0.5), true);
+    assert.equal(mod.readProgress(ctx).bestMastery, 35,
+        'the new best is recorded even though no event could be emitted');
+});
+
 test('an explicit null currentDifficulty is not coerced into a false 0%', () => {
     const mod = freshPlugin();
     const ctx = playerContext();
