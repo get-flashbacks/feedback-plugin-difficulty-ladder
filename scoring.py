@@ -2231,6 +2231,14 @@ _KEYS_MELODY_TURNING_BONUS = 0.025
 # wide INSIDE one simultaneous onset can't be one hand's chord voicing -- it is
 # a left-hand bass/accompaniment note sounding with a right-hand melody/chord.
 _KEYS_HAND_SPLIT_SEMITONES = 10
+# The other half of the same judgement (#180): how wide ONE hand's own
+# material can be. A hand reaches about an octave, a 9th at a stretch (14
+# semitones) -- the figure the split comment above names. `_split_keys_hands`
+# uses it to recognise a GENUINE seam: a candidate split is credible only when
+# each part fits inside this width, because a hand's own reach is always less
+# than the gap separating it from the other hand. An interleaved onset, whose
+# only wide gaps fall inside one hand's reach, has no such seam.
+_KEYS_HAND_SPAN_SEMITONES = 14
 # Retention discount for the melody (skyline) voice, in the same units as
 # _KEYS_BEAT_VALUE_COEF: sized to beat the cost spread between an equally
 # placed accompaniment filler and a melody note, so the bottom tier carries the
@@ -2351,40 +2359,51 @@ def _split_keys_hands(ns):
     """Split one simultaneous onset into (lower, upper) hand parts, or
     (ns, []) when it reads as a single hand.
 
-    The seam must be a GENUINE two-hand boundary, not merely the widest
-    internal interval (#180). An onset's widest gap can fall where the
-    hands interleave rather than between them: `[48, 60, 64, 72]`, with the
-    right hand on 48+72 and the left on 60+64, has its widest gap (48->60)
-    INSIDE the right hand's reach, so splitting there pulls 72 into the
-    left hand and labels an octave-spanning "hand" that neither human hand
-    plays. A split is accepted only when it leaves each part narrower than
-    the seam itself -- a hand's own reach is always less than the interval
-    that separates it from the other hand -- which is exactly the property
-    an interleaved onset lacks. Among the gaps that qualify, the widest is
-    taken (the earliest on a tie, matching the ascending scan). When none
-    qualifies the onset reads as one hand and is returned unsplit, to be
-    thinned by pitch like any other single-hand chord rather than carved
-    into two mislabelled halves."""
+    The seam must be plausible as a two-hand boundary (#180). The long-
+    standing rule was simply the widest internal interval once it reached
+    `_KEYS_HAND_SPLIT_SEMITONES`, but when several intervals tie -- the
+    crossed/interleaved case -- the widest is not unique and the FIRST one
+    can fall INSIDE a hand rather than between the hands: `[36, 48, 60, 72]`
+    (left hand 36+48+60, right hand 72) has three equal 12-semitone gaps,
+    and splitting at the first pairs 60 with the right hand instead of 36+48.
+    Candidate seams are therefore ranked by (widest gap, then the most
+    balanced split -- the one whose larger part spans least), so ties resolve
+    to the seam that leaves each hand most compact.
+
+    A seam is only rejected when NO qualifying gap leaves both parts within
+    `_KEYS_HAND_SPAN_SEMITONES`; in that case the widest gap is used anyway,
+    the long-standing behaviour, so a genuine two-hand split is never dropped
+    for being wide (a hand may span up to a 9th)."""
     if len(ns) < 2:
         return list(ns), []
     ranked = sorted(ns, key=_note_midi_keys)
-    best = None
+    gaps = [
+        (_note_midi_keys(ranked[i + 1]) - _note_midi_keys(ranked[i]), i)
+        for i in range(len(ranked) - 1)
+    ]
+    if not gaps or max(gap for gap, _ in gaps) < _KEYS_HAND_SPLIT_SEMITONES:
+        return ranked, []
 
     def _span(part):
         return _note_midi_keys(part[-1]) - _note_midi_keys(part[0])
 
-    for at in range(len(ranked) - 1):
-        gap = _note_midi_keys(ranked[at + 1]) - _note_midi_keys(ranked[at])
+    def _parts(at):
+        return ranked[:at + 1], ranked[at + 1:]
+
+    tight = []
+    for gap, at in gaps:
         if gap < _KEYS_HAND_SPLIT_SEMITONES:
             continue
-        lower, upper = ranked[:at + 1], ranked[at + 1:]
-        if _span(lower) >= gap or _span(upper) >= gap:
-            continue
-        if best is None or gap > best[0]:
-            best = (gap, lower, upper)
-    if best is None:
-        return ranked, []
-    return best[1], best[2]
+        lower, upper = _parts(at)
+        widest_part = max(_span(lower), _span(upper))
+        if widest_part <= _KEYS_HAND_SPAN_SEMITONES:
+            tight.append((gap, widest_part, at))
+    if tight:
+        _, _, at = min(tight, key=lambda c: (-c[0], c[1], c[2]))
+        return _parts(at)
+    gap, at = max(gaps)
+    return _parts(at)
+
 
 
 
@@ -3154,6 +3173,230 @@ def _keys_tier0_note_count(group, top_tier):
         group["level"] = held
 
 
+def _keys_phrase_hands(phrase_groups, coverable):
+    """#180: the phrase's two register bands as index lists ``[lower, upper]``,
+    or None when it reads as one hand.
+
+    The per-onset `hand_split` tag only exists where an onset was actually
+    split, so a phrase whose hands play distinct, register-separated lines
+    WITHOUT ever sounding together -- staggered, rather than simultaneous --
+    has no split at all and would fall outside a `hand_split`-only per-hand
+    floor. This bands the phrase's own pitches instead: the widest gap between
+    consecutive distinct pitches, when it reaches `_KEYS_HAND_SPLIT_SEMITONES`,
+    is the same two-register separation the onset split looks for; each group
+    is placed on the side of that boundary its mean pitch falls. It is a
+    register heuristic, deliberately conservative: no gap that wide means one
+    band (None), and a band that ends up empty is not a second hand."""
+    pitches = sorted({
+        _note_midi_keys(n)
+        for i in coverable for n in phrase_groups[i]["notes"]
+    })
+    if len(pitches) < 2:
+        return None
+    gap, at = max(
+        (pitches[k + 1] - pitches[k], k) for k in range(len(pitches) - 1)
+    )
+    if gap < _KEYS_HAND_SPLIT_SEMITONES:
+        return None
+    boundary = (pitches[at] + pitches[at + 1]) / 2.0
+    lower, upper = [], []
+    for i in coverable:
+        midis = [_note_midi_keys(n) for n in phrase_groups[i]["notes"]]
+        (lower if sum(midis) / len(midis) < boundary else upper).append(i)
+    if not lower or not upper:
+        return None
+    return [lower, upper]
+
+
+def _keys_strong_positions(tempo, t0, t1):
+    """The graded grid positions (#103/B2) in [t0, t1) graded at least
+    `_STRENGTH_STRONG_BEAT` -- the strong beats the #181 skeleton covers."""
+    if not tempo.beat_grid:
+        return ()
+    return tuple(sorted(
+        float(t) for t, strength in tempo.beat_grid
+        if strength >= _STRENGTH_STRONG_BEAT and t0 <= t < t1
+    ))
+
+
+def _keys_tier0_skeleton(positions, coverable, phrase_groups, original_levels,
+                         beat_times, tempo, chosen):
+    """#181 Part 1: one group per strong position -- the phrase group nearest
+    it (unbounded, so a syncopated or subdivided onset still covers the beat
+    it displaces; a position nobody plays near, a rest, keeps whatever group
+    is genuinely closest); ties go to the cheaper group, then the earlier one,
+    so the choice is deterministic. Returns (covers, demotions) and adds the
+    demoted groups to `chosen`."""
+    covers, demotions = [], []
+    for pos in positions:
+        cover = min(
+            coverable,
+            key=lambda i: (
+                abs(float(phrase_groups[i]["time"]) - pos),
+                phrase_groups[i]["retention_score"],
+                -_beat_value(phrase_groups[i]["time"], beat_times, tempo),
+                i,
+            ),
+        )
+        covers.append(cover)
+        if cover not in chosen and original_levels[cover] > 0:
+            chosen.add(cover)
+            demotions.append(cover)
+    return covers, demotions
+
+
+def _keys_bass_root_indices(phrase_groups, covers, onset_members, original_levels, chosen):
+    """#180 Part 1b: the lowest-pitch group of each strong position's onset,
+    as indices to demote (added to `chosen`). The skeleton keeps only the
+    nearest group, usually the cheaper melody, so the downbeat root it sounds
+    over was dropped even while present. Only groups sounding at that onset
+    qualify, so a rest or a right-hand-only bar forces nothing into a sparse
+    window."""
+    out = []
+    for cover in covers:
+        onset = onset_members[float(phrase_groups[cover]["time"])]
+        bass = min(
+            onset,
+            key=lambda i: (
+                min(_note_midi_keys(n) for n in phrase_groups[i]["notes"]),
+                i,
+            ),
+        )
+        if bass not in chosen and original_levels[bass] > 0:
+            chosen.add(bass)
+            out.append(bass)
+    return out
+
+
+def _keys_hand_bands(phrase_groups, coverable):
+    """#180 Part 1c's hand model: the `hand_split` groups' sides when the
+    phrase has any (the unambiguous hand identity), otherwise the phrase-level
+    register bands from `_keys_phrase_hands` so staggered hands are covered
+    too. None when the phrase reads as one hand."""
+    split_hands = {}
+    for i in coverable:
+        g = phrase_groups[i]
+        if g.get("hand_split") and g.get("hand") in ("lower", "upper"):
+            split_hands.setdefault(g["hand"], []).append(i)
+    if len(split_hands) >= 2:
+        return list(split_hands.values())
+    return _keys_phrase_hands(phrase_groups, coverable)
+
+
+def _keys_tier0_required(phrase_groups, covers, coverable, onset_members,
+                         original_levels, chosen):
+    """#180's two extra bottom-tier guarantees, as group indices to demote:
+    the bass root under each strong position (`_keys_bass_root_indices`), then
+    one group per hand (`_keys_hand_bands`). Adds them to `chosen` too, so the
+    density backstop below counts them. The per-hand floor stops a dense hand
+    from satisfying the skeleton and the note-share target alone and starving
+    a sparse hand out of every reduced tier but the top."""
+    required = _keys_bass_root_indices(
+        phrase_groups, covers, onset_members, original_levels, chosen,
+    )
+    bands = _keys_hand_bands(phrase_groups, coverable)
+    if bands:
+        for members in bands:
+            if any(int(phrase_groups[k]["level"]) == 0 or k in chosen for k in members):
+                continue
+            cheapest = min(
+                members,
+                key=lambda i: (
+                    phrase_groups[i]["retention_score"],
+                    float(phrase_groups[i]["time"]),
+                    i,
+                ),
+            )
+            if cheapest not in chosen and original_levels[cheapest] > 0:
+                chosen.add(cheapest)
+                required.append(cheapest)
+    return required
+
+
+
+def _keys_tier0_backstop(phrase_groups, coverable, chosen, original_levels,
+                         beat_times, tempo, top_tier, n_levels):
+    """#181's note-density backstop, as the group indices to demote.
+
+    The target is the bottom tier's equal share of the phrase's notes
+    (1/n_levels), counted the way a reader experiences it -- the
+    MATERIALIZED tier-0 note count, after outer-voice reduction and the
+    octave collapse -- so the guarantee is on what the learner actually
+    plays, not on raw input note counts. The raw share is capped at what a
+    full demotion of the phrase could emit at tier 0: a voicing whose outer
+    voices are an octave apart collapses to one note at tier 0 however many
+    voices it has, so on such a passage the raw share is unreachable even
+    with every group at tier 0, and an uncapped target would only send the
+    backstop chasing it to exhaustion.
+
+    Each group's tier-0 size is independent of every group's level (see
+    `_keys_tier0_note_count`), so the emitted tier-0 count is tracked
+    incrementally -- the per-group sizes are computed once and each
+    demotion adds its group's size -- instead of rematerializing and
+    re-sorting the whole phrase after every demotion, which is quadratic in
+    the phrase's group count. The caller applies the returned levels."""
+    tier0_sizes = {
+        i: _keys_tier0_note_count(phrase_groups[i], top_tier)
+        for i in coverable
+    }
+    emitted = sum(
+        tier0_sizes[i] for i in coverable
+        if phrase_groups[i]["level"] == 0
+    )
+    target = min(
+        math.ceil(
+            sum(len(phrase_groups[i]["notes"]) for i in coverable) / n_levels
+        ),
+        sum(tier0_sizes.values()),
+    )
+    remaining = [
+        i for i in sorted(
+            coverable,
+            key=lambda i: (
+                phrase_groups[i]["retention_score"],
+                -_beat_value(phrase_groups[i]["time"], beat_times, tempo),
+                i,
+            ),
+        )
+        if i not in chosen and original_levels[i] > 0
+    ]
+    demoted = []
+    for i in remaining:
+        if emitted >= target:
+            break
+        demoted.append(i)
+        emitted += tier0_sizes[i]
+    return demoted
+
+
+def _keys_tier0_anticollapse(phrase_groups, demotions, protected,
+                             original_levels, pre_floor_pairs, top_tier):
+    """Break every identical adjacent-tier pair the floor newly created.
+
+    A pair already identical BEFORE the floor is a pre-existing collapse
+    (issue #70's territory, which `_collapse_identical_levels` exists to
+    merge); a pair the floor made identical gets the most recently demoted
+    group of the level it lost back, one restoration per threatened boundary.
+
+    A #180 required group (bass root, per-hand) is never restored: the whole
+    point of the guarantee is that it sits at tier 0, and restoring it would
+    silently undo it. A non-required demotion is preferred, and when none
+    separates the boundary the pair is left to collapse -- the required root
+    or hand keeps its place and `_collapse_identical_levels` merges the
+    duplicate tier, which is the outcome #180 asks for."""
+    for k in range(top_tier - 1, -1, -1):
+        if k in pre_floor_pairs:
+            continue
+        if k not in _keys_identical_tier_pairs(phrase_groups, top_tier):
+            continue
+        for i in reversed(demotions):
+            if original_levels[i] != k + 1 or i in protected:
+                continue
+            phrase_groups[i]["level"] = original_levels[i]
+            demotions.remove(i)
+            break
+
+
 def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
     """#181: enforce the keys bottom-tier density floor on one phrase
     window (see the #181 design comment in the keys constants
@@ -3203,9 +3446,10 @@ def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
     #180 adds two more demotions on top of the #181 skeleton, both
     before the density backstop so they count toward its target:
     a bass root (the lowest-pitch group of each strong position's
-    onset) and a per-hand floor (one group per hand that plays a
-    genuine two-hand onset). See the Part 1b / Part 1c comments in
-    the body for why each is needed and what it is bounded by.
+    onset) and a per-hand floor (one group per hand). See
+    `_keys_tier0_required` for what each guarantees and its bounds,
+    and `_keys_tier0_anticollapse` for why a required group is never
+    restored by the anti-collapse guard.
     """
     if not phrase_groups:
         return
@@ -3221,162 +3465,39 @@ def _keys_tier0_floor(phrase_groups, t0, t1, beat_times, tempo, n_levels):
     # docstring): pairs already collapsing before any demotion.
     pre_floor_pairs = _keys_identical_tier_pairs(phrase_groups, top_tier)
 
-    # Part 1: the strong-beat skeleton.
-    positions = ()
-    if tempo.beat_grid:
-        positions = sorted(
-            float(t) for t, strength in tempo.beat_grid
-            if strength >= _STRENGTH_STRONG_BEAT and t0 <= t < t1
-        )
-    demotions = []
+    # Part 1: the strong-beat skeleton; Parts 1b/1c add the bass root and the
+    # per-hand floor. The returned "required" indices are the #180 guarantees
+    # the anti-collapse guard will not undo; the backstop (Part 2) then tops
+    # tier 0 up to the note-share target.
     chosen = set()
     onset_members = {}
     for i in coverable:
         onset_members.setdefault(float(phrase_groups[i]["time"]), []).append(i)
-    for pos in positions:
-        cover = min(
-            coverable,
-            key=lambda i: (
-                abs(float(phrase_groups[i]["time"]) - pos),
-                phrase_groups[i]["retention_score"],
-                -_beat_value(phrase_groups[i]["time"], beat_times, tempo),
-                i,
-            ),
-        )
-        if cover not in chosen and original_levels[cover] > 0:
-            chosen.add(cover)
-            demotions.append(cover)
-        # Part 1b (#180): the bass root. Part 1 keeps ONE group per strong
-        # position -- whichever sits nearest it -- which on a two-hand onset
-        # is usually the upper (melody) group, because the melody tends to
-        # score cheaper than the accompaniment. That left the downbeat bass
-        # root out of the bottom tier even while it sounded (measured: a
-        # stride phrase's tier 0 carried the right-hand chord but not the
-        # downbeat bass note under it). Also keep the lowest-pitch group of
-        # the SAME onset as the cover, so the easiest tier carries its
-        # metrical bass landmark. Only groups sounding at that onset are
-        # considered, so a position with no bass note under it -- a rest, or
-        # a right-hand-only bar -- keeps nothing extra and no note is forced
-        # into a sparse window.
-        onset = onset_members[float(phrase_groups[cover]["time"])]
-        bass = min(
-            onset,
-            key=lambda i: (
-                min(_note_midi_keys(n) for n in phrase_groups[i]["notes"]),
-                i,
-            ),
-        )
-        if bass not in chosen and original_levels[bass] > 0:
-            chosen.add(bass)
-            demotions.append(bass)
-
-    # Part 1c (#180): a per-hand floor. Parts 1 and 1b keep one group per
-    # strong position, and Part 2 below tops tier 0 up to a GLOBAL note
-    # share -- neither reasons about hands, so on a texture where one hand
-    # plays a dense run and the other only a few widely spaced notes
-    # (measured: right-hand sixteenths under a left-hand bass sounding only
-    # on off-beats), the dense hand's many cheap groups satisfy the skeleton
-    # and the note-share target on their own and the sparse hand is absent
-    # from EVERY reduced tier but the top. Keep each hand that plays a
-    # genuine two-hand onset at least one of its groups at tier 0 (its
-    # cheapest), so one hand's density cannot starve the other. A "genuine
-    # two-hand onset" is a `hand_split` group -- the only unambiguous hand
-    # identity the split produces -- so a phrase with no split onset has one
-    # hand and no floor to apply; this keys off `hand_split` rather than
-    # every group's register-guessed `hand`.
-    split_hands = {}
-    for i in coverable:
-        g = phrase_groups[i]
-        if g.get("hand_split") and g.get("hand") in ("lower", "upper"):
-            split_hands.setdefault(g["hand"], []).append(i)
-    if len(split_hands) >= 2:
-        for members in split_hands.values():
-            if any(int(phrase_groups[i]["level"]) == 0 or i in chosen for i in members):
-                continue
-            cheapest = min(
-                members,
-                key=lambda i: (
-                    phrase_groups[i]["retention_score"],
-                    float(phrase_groups[i]["time"]),
-                    i,
-                ),
-            )
-            if cheapest not in chosen and original_levels[cheapest] > 0:
-                chosen.add(cheapest)
-                demotions.append(cheapest)
-
+    covers, demotions = _keys_tier0_skeleton(
+        _keys_strong_positions(tempo, t0, t1), coverable, phrase_groups,
+        original_levels, beat_times, tempo, chosen,
+    )
+    required = _keys_tier0_required(
+        phrase_groups, covers, coverable, onset_members, original_levels, chosen,
+    )
+    demotions.extend(required)
     for i in demotions:
         phrase_groups[i]["level"] = 0
 
-    # Part 2: the note-density backstop. The target is the
-    # bottom tier's equal share of the phrase's notes (1/n_levels),
-    # counted the way a reader experiences it -- the MATERIALIZED
-    # tier-0 note count, after outer-voice reduction and the
-    # octave collapse -- so the guarantee is on what the learner
-    # actually plays, not on raw input note counts. The raw share
-    # is capped at what a full demotion of the phrase could emit
-    # at tier 0: a voicing whose outer voices are an octave apart
-    # collapses to one note at tier 0 however many voices it has,
-    # so on such a passage the raw share is unreachable even with
-    # every group at tier 0, and an uncapped target would only
-    # send the backstop chasing it to exhaustion.
-    tier0_sizes = {
-        i: _keys_tier0_note_count(phrase_groups[i], top_tier)
-        for i in coverable
-    }
-    # Each group's tier-0 size is independent of every group's
-    # level (see _keys_tier0_note_count), so the emitted tier-0
-    # count is tracked incrementally -- the per-group sizes are
-    # computed once and each demotion adds its group's size --
-    # instead of rematerializing and re-sorting the whole phrase
-    # after every demotion, which is quadratic in the phrase's
-    # group count on dense passages.
-    emitted = sum(
-        tier0_sizes[i] for i in coverable
-        if phrase_groups[i]["level"] == 0
-    )
-    target = min(
-        math.ceil(
-            sum(len(phrase_groups[i]["notes"]) for i in coverable)
-            / n_levels,
-        ),
-        sum(tier0_sizes.values()),
-    )
-    remaining = [
-        i for i in sorted(
-            coverable,
-            key=lambda i: (
-                phrase_groups[i]["retention_score"],
-                -_beat_value(phrase_groups[i]["time"], beat_times, tempo),
-                i,
-            ),
-        )
-        if i not in chosen and original_levels[i] > 0
-    ]
-    next_candidate = 0
-    while next_candidate < len(remaining) and emitted < target:
-        i = remaining[next_candidate]
-        next_candidate += 1
+    # Part 2, the note-density backstop (#181): see `_keys_tier0_backstop`.
+    demotions.extend(_keys_tier0_backstop(
+        phrase_groups, coverable, chosen, original_levels, beat_times, tempo,
+        top_tier, n_levels,
+    ))
+    for i in demotions:
         phrase_groups[i]["level"] = 0
-        demotions.append(i)
-        emitted += tier0_sizes[i]
 
-    # Anti-collapse guard (see the docstring): a pair already
-    # identical BEFORE the floor is a pre-existing collapse, not
-    # the floor's to fix; a pair the floor made identical gets the
-    # most recently demoted group of the level it lost back --
-    # sacrificing backstop additions before strong-beat skeleton
-    # positions, one restoration per threatened boundary.
-    for k in range(top_tier - 1, -1, -1):
-        if k in pre_floor_pairs:
-            continue
-        if k not in _keys_identical_tier_pairs(phrase_groups, top_tier):
-            continue
-        for i in reversed(demotions):
-            if original_levels[i] == k + 1:
-                phrase_groups[i]["level"] = original_levels[i]
-                demotions.remove(i)
-                break
+    # Anti-collapse guard (see `_keys_tier0_anticollapse`): a pair the floor
+    # made identical is broken by restoring a NON-required demotion; a #180
+    # required group is never restored.
+    _keys_tier0_anticollapse(
+        phrase_groups, demotions, set(required), original_levels, pre_floor_pairs, top_tier,
+    )
 
 
 # ── Public entry point ───────────────────────────────────────────────────────

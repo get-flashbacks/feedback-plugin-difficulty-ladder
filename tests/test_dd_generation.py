@@ -5117,19 +5117,46 @@ def _downbeat_bass_present(level_notes, spb):
     )
 
 
-def test_keys_split_rejects_an_interleaved_onset_the_widest_gap_mislabels():
-    # Right hand on 48+72, left hand on 60+64: the widest gap (48->60) falls
-    # INSIDE the right hand's reach, so the old widest-gap rule pulled 72 into
-    # the left hand and reported an octave-spanning "hand". No genuine seam
-    # exists, so the onset reads as one hand rather than two mislabelled ones.
-    notes = [_midi_note(0.0, m) for m in (48, 60, 64, 72)]
-    lower, upper = scoring._split_keys_hands(notes)
-    assert upper == []  # nosec B101 - pytest assertion
-    assert [scoring._note_midi_keys(n) for n in lower] == [48, 60, 64, 72]  # nosec B101 - unchanged
-    # A genuine two-hand seam still splits, at the same widest gap.
+def test_keys_split_resolves_interleaved_ties_to_the_balanced_seam():
+    # Three equal 12-semitone gaps. The real seam is 36+48 (left hand) against
+    # 72 (right hand), but splitting at the FIRST widest gap pairs 60 with the
+    # right hand -- an octave-spanning "hand". The balanced seam wins.
+    lo, hi = scoring._split_keys_hands([_midi_note(0.0, m) for m in (36, 48, 60, 72)])
+    assert [scoring._note_midi_keys(n) for n in lo] == [36, 48]  # nosec B101 - pytest assertion
+    assert [scoring._note_midi_keys(n) for n in hi] == [60, 72]  # nosec B101 - pytest assertion
+    # A genuine two-hand split whose parts each reach the seam's width is NOT
+    # dropped (an over-strict "part narrower than the seam" rule lost it).
+    lo, hi = scoring._split_keys_hands([_midi_note(0.0, m) for m in (48, 58, 68, 78)])
+    assert [scoring._note_midi_keys(n) for n in lo] == [48, 58]  # nosec B101 - pytest assertion
+    assert [scoring._note_midi_keys(n) for n in hi] == [68, 78]  # nosec B101 - pytest assertion
+    # One hand still does not split; a simple two-hand onset still does.
+    assert scoring._split_keys_hands([_midi_note(0.0, m) for m in (60, 64, 67)])[1] == []  # nosec B101
     lo, hi = scoring._split_keys_hands([_midi_note(0.0, m) for m in (48, 72)])
     assert [scoring._note_midi_keys(n) for n in lo] == [48]  # nosec B101 - pytest assertion
     assert [scoring._note_midi_keys(n) for n in hi] == [72]  # nosec B101 - pytest assertion
+
+
+def test_keys_tier0_anticollapse_never_restores_a_required_group():
+    # Direct policy pin (#180): when the only demotion separating two newly
+    # identical tiers is a required group, the guard leaves it at tier 0 and
+    # lets `_collapse_identical_levels` merge the duplicate tier rather than
+    # undo the guarantee.
+    groups = [
+        {"type": "chord", "notes": [_midi_note(0.0, 60), _midi_note(0.0, 64)],
+         "chord": None, "time": 0.0, "cost": 0.0, "value": 0.0,
+         "retention_score": 0.1, "level": 0, "melody": False,
+         "hand_split": False, "hand": "lower"},
+        {"type": "note", "notes": [_midi_note(1.0, 72)],
+         "chord": None, "time": 1.0, "cost": 0.0, "value": 0.0,
+         "retention_score": 0.9, "level": 0, "melody": True,
+         "hand_split": False, "hand": "upper"},
+    ]
+    original = [0, 1]  # the required group sat at level 1 before demotion
+    scoring._keys_tier0_anticollapse(
+        groups, [1], {1}, original, frozenset(), 2,
+    )
+    assert groups[1]["level"] == 0  # nosec B101 - the requirement survives
+
 
 
 def test_keys_alberti_bass_keeps_the_downbeat_root_in_the_bottom_tier():
@@ -5176,6 +5203,32 @@ def test_keys_per_hand_floor_stops_a_dense_hand_starving_a_sparse_one():
         bottom = [scoring._note_midi_keys(n) for n in p["levels"][0]["notes"]]
         assert any(m < 60 for m in bottom)  # nosec B101 - the sparse hand is represented
         assert any(m >= 60 for m in bottom)  # nosec B101 - the dense hand is still represented
+
+
+def test_keys_per_hand_floor_covers_staggered_hands_without_a_split():
+    # The hands never sound together -- the sparse left hand is offset from the
+    # right-hand run -- so no onset is split. The floor still bands the phrase's
+    # own pitches into two registers and keeps the sparse one at tier 0.
+    spb = 0.5
+    notes = []
+    for bar in range(4):
+        base = bar * 4 * spb
+        for e in range(16):
+            notes.append(_midi_note(base + e * spb / 4, 67 + (e % 3)))
+        for k in (1.5, 3.5):
+            notes.append(_midi_note(round(base + k * spb + 0.0625, 3), 42, 0.5))
+    arr, spb = _voice_texture(notes, 4, spb)
+    groups = scoring._group_notes_keys(arr["notes"], [])
+    assert not any(g.get("hand_split") for g in groups)  # nosec B101 - genuinely staggered
+    phrases = scoring.generate_phrases_for_arrangement(
+        arr, n_levels=4, section_times=[i * 4 * spb for i in range(4)],
+    )
+    assert phrases  # nosec B101 - pytest assertion
+    for p in phrases:
+        bottom = [scoring._note_midi_keys(n) for n in p["levels"][0]["notes"]]
+        assert any(m < 60 for m in bottom)  # nosec B101 - the sparse register is kept
+        assert any(m >= 60 for m in bottom)  # nosec B101 - the dense register is kept
+
 
 
 def test_keys_crossed_hands_keep_both_registers_in_the_low_tiers():

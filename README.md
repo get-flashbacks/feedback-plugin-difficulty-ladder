@@ -358,20 +358,28 @@ contract.
   both on their own and the sparse hand is absent from every reduced tier but
   the top (measured: right-hand sixteenths under a left-hand bass sounding
   only on two off-beats put the left hand at the top tier alone). Tier 0 now
-  keeps one group from each hand that plays a genuine (split) two-hand onset,
-  so one hand's density cannot starve the other. (3) *Crossed / interleaved
-  hands.* `_split_keys_hands` split at the widest internal gap, but on an
-  interleaved onset that gap can fall INSIDE one hand's reach: `[48, 60, 64,
-  72]` (right hand on 48+72, left on 60+64) was split at 48→60, pulling 72
-  into a left hand reported as spanning an octave it never plays. A split is
-  now accepted only when it leaves each part narrower than the seam itself —
-  a hand's own reach is always less than the gap that separates it from the
-  other hand — which is exactly what an interleaved onset lacks; when none
-  qualifies the onset is thinned as one hand rather than carved into two
-  mislabelled halves. Fixtures for Alberti bass, stride, and crossed-hand
-  passages pin tiers 0-2 and nesting in `tests/test_dd_generation.py`. All
-  three parts only relabel levels downwards, so nesting and the #181
-  anti-collapse guard are unaffected.
+  keeps one group from each hand, so one hand's density cannot starve the
+  other. Hands come from the `hand_split` groups when the phrase has any;
+  otherwise from `_keys_phrase_hands`, which bands the phrase's own pitches at
+  the widest gap between consecutive distinct pitches, so hands that are
+  *staggered* (never sounding together, hence never split) are covered too.
+  (3) *Crossed / interleaved hands.* `_split_keys_hands` split at the widest
+  internal gap, but with several equal gaps — the crossed case — the first is
+  not necessarily the seam: `[36, 48, 60, 72]` (left hand 36+48+60, right hand
+  72) split at the first of three equal 12-semitone gaps, pairing 60 with the
+  right hand. Candidate seams are now ranked by widest gap and then by
+  balance (the split whose larger part spans least), so ties resolve to the
+  seam that leaves each hand most compact; among seams that leave both parts
+  within a hand's reach (`_KEYS_HAND_SPAN_SEMITONES`, a 9th) that ranking is
+  applied, and a genuine split is never dropped for being wide — the widest
+  gap is still the fallback. Fixtures for Alberti bass, stride, and
+  crossed-hand passages pin tiers 0-2 and nesting in
+  `tests/test_dd_generation.py`. The bass-root and per-hand *demotions* only
+  relabel levels downwards (and the anti-collapse guard never restores them),
+  so the #181 anti-collapse contract holds; the split change is upstream of
+  tiering — it affects which notes share a group and their hand/melody labels,
+  and therefore scoring — and is covered by the nesting tests plus the
+  unchanged `_split_keys_hands` unit tests.
 - This is a fresh implementation against feedBack's own arrangement wire
   format (`lib/song.py`) — it does not port code from, or share a runtime
   with, the Slopsmith arrangement editor's differently-scoped difficulty
