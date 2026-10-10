@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Documented `difficulty:mastery-updated` event (schema
+  `difficulty_ladder.mastery-updated.v1`) closing #83's remaining acceptance
+  item (#81/M4): each NEW best mastery — `phrase difficulty × hit rate`, rounded
+  to 2 decimals, monotonic and never touched by difficulty writes or the legacy
+  migration — now emits one event from the discrete phrase-commit write with the
+  player_context, `best_mastery` and the `previous_best` it surpassed (null for a
+  first best), so an integration can follow the long-term score without reading
+  the progress store. Emitted only on an actual new best (a weaker session is
+  silent), only from the phrase-commit path (never per-note/per-frame), and
+  dropped silently when the host event bus is absent. Payload/persistence
+  documented in README ("Best mastery"); tested in `tests/screen.test.js`
+  (first best, weaker-session silence, raise-with-previous, invalid/no-context
+  sessions, bus absent). Version 0.31.3 -> 0.31.4.
 - Review-thread follow-ups (test strength): the legacy `window.slopsmithSplitscreen`
   fallback now has its own peer-compat test asserting a panel still registers
   (previously only `window.feedBackSplitscreen` was exercised, so removing the

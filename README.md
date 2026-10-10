@@ -447,6 +447,17 @@ stores under `skill: "overall"`; unscoped legacy data is not claimed by
 concurrent profiles. A legacy record can be claimed by only one player, and its
 claim marker prevents another player sharing that profile from reading it.
 
+**Best mastery** — alongside the remembered difficulty, each song/arrangement
+keeps a long-term best: `difficulty × that phrase's hit rate`, rounded to 2 decimals,
+stored per player/song/arrangement/skill and **monotonic** — a weaker session never
+lowers it, and it is never touched by difficulty writes or the legacy migration. Each
+NEW best emits one `difficulty:mastery-updated` event (schema
+`difficulty_ladder.mastery-updated.v1`) with the player context, the new `best_mastery`
+and the `previous_best` it surpassed (null for a first best), so an integration can
+track the long-term score from the event stream without reading the store. It rides the
+same discrete phrase-commit write as the record — never a per-frame path — and a host
+without the event bus drops it silently.
+
 **Live auto-adjustment**
 - Reads live per-note hit/miss judgments from whichever note-detection scorer
   is active (e.g. the `note_detect` plugin) via `highway.getNoteStateProvider()`
