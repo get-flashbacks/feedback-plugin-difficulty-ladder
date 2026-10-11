@@ -121,8 +121,11 @@ runtime*, distinct from the data cutover marker above.
 
 ## 5. Conflict behaviour when both plugins are installed
 
-**Decision: read-only compatibility mode.** Difficulty Ladder never reads,
-writes, or deletes the *separate Song Mastery plugin's* storage, and registers
+**Decision: read-only compatibility mode.** Difficulty Ladder never writes or
+deletes any of the *separate Song Mastery plugin's* storage, and never reads its
+**score** storage; its only read is the one-time Dynamic Difficulty settings
+import in §6, which reads the bare `song_mastery_dd` settings blob to
+initialize Difficulty Ladder's own namespaced keys. It registers
 its own card action under a distinct id (`difficulty_ladder.mastery_badge`)
 behind the idempotency guard, so it cannot double-register *itself* — it
 cannot suppress the other plugin's badge, so if both render one, disable one in
