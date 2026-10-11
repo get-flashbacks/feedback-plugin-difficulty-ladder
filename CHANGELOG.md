@@ -133,6 +133,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   field; Version 0.30.5 -> 0.30.6.
 
 ### Changed
+- Reduced the cognitive complexity of the eight `screen.js` functions CodeFactor
+  flagged as Complex Methods (#211) by extracting data-driven helpers, with no
+  behavior change: `_coalesce` collapses the nullish-fallback ladders in
+  `normalizePlayerContext`/`_songContextFields`; `_descendNode`/`_descendPath`
+  walk the persistence-tree ladders for `_progressSkillNode`/`_phraseAttemptNode`;
+  `_writeProgressToStore`'s per-field patch checks moved to small predicates;
+  `_commitScoreRatio` split into single-purpose commit-step helpers;
+  `calculateAndEmitSectionDifficulties` moved its section loop and emit into
+  `_computeSectionDifficulties`/`_emitSectionDifficulties`; and `drawHud`'s badge
+  and glass rendering moved to `_drawHudBadge`/`_drawHudGlasses`. Every
+  refactored method now scores well under CodeFactor's reporting threshold; the
+  existing 335 JS tests pass unchanged and one new test pins that the section
+  emit no-ops (rather than throwing) for a highway without `getPhrases`.
+  Version 0.34.0 -> 0.34.1.
 - The standalone difficulty guide is now an **event-driven, accessible DOM
   tier rail** instead of a per-frame canvas glass HUD (#157, item 2 of the
   tier rail in #131, part of #139's overlay work). One cell per visible

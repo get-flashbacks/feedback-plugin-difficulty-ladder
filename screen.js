@@ -424,42 +424,76 @@
         return /^(karaoke|vocal|vocals|singer|harmony)$/i.test(_id(value, ''));
     }
 
+    // _coalesce walks (container, key) pairs and returns the first value that
+    // is neither null nor undefined — the nullish-coalescing fallback ladder,
+    // expressed as data instead of a chain of `??` operators. Zero, '' and
+    // false are defined values and pass through untouched, matching what
+    // `a ?? b ?? c` itself does; only null/undefined are treated as a miss.
+    function _coalesce(pairs) {
+        for (var i = 0; i < pairs.length; i++) {
+            var value = pairs[i][0][pairs[i][1]];
+            if (value !== null && value !== undefined) return value;
+        }
+        return undefined;
+    }
+
     // Persistence helpers always accept a context explicitly. The main-player
     // compatibility adapter supplies one for today's Host; Split Screen and
     // future Host versions provide one per player. No mutable global profile
     // identity is consulted here, which keeps four (or more) simultaneous
     // players isolated even when their song/arrangement happens to match.
+    // Reads a field as a plain object, defaulting to {} when it is absent or
+    // of the wrong shape, so consumers can probe it without a null guard.
+    function _obj(value) { return _plainObject(value) || {}; }
+
     function normalizePlayerContext(raw, defaults) {
-        raw = _plainObject(raw) || {};
-        defaults = _plainObject(defaults) || {};
-        var profile = _plainObject(raw.profile) || {};
-        var song = _plainObject(raw.song) || {};
-        var arrangement = _plainObject(raw.arrangement) || {};
-        var profileId = _id(raw.profile_id ?? raw.profileId ?? profile.id ?? defaults.profile_id);
-        var profileHash = _id(raw.profile_hash ?? raw.profileHash ?? raw.player_hash
-            ?? profile.hash ?? profile.player_hash ?? defaults.profile_hash);
+        raw = _obj(raw);
+        defaults = _obj(defaults);
+        var profile = _obj(raw.profile);
+        var song = _obj(raw.song);
+        var arrangement = _obj(raw.arrangement);
+        var profileId = _id(_coalesce([
+            [raw, 'profile_id'], [raw, 'profileId'], [profile, 'id'], [defaults, 'profile_id'],
+        ]));
+        var profileHash = _id(_coalesce([
+            [raw, 'profile_hash'], [raw, 'profileHash'], [raw, 'player_hash'],
+            [profile, 'hash'], [profile, 'player_hash'], [defaults, 'profile_hash'],
+        ]));
         if (raw.profile_ready === false || raw.profileReady === false || (!profileId && !profileHash)) return null;
 
-        var role = _id(raw.role ?? raw.role_id ?? raw.roleId ?? defaults.role, 'instrumental');
-        var instrument = _id(raw.instrument ?? raw.instrument_id ?? raw.instrumentId
-            ?? defaults.instrument, _isKaraokeRole(role) ? 'voice' : 'legacy-unknown');
+        var role = _id(_coalesce([
+            [raw, 'role'], [raw, 'role_id'], [raw, 'roleId'], [defaults, 'role'],
+        ]), 'instrumental');
+        var instrument = _id(_coalesce([
+            [raw, 'instrument'], [raw, 'instrument_id'], [raw, 'instrumentId'], [defaults, 'instrument'],
+        ]), _isKaraokeRole(role) ? 'voice' : 'legacy-unknown');
         if (_isKaraokeRole(role)) {
             role = 'karaoke';
             instrument = 'voice';
         }
         return {
             schema: PLAYER_CONTEXT_SCHEMA,
-            session_id: _id(raw.session_id ?? raw.sessionId ?? defaults.session_id, _sessionId),
-            player_id: _id(raw.player_id ?? raw.playerId ?? defaults.player_id, 'main'),
+            session_id: _id(_coalesce([
+                [raw, 'session_id'], [raw, 'sessionId'], [defaults, 'session_id'],
+            ]), _sessionId),
+            player_id: _id(_coalesce([
+                [raw, 'player_id'], [raw, 'playerId'], [defaults, 'player_id'],
+            ]), 'main'),
             profile_id: profileId,
             profile_hash: profileHash,
-            song_id: _id(raw.song_id ?? raw.songId ?? raw.filename ?? song.id ?? song.filename
-                ?? defaults.song_id, 'unknown-song'),
-            arrangement_id: _id(raw.arrangement_id ?? raw.arrangementId ?? raw.arrangement_index
-                ?? arrangement.id ?? arrangement.index ?? defaults.arrangement_id, '0'),
+            song_id: _id(_coalesce([
+                [raw, 'song_id'], [raw, 'songId'], [raw, 'filename'],
+                [song, 'id'], [song, 'filename'], [defaults, 'song_id'],
+            ]), 'unknown-song'),
+            arrangement_id: _id(_coalesce([
+                [raw, 'arrangement_id'], [raw, 'arrangementId'], [raw, 'arrangement_index'],
+                [arrangement, 'id'], [arrangement, 'index'], [defaults, 'arrangement_id'],
+            ]), '0'),
             instrument: instrument,
             role: role,
-            skill: _id(raw.skill ?? raw.skill_key ?? raw.skillKey ?? defaults.skill, 'overall'),
+            skill: _id(_coalesce([
+                [raw, 'skill'], [raw, 'skill_key'], [raw, 'skillKey'], [defaults, 'skill'],
+            ]), 'overall'),
             highway: raw.highway || defaults.highway || null,
             compatibility_adapter: raw.compatibility_adapter === true || defaults.compatibility_adapter === true,
         };
@@ -525,6 +559,47 @@
     // immediately and coalesces the actual write behind the shared debounce.
     function saveProgressStore(store) { return _progressStore.save(store); }
 
+    // Descends one branch of a persistence tree: reads `container[host][key]`,
+    // creating `seed()` (which builds the node with its sub-collection ready)
+    // when the slot is empty and `create` is set. `sub` names the child
+    // collection to preserve — either a plain-object key (a string) or
+    // `{ array: key }` for an array child; an existing but malformed node, or a
+    // node whose sub-collection fails the shape check, aborts to null (the
+    // surviving-write semantics the store accessors relied on). When `repair`
+    // is set and `create` is requested, a node whose sub-collection is merely
+    // missing is re-seeded ({} or []) instead of nulling out the whole branch.
+    function _descendNode(container, host, key, create, seed, sub, repair) {
+        var node = container[host][key];
+        if (!node) {
+            if (!create) return null;
+            node = container[host][key] = seed();
+        }
+        var obj = _plainObject(node);
+        if (!obj) return null;
+        if (!sub) return obj;
+        var prop = typeof sub === 'string' ? sub : sub.array;
+        var check = typeof sub === 'string' ? _plainObject : Array.isArray;
+        var child = obj[prop];
+        if (check(child)) return obj;
+        if (!repair || !create) return null;
+        obj[prop] = typeof sub === 'string' ? {} : [];
+        return obj;
+    }
+
+    // Walks a full persistence-tree branch, one level per `steps` entry, and
+    // aborts to null as soon as a level fails — exactly the short-circuit the
+    // store accessors' sequential guards produced. `steps` is data (host/
+    // value/seed/sub per level), so the walker itself carries none of the
+    // per-level branching originally spelled out at each layer.
+    function _descendPath(node, steps, create, repair) {
+        for (var i = 0; i < steps.length; i++) {
+            var step = steps[i];
+            node = _descendNode(node, step.host, _nodeKey(step.value), create, step.seed, step.sub, repair);
+            if (!node) return null;
+        }
+        return node;
+    }
+
     function _progressSkillNode(store, context, create) {
         var ctx = normalizePlayerContext(context);
         if (!ctx) return null;
@@ -535,56 +610,64 @@
         };
         var player = _profilePlayerNode(profile, ctx, create);
         if (!player) return null;
-        var songKey = _nodeKey(ctx.song_id), songNode = player.songs[songKey];
-        if (!songNode && create) songNode = player.songs[songKey] = { song_id: ctx.song_id, arrangements: {} };
-        if (!_plainObject(songNode) || !_plainObject(songNode.arrangements)) return null;
-        var arrangementKey = _nodeKey(ctx.arrangement_id), arrangementNode = songNode.arrangements[arrangementKey];
-        if (!arrangementNode && create) arrangementNode = songNode.arrangements[arrangementKey] = {
-            arrangement_id: ctx.arrangement_id, instruments: {},
-        };
-        if (!_plainObject(arrangementNode) || !_plainObject(arrangementNode.instruments)) return null;
-        var instrumentKey = _nodeKey(ctx.instrument), instrumentNode = arrangementNode.instruments[instrumentKey];
-        if (!instrumentNode && create) instrumentNode = arrangementNode.instruments[instrumentKey] = {
-            instrument: ctx.instrument, roles: {},
-        };
-        if (!_plainObject(instrumentNode) || !_plainObject(instrumentNode.roles)) return null;
-        var roleKey = _nodeKey(ctx.role), roleNode = instrumentNode.roles[roleKey];
-        if (!roleNode && create) roleNode = instrumentNode.roles[roleKey] = { role: ctx.role, skills: {} };
-        if (!_plainObject(roleNode) || !_plainObject(roleNode.skills)) return null;
-        var skillKey = _nodeKey(ctx.skill), skillNode = roleNode.skills[skillKey];
-        if (!skillNode && create) skillNode = roleNode.skills[skillKey] = {
-            skill: ctx.skill, currentDifficulty: null, bestMastery: null, updatedAt: null,
-            // Elo (logged only, issue #113): player rating on the node, phrase
-            // ratings keyed by phrase_id in the eloPhrases map.
-            eloPlayer: null, eloPhrases: null, eloUpdatedAt: null,
-        };
-        return _plainObject(skillNode) ? skillNode : null;
+        return _descendPath(player, [
+            { host: 'songs', value: ctx.song_id, seed: function () { return { song_id: ctx.song_id, arrangements: {} }; }, sub: 'arrangements' },
+            { host: 'arrangements', value: ctx.arrangement_id, seed: function () { return { arrangement_id: ctx.arrangement_id, instruments: {} }; }, sub: 'instruments' },
+            { host: 'instruments', value: ctx.instrument, seed: function () { return { instrument: ctx.instrument, roles: {} }; }, sub: 'roles' },
+            { host: 'roles', value: ctx.role, seed: function () { return { role: ctx.role, skills: {} }; }, sub: 'skills' },
+            { host: 'skills', value: ctx.skill, seed: function () {
+                return {
+                    skill: ctx.skill, currentDifficulty: null, bestMastery: null, updatedAt: null,
+                    // Elo (logged only, issue #113): player rating on the node, phrase
+                    // ratings keyed by phrase_id in the eloPhrases map.
+                    eloPlayer: null, eloPhrases: null, eloUpdatedAt: null,
+                };
+            }, sub: null },
+        ], create, false);
+    }
+
+    // Each patch field is applied by its own tiny predicate so the "changed"
+    // bookkeeping and the per-field update conditions stay as small units
+    // instead of a single nested decision wall. Reading a missing field is a
+    // no-op, matching the hasOwnProperty-gated checks they replace.
+    function _applyCurrentDifficulty(node, patch) {
+        if (!Object.prototype.hasOwnProperty.call(patch, 'currentDifficulty')) return false;
+        var difficulty = _pct(patch.currentDifficulty);
+        if (difficulty === null || node.currentDifficulty === difficulty) return false;
+        node.currentDifficulty = difficulty;
+        return true;
+    }
+
+    function _applyBestMastery(node, patch) {
+        if (!Object.prototype.hasOwnProperty.call(patch, 'bestMastery')) return false;
+        var mastery = _pct(patch.bestMastery);
+        if (mastery === null) return false;
+        var previousBest = _pct(node.bestMastery);
+        if (previousBest !== null && mastery <= previousBest) return false;
+        node.bestMastery = mastery;
+        return true;
+    }
+
+    function _applyLegacyUnscoped(node, patch) {
+        if (patch.legacyUnscoped !== true || node.legacyUnscoped === true) return false;
+        node.legacyUnscoped = true;
+        return true;
+    }
+
+    function _applyLegacyClaim(node, patch) {
+        if (!patch.legacy_claim_player_id || node.legacy_claim_player_id === patch.legacy_claim_player_id) return false;
+        node.legacy_claim_player_id = patch.legacy_claim_player_id;
+        return true;
     }
 
     function _writeProgressToStore(store, context, patch) {
         var node = _progressSkillNode(store, context, true);
         if (!node || !_plainObject(patch)) return false;
         var changed = false;
-        if (Object.prototype.hasOwnProperty.call(patch, 'currentDifficulty')) {
-            var difficulty = _pct(patch.currentDifficulty);
-            if (difficulty !== null && node.currentDifficulty !== difficulty) {
-                node.currentDifficulty = difficulty; changed = true;
-            }
-        }
-        if (Object.prototype.hasOwnProperty.call(patch, 'bestMastery')) {
-            var mastery = _pct(patch.bestMastery);
-            var previousBest = _pct(node.bestMastery);
-            if (mastery !== null && (previousBest === null || mastery > previousBest)) {
-                node.bestMastery = mastery; changed = true;
-            }
-        }
-        if (patch.legacyUnscoped === true && node.legacyUnscoped !== true) {
-            node.legacyUnscoped = true; changed = true;
-        }
-        if (patch.legacy_claim_player_id
-            && node.legacy_claim_player_id !== patch.legacy_claim_player_id) {
-            node.legacy_claim_player_id = patch.legacy_claim_player_id; changed = true;
-        }
+        if (_applyCurrentDifficulty(node, patch)) changed = true;
+        if (_applyBestMastery(node, patch)) changed = true;
+        if (_applyLegacyUnscoped(node, patch)) changed = true;
+        if (_applyLegacyClaim(node, patch)) changed = true;
         if (_patchMigratedMastery(node, patch)) changed = true;
         if (changed) node.updatedAt = patch.updatedAt || new Date().toISOString();
         return changed;
@@ -1557,6 +1640,24 @@
             || (fb && fb.playerContexts && typeof fb.playerContexts.getActive === 'function'));
     }
 
+    // The instrument/arrangement class a reported type+role should key the
+    // ladder's per-instrument tiers under. Karaoke wins outright; keys and
+    // guitar strings are recognized from their own vocabularies; anything
+    // else stays as the raw type (or 'legacy-unknown' if that was empty).
+    function _instrumentKindFor(rawType, rawRole) {
+        if (_isKaraokeRole(rawRole) || _isKaraokeRole(rawType)) return 'voice';
+        if (/^(piano|keys|keyboard|synth)$/i.test(rawType)) return 'keys';
+        if (/^(lead|rhythm|combo|chord|humstrum)$/i.test(rawType)) return 'guitar';
+        return rawType || 'legacy-unknown';
+    }
+
+    // The non-instrument placeholder role when a context reports no role and
+    // the instrument type does not classify as one of the guitar strings.
+    function _fallbackRoleFor(rawType) {
+        if (/^(lead|rhythm|bass|combo|chord|humstrum)$/i.test(rawType)) return rawType.toLowerCase();
+        return 'instrumental';
+    }
+
     function _songContextFields(si) {
         si = _plainObject(si) || {};
         var currentSong = _plainObject(window.feedBack && window.feedBack.currentSong) || {};
@@ -1566,21 +1667,22 @@
         // discriminator, not the instrument/arrangement kind. Without this,
         // a currentSong that doesn't duplicate the classifier under
         // instrument/instrument_id/type falls through to 'legacy-unknown'.
-        var rawType = _id(si.instrument_id ?? si.instrument ?? si.arrangement_type ?? si.type
-            ?? currentSong.instrument_id ?? currentSong.instrument ?? currentSong.arrangement_type ?? currentSong.type, '');
-        var rawRole = _id(si.role ?? si.role_id ?? currentSong.role ?? currentSong.role_id, '');
-        var arrangementName = _id(si.arrangement ?? si.arrangement_name
-            ?? currentSong.arrangement ?? currentSong.arrangementName, '');
+        var rawType = _id(_coalesce([
+            [si, 'instrument_id'], [si, 'instrument'], [si, 'arrangement_type'], [si, 'type'],
+            [currentSong, 'instrument_id'], [currentSong, 'instrument'],
+            [currentSong, 'arrangement_type'], [currentSong, 'type'],
+        ]), '');
+        var rawRole = _id(_coalesce([
+            [si, 'role'], [si, 'role_id'], [currentSong, 'role'], [currentSong, 'role_id'],
+        ]), '');
+        var arrangementName = _id(_coalesce([
+            [si, 'arrangement'], [si, 'arrangement_name'],
+            [currentSong, 'arrangement'], [currentSong, 'arrangementName'],
+        ]), '');
         if (!rawRole && _isKaraokeRole(rawType || arrangementName)) rawRole = 'karaoke';
-        if (!rawRole) rawRole = /^(lead|rhythm|bass|combo|chord|humstrum)$/i.test(rawType)
-            ? rawType.toLowerCase() : 'instrumental';
-        var instrument = rawType;
-        if (_isKaraokeRole(rawRole) || _isKaraokeRole(rawType)) instrument = 'voice';
-        else if (/^(piano|keys|keyboard|synth)$/i.test(rawType)) instrument = 'keys';
-        else if (/^(lead|rhythm|combo|chord|humstrum)$/i.test(rawType)) instrument = 'guitar';
-        if (!instrument) instrument = 'legacy-unknown';
-        var arrangementId = si.arrangement_index;
-        if (arrangementId == null) arrangementId = currentSong.arrangementIndex;
+        if (!rawRole) rawRole = _fallbackRoleFor(rawType);
+        var instrument = _instrumentKindFor(rawType, rawRole);
+        var arrangementId = _coalesce([[si, 'arrangement_index'], [currentSong, 'arrangementIndex']]);
         if (arrangementId == null) arrangementId = arrangementName || '0';
         return {
             song_id: currentSong.filename || si.filename || 'unknown-song',
@@ -2040,37 +2142,20 @@
     function _phraseAttemptNode(store, context, create) {
         var ctx = normalizePlayerContext(context || _defaultPersistenceContext());
         if (!ctx) return null;
-        var profileKey = _profileKey(ctx), profile = store.profiles[profileKey];
+        var profileKey = _profileKey(ctx);
+        var profile = store.profiles[profileKey];
         if (!profile && create) profile = store.profiles[profileKey] = {
             profile_id: ctx.profile_id, profile_hash: ctx.profile_hash, players: {},
         };
         var player = _profilePlayerNode(profile, ctx, create);
         if (!player) return null;
-        var songKey = _nodeKey(ctx.song_id), songNode = player.songs[songKey];
-        if (!songNode && create) songNode = player.songs[songKey] = { song_id: ctx.song_id, arrangements: {} };
-        if (!_plainObject(songNode) || (!_plainObject(songNode.arrangements) && !create)) return null;
-        if (!_plainObject(songNode.arrangements)) songNode.arrangements = {};
-        var arrangementKey = _nodeKey(ctx.arrangement_id), arrangementNode = songNode.arrangements[arrangementKey];
-        if (!arrangementNode && create) arrangementNode = songNode.arrangements[arrangementKey] = {
-            arrangement_id: ctx.arrangement_id, instruments: {},
-        };
-        if (!_plainObject(arrangementNode) || (!_plainObject(arrangementNode.instruments) && !create)) return null;
-        if (!_plainObject(arrangementNode.instruments)) arrangementNode.instruments = {};
-        var instrumentKey = _nodeKey(ctx.instrument), instrumentNode = arrangementNode.instruments[instrumentKey];
-        if (!instrumentNode && create) instrumentNode = arrangementNode.instruments[instrumentKey] = {
-            instrument: ctx.instrument, roles: {},
-        };
-        if (!_plainObject(instrumentNode) || (!_plainObject(instrumentNode.roles) && !create)) return null;
-        if (!_plainObject(instrumentNode.roles)) instrumentNode.roles = {};
-        var roleKey = _nodeKey(ctx.role), roleNode = instrumentNode.roles[roleKey];
-        if (!roleNode && create) roleNode = instrumentNode.roles[roleKey] = { role: ctx.role, skills: {} };
-        if (!_plainObject(roleNode) || (!_plainObject(roleNode.skills) && !create)) return null;
-        if (!_plainObject(roleNode.skills)) roleNode.skills = {};
-        var skillKey = _nodeKey(ctx.skill), node = roleNode.skills[skillKey];
-        if (!node && create) node = roleNode.skills[skillKey] = { skill: ctx.skill, attempts: [] };
-        if (!_plainObject(node) || (!Array.isArray(node.attempts) && !create)) return null;
-        if (!Array.isArray(node.attempts)) node.attempts = [];
-        return node;
+        return _descendPath(player, [
+            { host: 'songs', value: ctx.song_id, seed: function () { return { song_id: ctx.song_id, arrangements: {} }; }, sub: 'arrangements' },
+            { host: 'arrangements', value: ctx.arrangement_id, seed: function () { return { arrangement_id: ctx.arrangement_id, instruments: {} }; }, sub: 'instruments' },
+            { host: 'instruments', value: ctx.instrument, seed: function () { return { instrument: ctx.instrument, roles: {} }; }, sub: 'roles' },
+            { host: 'roles', value: ctx.role, seed: function () { return { role: ctx.role, skills: {} }; }, sub: 'skills' },
+            { host: 'skills', value: ctx.skill, seed: function () { return { skill: ctx.skill, attempts: [] }; }, sub: { array: 'attempts' } },
+        ], create, true);
     }
 
     function _legacyUnscopedPhraseAttempts(store, context) {
@@ -2528,82 +2613,123 @@
     //     default state directly -- no sync layer, since `_mainScore` IS the
     //     storage `contributeDiagnostics` already reads.
     // Returns nothing; all ramp progress lands in `state`.
-    function _commitScoreRatio(state, completed, hw, hooks) {
-        // A ledger snapshot carries the completed phrase's ledger (the state
-        // has already reset for the incoming phrase); a bare ratio reads the
-        // ledger off the state, as before. Either way the attempt record and
-        // the EMA observe the SAME completed phrase.
-        var snapshot = completed !== null && typeof completed === 'object' ? completed : null;
-        var ratio = snapshot ? snapshot.ratio : completed;
-        // Attempt scope stays a caller property, not the machine's: split
-        // records only when the panel has a context (an untagged legacy
-        // panel logs none); main always records one.
+    // A committed ring match can carry its own ledger with it; a bare ratio
+    // carries none. `_ratioOf` picks the effective ratio for the attempt,
+    // and `_ledgerSnapshot` the ledger to observe (if any) for the attempt.
+    function _ledgerSnapshot(completed) {
+        return completed !== null && typeof completed === 'object' ? completed : null;
+    }
+
+    function _ratioOf(completed) {
+        var snapshot = _ledgerSnapshot(completed);
+        return snapshot ? snapshot.ratio : completed;
+    }
+
+    // Attempt scope is a caller property, not the machine's (see call site
+    // note): the snapshot wins when present, else the hooks' stateForAttempt,
+    // else the shared state; split records only when the panel has a context.
+    function _recordAttempt(state, completed, ratio, hw, hooks) {
+        var snapshot = _ledgerSnapshot(completed);
         var attemptState = snapshot || (hooks.stateForAttempt === undefined ? state : hooks.stateForAttempt);
         var attemptContext = hooks.contextForAttempt;
         if (hooks.recordAttempt === undefined ? !!attemptContext : hooks.recordAttempt) {
             recordPhraseAttempt(ratio, attemptContext, attemptState, hooks.highwayForAttempt || hw);
         }
-        _updateBestMastery(hooks.contextForAttempt, hw, ratio);
+    }
+
+    function _emaStep(current, ratio) {
+        if (current == null) return ratio;
         var alpha = emaAlpha();
-        state.emaHitRate = (state.emaHitRate == null)
-            ? ratio : (alpha * ratio + (1 - alpha) * state.emaHitRate);
-        // Counts every phrase actually played this song, regardless of
-        // autoAdjust -- a warm-up satisfied while paused should still count
-        // once the user flips auto-adjust back on, rather than resetting.
-        state.phrasesScored++;
+        return alpha * ratio + (1 - alpha) * current;
+    }
+
+    function _recordStreak(state, ratio, hw, hooks) {
         if (hooks.recordStreak) {
             updateMasteryStreak(ratio, hw && typeof hw.getMastery === 'function'
                 ? Math.round(hw.getMastery() * 100) : null);
         }
-        if (!settings.autoAdjust || state.manualOverride || !hw || typeof hw.getMastery !== 'function') {
-            state.downStreak = 0;
-            state.rampProgress = 0;
-            // Main has no `manualOverride` gate (its field stays false), so
-            // `state.manualOverride` here is split-only -- but clearing the
-            // ramp counters on this path is shared: main did exactly this on
-            // its own early returns. Main additionally clears `rampDirection`
-            // on early returns; split never had a `rampDirection` clear here
-            // (it returns with the field untouched). That asymmetry is
-            // preserved below via `hooks.clearRampDirectionOnEarlyReturn`.
-            if (hooks.clearRampDirectionOnEarlyReturn) state.rampDirection = null;
-            if (hooks.afterCommit) hooks.afterCommit(state);
+    }
+
+    function _canAutoAdjust(state, hw) {
+        return settings.autoAdjust && !state.manualOverride && hw && typeof hw.getMastery === 'function';
+    }
+
+    // The early-return stand-down: clear the shared ramp counters, and the
+    // rampDirection field only for main (split preserves it, per the hooks
+    // asymmetry described above).
+    function _standDown(state, hooks) {
+        state.downStreak = 0;
+        state.rampProgress = 0;
+        if (hooks.clearRampDirectionOnEarlyReturn) state.rampDirection = null;
+    }
+
+    // Full reset of the ramp bookkeeping; `withDown` also clears the down
+    // streak (manual-override resets it, the ramp early-returns do not).
+    function _resetRamp(state, withDown) {
+        state.rampDirection = null;
+        state.rampProgress = 0;
+        if (withDown) state.downStreak = 0;
+    }
+
+    function _afterCommit(hooks, state) {
+        if (hooks.afterCommit) hooks.afterCommit(state);
+    }
+
+    // Originless mastery drift is treated conservatively as a manual override.
+    function _manualDrift(state, curPct) {
+        return state.lastObservedMasteryPct != null && curPct !== state.lastObservedMasteryPct;
+    }
+
+    function _streakFor(state, direction) {
+        return direction === 'down' && settings.dropResistance ? state.downStreak + 1 : 0;
+    }
+
+    // A down move needs `dropResistance` on and a confirm-streak before the
+    // slider is allowed to follow it.
+    function _downConfirm(state, direction) {
+        return direction === 'down' && settings.dropResistance && state.downStreak < DOWN_CONFIRM_PHRASES;
+    }
+
+    function _commitScoreRatio(state, completed, hw, hooks) {
+        var ratio = _ratioOf(completed);
+        _recordAttempt(state, completed, ratio, hw, hooks);
+        _updateBestMastery(hooks.contextForAttempt, hw, ratio);
+        state.emaHitRate = _emaStep(state.emaHitRate, ratio);
+        // Counts every phrase actually played this song, regardless of
+        // autoAdjust -- a warm-up satisfied while paused should still count
+        // once the user flips auto-adjust back on, rather than resetting.
+        state.phrasesScored++;
+        _recordStreak(state, ratio, hw, hooks);
+        if (!_canAutoAdjust(state, hw)) {
+            _standDown(state, hooks);
+            _afterCommit(hooks, state);
             return;
         }
         // Cold-start guard: don't let a single nervous/rusty first section on
         // a fresh song swing the slider before there's enough signal.
         if (state.phrasesScored < WARMUP_PHRASES) {
-            if (hooks.afterCommit) hooks.afterCommit(state);
+            _afterCommit(hooks, state);
             return;
         }
-
         var curPct = Math.round(hw.getMastery() * 100);
-        // The compatibility API cannot identify who originated a mastery
-        // change. Treat originless drift conservatively as a possible manual
-        // override and stand down; this is a safety heuristic, not proof that
-        // a person moved the slider.
-        if (state.lastObservedMasteryPct != null && curPct !== state.lastObservedMasteryPct) {
-            state.rampDirection = null;
-            state.rampProgress = 0;
-            state.downStreak = 0;
+        if (_manualDrift(state, curPct)) {
+            _resetRamp(state, true);
             hooks.onManualOverride(state, curPct);
-            if (hooks.afterCommit) hooks.afterCommit(state);
+            _afterCommit(hooks, state);
             return;
         }
-
         var th = thresholds();
         var direction = rampDirection(state.emaHitRate, th);
-        state.downStreak = direction === 'down' && settings.dropResistance ? state.downStreak + 1 : 0;
+        state.downStreak = _streakFor(state, direction);
         if (direction == null) {
-            state.rampDirection = null;
-            state.rampProgress = 0;
-            if (hooks.afterCommit) hooks.afterCommit(state);
+            _resetRamp(state, false);
+            _afterCommit(hooks, state);
             return;
         }
         state.lastObservedMasteryPct = curPct;
-        if (direction === 'down' && settings.dropResistance && state.downStreak < DOWN_CONFIRM_PHRASES) {
-            state.rampDirection = null;
-            state.rampProgress = 0;
-            if (hooks.afterCommit) hooks.afterCommit(state);
+        if (_downConfirm(state, direction)) {
+            _resetRamp(state, false);
+            _afterCommit(hooks, state);
             return;
         }
         if (state.rampDirection !== direction) {
@@ -2613,9 +2739,8 @@
         var step = rampStep(th, state.rampProgress, direction);
         var next = direction === 'up' ? curPct + step : curPct - step;
         next = Math.max(settings.minMastery, Math.min(settings.maxMastery, next));
-
         if (hooks.applyStep) hooks.applyStep(state, hw, curPct, step, direction, next);
-        if (hooks.afterCommit) hooks.afterCommit(state);
+        _afterCommit(hooks, state);
     }
 
     // Main-player hooks for the shared commit step: the default state's
@@ -2721,16 +2846,111 @@
         });
     }
 
+    // Resolves the context/highway a section computation runs against:
+    // explicit callers win, else the floor's live context, else the highway.
+    function _commitContext(explicitContext, explicitHighway) {
+        var context = normalizePlayerContext(explicitContext || _mainPlayerContext);
+        return {
+            context: context,
+            hw: explicitHighway || (context && context.highway) || (!context ? window.highway : null),
+        };
+    }
+
+    function _sectionDepsReady(hw, fb) {
+        return hw && typeof hw.getSections === 'function' && typeof hw.getPhrases === 'function'
+            && fb && typeof fb.emit === 'function';
+    }
+
+    function _sectionsLoaded(sections, phrases) {
+        return sections && sections.length > 0 && phrases && phrases.length > 0;
+    }
+
+    function _maxPhraseDifficulty(phrases) {
+        var maxDiff = 1;
+        phrases.forEach(function (phrase) {
+            maxDiff = Math.max(maxDiff, _phraseTopDifficulty(phrase));
+        });
+        return maxDiff;
+    }
+
+    // Aggregates one section's overlapping phrases into the discrete fill/
+    // glass-size data both the sectionmap and the HUD tiers key off (issue
+    // #63): maxSectionDifficulty === 0 flips to the full-chart content probe
+    // so an empty section reads 0% while a bottom-tier-complete section reads
+    // 100%, exactly as drawHud renders its per-phrase glasses.
+    function _sectionDifficultyData(hw, mastery, nextSectionTime, maxDiff, section, hardestPhrase, inRange) {
+        var avg = inRange.reduce(function (a, b) { return a + b; }, 0) / inRange.length;
+        var maxSectionDifficulty = Math.max.apply(Math, inRange);
+        var fillPercentage;
+        if (maxSectionDifficulty > 0) {
+            fillPercentage = _tierFillFrac(mastery, Number(hardestPhrase.max_difficulty),
+                maxSectionDifficulty).fillFrac * 100;
+        } else {
+            fillPercentage = _chartHasContentIn(hw, section.time, nextSectionTime) ? 100 : 0;
+        }
+        var glassSize = 'medium';
+        if (maxSectionDifficulty < maxDiff * 0.33) glassSize = 'small';
+        else if (maxSectionDifficulty > maxDiff * 0.66) glassSize = 'large';
+        return {
+            fillPercentage: fillPercentage,
+            glassSize: glassSize,
+            avgDifficulty: avg,
+            maxDifficulty: maxSectionDifficulty,
+        };
+    }
+
+    function _computeSectionDifficulties(sections, phrases, hw, mastery, maxDiff) {
+        var sectionDifficulties = {};
+        for (var si = 0; si < sections.length; si++) {
+            var section = sections[si];
+            var nextSectionTime = si < sections.length - 1 ? sections[si + 1].time : Infinity;
+            var inRange = [];
+            var hardestPhrase = null;
+            for (var pi = 0; pi < phrases.length; pi++) {
+                var phrase = phrases[pi];
+                if (phrase.end_time > section.time && phrase.start_time < nextSectionTime) {
+                    inRange.push(_phraseTopDifficulty(phrase));
+                    if (!hardestPhrase || _phraseTopDifficulty(phrase) > _phraseTopDifficulty(hardestPhrase)) hardestPhrase = phrase;
+                }
+            }
+            if (inRange.length > 0) {
+                sectionDifficulties[si] = _sectionDifficultyData(
+                    hw, mastery, nextSectionTime, maxDiff, section, hardestPhrase, inRange);
+            }
+        }
+        return sectionDifficulties;
+    }
+
+    // Both the render-bound v2 payload and the render-neutral v3 payload
+    // (issue #156) ride this same sections/phrases pass, so the twin costs one
+    // extra payload build per emit -- no extra cadence, no per-note scanning
+    // beyond the content probe above. v3's extra highway reads (getTime(),
+    // getSongInfo()) are for its is_current / current_phrase_index / joinable
+    // phrase id fields, and it reports null mastery for a highway that reports
+    // none at all.
+    function _emitSectionDifficulties(fb, context, sections, phrases, hw, reportsMastery, mastery, maxDiff, sectionDifficulties) {
+        var playerContextPayload = _contextEventPayload(context);
+        fb.emit(SECTIONS_EVENT_V2, {
+            schema: SECTIONS_SCHEMA_V2,
+            player_context: playerContextPayload,
+            sectionDifficulties: sectionDifficulties,
+            mastery: mastery,
+            maxDifficulty: maxDiff,
+        });
+        fb.emit(SECTIONS_EVENT_V3,
+            _sectionsV3Payload(sections, phrases, hw,
+                reportsMastery ? mastery : null, playerContextPayload));
+    }
+
     // Calculate and emit section difficulty data for other plugins (e.g., sectionmap)
     function calculateAndEmitSectionDifficulties(explicitContext, explicitHighway) {
-        var context = normalizePlayerContext(explicitContext || _mainPlayerContext);
-        var hw = explicitHighway || (context && context.highway)
-            || (!context ? window.highway : null);
+        var pair = _commitContext(explicitContext, explicitHighway);
+        var context = pair.context;
+        var hw = pair.hw;
         var fb = window.feedBack;
 
         // Early exit if dependencies aren't available
-        if (!hw || typeof hw.getSections !== 'function' || !fb || typeof fb.emit !== 'function') return;
-        if (typeof hw.getPhrases !== 'function' || !hw.getPhrases()) return;
+        if (!_sectionDepsReady(hw, fb)) return;
 
         var sections = hw.getSections();
         var phrases = hw.getPhrases();
@@ -2741,96 +2961,15 @@
         // fallback would read as a real measurement — the same verdict
         // _presentedDifficultyLevel() reaches for the HUD.
         var mastery = reportsMastery ? hw.getMastery() : 0.5;
+        if (!_sectionsLoaded(sections, phrases)) return;
 
-        if (!sections || sections.length === 0 || !phrases || phrases.length === 0) return;
-
-        // Calculate max difficulty across all phrases
-        var maxDiff = 1;
-        phrases.forEach(function (phrase) {
-            maxDiff = Math.max(maxDiff, _phraseTopDifficulty(phrase));
-        });
-
-        // Map sections to difficulty data
-        var sectionDifficulties = {};
-        for (var si = 0; si < sections.length; si++) {
-            var section = sections[si];
-            var nextSectionTime = si < sections.length - 1 ? sections[si + 1].time : Infinity;
-
-            // Find phrases within this section's time range
-            var sectionDifficultiesInRange = [];
-            var hardestPhrase = null;
-            for (var pi = 0; pi < phrases.length; pi++) {
-                var phrase = phrases[pi];
-                // Check if phrase overlaps with section
-                if (phrase.end_time > section.time && phrase.start_time < nextSectionTime) {
-                    var top = _phraseTopDifficulty(phrase);
-                    sectionDifficultiesInRange.push(top);
-                    if (!hardestPhrase || top > _phraseTopDifficulty(hardestPhrase)) hardestPhrase = phrase;
-                }
-            }
-
-            if (sectionDifficultiesInRange.length > 0) {
-                // Use the average difficulty in this section
-                var avgDifficulty = sectionDifficultiesInRange.reduce(function(a, b) { return a + b; }, 0) / sectionDifficultiesInRange.length;
-                var maxSectionDifficulty = Math.max.apply(Math, sectionDifficultiesInRange);
-
-                // Issue #63: same discrete tier formula drawHud() uses for its
-                // own per-phrase glasses, applied to this section's aggregate
-                // (max-of-overlapping-phrases) difficulty -- previously this
-                // used a different, continuous mastery-scaled fraction here,
-                // which could disagree materially with drawHud()'s discrete
-                // tiers for the same mastery/difficulty pair.
-                //
-                // maxSectionDifficulty === 0 means every overlapping phrase
-                // is a single level. That is two different things: an empty/
-                // silent section (no chart content at all) must not show a
-                // misleadingly "fully mastered" glass (0%, review-caught --
-                // Sourcery, PR #79), but a section of easy phrases that are
-                // complete at the bottom tier (generated ladders on the
-                // shared tier scale) is played in full at every slider
-                // position -- 100%, matching drawHud's full glass for the
-                // same phrases. The full chart's own notes tell them apart.
-                var fillPercentage;
-                if (maxSectionDifficulty > 0) {
-                    fillPercentage = _tierFillFrac(mastery, Number(hardestPhrase.max_difficulty),
-                        maxSectionDifficulty).fillFrac * 100;
-                } else {
-                    fillPercentage = _chartHasContentIn(hw, section.time, nextSectionTime) ? 100 : 0;
-                }
-
-                // Determine glass size based on section difficulty
-                var glassSize = 'medium';
-                if (maxSectionDifficulty < maxDiff * 0.33) glassSize = 'small';
-                else if (maxSectionDifficulty > maxDiff * 0.66) glassSize = 'large';
-
-                sectionDifficulties[si] = {
-                    fillPercentage: fillPercentage,
-                    glassSize: glassSize,
-                    avgDifficulty: avgDifficulty,
-                    maxDifficulty: maxSectionDifficulty,
-                };
-            }
-        }
+        // Calculate max difficulty across all phrases, then map each section
+        // to the difficulty data the sectionmap renders.
+        var maxDiff = _maxPhraseDifficulty(phrases);
+        var sectionDifficulties = _computeSectionDifficulties(sections, phrases, hw, mastery, maxDiff);
 
         // Emit event for sectionmap and other interested plugins
-        var playerContextPayload = _contextEventPayload(context);
-        fb.emit(SECTIONS_EVENT_V2, {
-            schema: SECTIONS_SCHEMA_V2,
-            player_context: playerContextPayload,
-            sectionDifficulties: sectionDifficulties,
-            mastery: mastery,
-            maxDifficulty: maxDiff,
-        });
-
-        // The render-neutral v3 payload (issue #156) rides this same call and
-        // the same sections/phrases pass, so it costs one extra payload build
-        // per emit — no extra cadence, no per-note scanning beyond the content
-        // probe above. Its only additional highway reads are getTime() and
-        // getSongInfo(), which the is_current / current_phrase_index and
-        // joinable phrase id fields are for.
-        fb.emit(SECTIONS_EVENT_V3,
-            _sectionsV3Payload(sections, phrases, hw,
-                reportsMastery ? mastery : null, playerContextPayload));
+        _emitSectionDifficulties(fb, context, sections, phrases, hw, reportsMastery, mastery, maxDiff, sectionDifficulties);
     }
 
     // ---- difficulty_ladder.sections.v3 (issue #156) ----------------------
@@ -3742,62 +3881,49 @@
         return !!(player && player.classList.contains('active'));
     }
 
-    function drawHud() {
-        if (!isPlayerActive()) {
-            if (_hudCanvas) _hudCanvas.style.display = 'none';
-            _hudRafHandle = null;
-            return;
-        }
-        _hudRafHandle = requestAnimationFrame(drawHud);
+    function _hudSuppressed(sectionMapOwnsGlasses, ss) {
+        return !settings.showDifficultyGuide || sectionMapOwnsGlasses
+            || (ss && typeof ss.isActive === 'function' && ss.isActive());
+    }
 
-        // Section Map renders the same difficulty glasses in its section bar.
-        // Its idempotency marker is a stable capability signal, so this check
-        // does not query or mutate DOM on the animation path.
-        var sectionMapOwnsGlasses = !!window.__slopsmithSectionMapHooksInstalled;
-        var ss = window.feedBackSplitscreen || window.slopsmithSplitscreen;
-        if (!settings.showDifficultyGuide || sectionMapOwnsGlasses || (ss && typeof ss.isActive === 'function' && ss.isActive())) {
-            if (_hudCanvas) _hudCanvas.style.display = 'none';
-            return;
-        }
-        var hw = window.highway;
-        if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) {
-            if (_hudCanvas) _hudCanvas.style.display = 'none';
-            return;
-        }
-        var canvas = ensureHudCanvas();
-        if (!canvas) return;
+    function _hudHighwayReady(hw) {
+        return hw && typeof hw.hasPhraseData === 'function' && hw.hasPhraseData();
+    }
 
-        var phrases = hw.getPhrases();
-        if (!phrases || phrases.length === 0) { canvas.style.display = 'none'; return; }
-        canvas.style.display = '';
+    function _phrasesReady(phrases) {
+        return phrases && phrases.length > 0;
+    }
 
-        var t = hw.getTime();
-        // Reuse the cached index across frames instead of an O(phrases.length)
-        // findIndex scan every rAF tick — only rescans when the cached phrase
-        // no longer covers `t` (same cursor-caching idea tickScoring already
-        // applies to _curPhraseIdx above).
+    // Reuse the cached index across frames instead of an O(phrases.length)
+    // findIndex scan every rAF tick -- only rescans when the cached phrase no
+    // longer covers `t` (same cursor-caching idea tickScoring already applies
+    // to _curPhraseIdx above). A miss clamps to 0 so the row still renders.
+    function _hudFindPhraseIndex(phrases, t) {
         var curIdx = _hudPhraseIdx;
         if (curIdx < 0 || curIdx >= phrases.length || t < phrases[curIdx].start_time || t >= phrases[curIdx].end_time) {
             curIdx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
         }
         _hudPhraseIdx = curIdx;
-        if (curIdx < 0) curIdx = 0;
+        return curIdx < 0 ? 0 : curIdx;
+    }
 
-        var start = Math.max(0, curIdx - 1);
-        var list = phrases.slice(start, start + LOOKAHEAD);
+    function _hudEnsureMaxDifficulty(phrases) {
         if (_hudMaxDifficulty == null) {
             _hudMaxDifficulty = 1;
             phrases.forEach(function (phrase) {
                 _hudMaxDifficulty = Math.max(_hudMaxDifficulty, _phraseTopDifficulty(phrase));
             });
         }
-        var maxDiff = _hudMaxDifficulty;
-        var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : 0;
+        return _hudMaxDifficulty;
+    }
 
-        var w = Math.max(1, list.length * (GLASS_W + GLASS_GAP) - GLASS_GAP);
-        // Reserve badge space before activation so the glass row does not jump.
-        var h = GLASS_MAX_H + 30;
-        var dpr = window.devicePixelRatio || 1;
+    function _hudMastery(hw) {
+        return typeof hw.getMastery === 'function' ? hw.getMastery() : 0;
+    }
+
+    // Reserve badge space before activation so the glass row does not jump;
+    // the backing store is only resized when the integer size actually moved.
+    function _sizeHudCanvas(canvas, w, h, dpr) {
         var wantW = Math.round(w * dpr), wantH = Math.round(h * dpr);
         if (canvas.width !== wantW || canvas.height !== wantH) {
             canvas.width = wantW;
@@ -3805,34 +3931,34 @@
             canvas.style.width = w + 'px';
             canvas.style.height = h + 'px';
         }
-        var ctx = canvas.getContext('2d');
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, w, h);
+    }
 
-        if (_masteryStreak >= MASTERY_STREAK_PHRASES) {
-            var badgeText = (w >= 90 ? '\u2605 Mastery ' : '\u2605 ') + _masteryStreak;
-            ctx.font = '600 11px system-ui, sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            var measureKey = badgeText + '|' + w;
-            if (_hudBadgeMeasureKey !== measureKey) {
-                _hudBadgeMeasureKey = measureKey;
-                _hudBadgeWidth = Math.min(w, Math.ceil(ctx.measureText(badgeText).width) + 14);
-            }
-            var badgeW = _hudBadgeWidth;
-            var badgeX = (w - badgeW) / 2;
-            ctx.fillStyle = 'rgba(34, 28, 8, 0.9)';
-            ctx.strokeStyle = 'rgba(232, 192, 64, 0.9)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            if (typeof ctx.roundRect === 'function') ctx.roundRect(badgeX, 1, badgeW, 16, 8);
-            else ctx.rect(badgeX, 1, badgeW, 16);
-            ctx.fill();
-            ctx.stroke();
-            ctx.fillStyle = '#f4d35e';
-            ctx.fillText(badgeText, w / 2, 9);
+    function _drawHudBadge(ctx, w) {
+        if (_masteryStreak < MASTERY_STREAK_PHRASES) return;
+        var badgeText = (w >= 90 ? '\u2605 Mastery ' : '\u2605 ') + _masteryStreak;
+        ctx.font = '600 11px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        var measureKey = badgeText + '|' + w;
+        if (_hudBadgeMeasureKey !== measureKey) {
+            _hudBadgeMeasureKey = measureKey;
+            _hudBadgeWidth = Math.min(w, Math.ceil(ctx.measureText(badgeText).width) + 14);
         }
+        var badgeW = _hudBadgeWidth;
+        var badgeX = (w - badgeW) / 2;
+        ctx.fillStyle = 'rgba(34, 28, 8, 0.9)';
+        ctx.strokeStyle = 'rgba(232, 192, 64, 0.9)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (typeof ctx.roundRect === 'function') ctx.roundRect(badgeX, 1, badgeW, 16, 8);
+        else ctx.rect(badgeX, 1, badgeW, 16);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#f4d35e';
+        ctx.fillText(badgeText, w / 2, 9);
+    }
 
+    function _drawHudGlasses(ctx, list, start, curIdx, maxDiff, mastery, h) {
         list.forEach(function (p, i2) {
             var pTop = _phraseTopDifficulty(p);
             var sizeFrac = Math.max(0.3, pTop / maxDiff);
@@ -3857,6 +3983,54 @@
                 ctx.fillRect(x + 1, y + glassH - fillH, GLASS_W - 2, fillH);
             }
         });
+    }
+
+    function drawHud() {
+        if (!isPlayerActive()) {
+            if (_hudCanvas) _hudCanvas.style.display = 'none';
+            _hudRafHandle = null;
+            return;
+        }
+        _hudRafHandle = requestAnimationFrame(drawHud);
+
+        // Section Map renders the same difficulty glasses in its section bar.
+        // Its idempotency marker is a stable capability signal, so this check
+        // does not query or mutate DOM on the animation path.
+        var sectionMapOwnsGlasses = !!window.__slopsmithSectionMapHooksInstalled;
+        var ss = window.feedBackSplitscreen || window.slopsmithSplitscreen;
+        if (_hudSuppressed(sectionMapOwnsGlasses, ss)) {
+            if (_hudCanvas) _hudCanvas.style.display = 'none';
+            return;
+        }
+        var hw = window.highway;
+        if (!_hudHighwayReady(hw)) {
+            if (_hudCanvas) _hudCanvas.style.display = 'none';
+            return;
+        }
+        var canvas = ensureHudCanvas();
+        if (!canvas) return;
+
+        var phrases = hw.getPhrases();
+        if (!_phrasesReady(phrases)) { canvas.style.display = 'none'; return; }
+        canvas.style.display = '';
+
+        var t = hw.getTime();
+        var curIdx = _hudFindPhraseIndex(phrases, t);
+        var start = Math.max(0, curIdx - 1);
+        var list = phrases.slice(start, start + LOOKAHEAD);
+        var maxDiff = _hudEnsureMaxDifficulty(phrases);
+        var mastery = _hudMastery(hw);
+
+        var w = Math.max(1, list.length * (GLASS_W + GLASS_GAP) - GLASS_GAP);
+        var h = GLASS_MAX_H + 30;
+        var dpr = window.devicePixelRatio || 1;
+        _sizeHudCanvas(canvas, w, h, dpr);
+        var ctx = canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+
+        _drawHudBadge(ctx, w);
+        _drawHudGlasses(ctx, list, start, curIdx, maxDiff, mastery, h);
     }
 
     // ---- Tier rail (#157): the standalone guide, event-driven + accessible ----

@@ -216,6 +216,21 @@ test('calculateAndEmitSectionDifficulties sizes and fills sections by the tier e
     assert.equal(solo.glassSize, 'large');
 });
 
+test('calculateAndEmitSectionDifficulties no-ops for a highway that exposes getSections but not getPhrases', () => {
+    const mod = freshPlugin();
+    // A Host that has not shipped the phrase API must not throw: the section
+    // emit feature-detects getPhrases the same way it does every other getter.
+    global.window.highway = {
+        getSections: () => [{ time: 0, name: 'Verse' }],
+        getMastery: () => 0.5,
+    };
+    const events = collectEmits();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    assert.equal(events.length, 0, 'no section event is emitted for a highway without getPhrases');
+});
+
 function stubHighwayForSectionDifficulty({ sections, phrases, mastery, notes, chords, time, songInfo }) {
     return {
         getSections: () => sections,
