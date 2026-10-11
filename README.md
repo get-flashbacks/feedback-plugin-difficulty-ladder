@@ -768,13 +768,22 @@ Finding 1's "sensitivity 1 is closest" ranking rests on this least-settled
 row; take it as directional, not as precise as the table formatting
 implies.
 
+**Adaptive research scaffold (#55, parent #31):**
+[`ADAPTIVE_SIMULATION.md`](ADAPTIVE_SIMULATION.md) documents the seeded dynamic-player/item
+simulation, EMA baseline measurements and estimator replay contract. Run
+`node tools/adaptive_simulation.js` for summary JSON or
+`node tools/adaptive_simulation.js --trace=fatigue --seed=1000` for an auditable synthetic trace.
+This complements the constant-skill settle-point study; candidate ranking and real-player
+validation remain open. It does not change the live controller.
+
 **Not done here:** no setting has been retuned as a result of these
 numbers (e.g. weighting the EMA by note count, or adjusting strict's step
 size/dead band) — that's a separate decision pending review of the data
 above, not something this measurement does on its own authority. The
 Reaction-speed half of C2's table, the broader comparison against
-Elo/Glicko, Kalman, and IRT estimators, and the synthetic
-learner/plateau/fatigue player scenarios all remain open under #55.
+Elo/Glicko, Kalman, and IRT estimators remain open under #55.
+The dynamic synthetic-player/item scaffold is now documented in
+`ADAPTIVE_SIMULATION.md`; it supplies EMA baseline traces, not a candidate ranking.
 
 All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 
