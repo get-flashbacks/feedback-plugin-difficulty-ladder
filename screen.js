@@ -2954,6 +2954,11 @@
 
         var sections = hw.getSections();
         var phrases = hw.getPhrases();
+        // Bail before touching getMastery(): an unloaded highway has no section
+        // or phrase data to report, and getMastery() can throw while the chart
+        // is still loading.
+        if (!_sectionsLoaded(sections, phrases)) return;
+
         var reportsMastery = typeof hw.getMastery === 'function';
         // 0.5 is v2's long-standing stand-in for a highway that reports no
         // mastery at all; it is kept for v2 alone below so that frozen payload
@@ -2961,7 +2966,6 @@
         // fallback would read as a real measurement — the same verdict
         // _presentedDifficultyLevel() reaches for the HUD.
         var mastery = reportsMastery ? hw.getMastery() : 0.5;
-        if (!_sectionsLoaded(sections, phrases)) return;
 
         // Calculate max difficulty across all phrases, then map each section
         // to the difficulty data the sectionmap renders.
