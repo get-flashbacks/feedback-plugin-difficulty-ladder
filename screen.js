@@ -1590,6 +1590,11 @@
         // #216: optional first-play difficulty (percent) for an arrangement with
         // no saved current difficulty. `null` (unset) preserves prior behavior.
         startDifficulty: lsGet('startDifficulty', null),
+        // #217: optional per-play movement limits (percentage points from the
+        // play's starting difficulty). `null` (unset) = unlimited, preserving
+        // prior behavior.
+        maxRisePct: lsGet('maxRisePct', null),
+        maxFallPct: lsGet('maxFallPct', null),
     };
 
     // Issue #64: minMastery/maxMastery are read and written independently
@@ -1628,6 +1633,40 @@
         var n = Number(raw);
         if (!isFinite(n)) return null;
         return Math.max(0, Math.min(100, Math.round(n)));
+    }
+
+    // Issue #217: a movement limit (max rise / max fall from the play's starting
+    // difficulty), in percentage points. `null` = unlimited. Same normalization
+    // discipline as _startDifficultyPct: garbage is unset, finite values clamp
+    // to 0..100.
+    function _pctLimit(raw) {
+        if (raw === null || raw === undefined || raw === '') return null;
+        var n = Number(raw);
+        if (!isFinite(n)) return null;
+        return Math.max(0, Math.min(100, Math.round(n)));
+    }
+
+    // Issue #217: the interval a per-play movement limit allows this phrase,
+    // intersected with the absolute Min/Max bounds. The reference is the
+    // difficulty the play started at (`state.playStartPct`, captured at the
+    // play's first finalized phrase); because movement is always clamped
+    // against that fixed reference and never accumulated, going down and back up
+    // does not consume a budget. An unset limit leaves the corresponding
+    // absolute bound in place, so the default output is byte-identical.
+    function _playMoveBounds(state, curPct) {
+        var lo = settings.minMastery;
+        var hi = settings.maxMastery;
+        var start = (state && typeof state.playStartPct === 'number' && isFinite(state.playStartPct))
+            ? state.playStartPct : curPct;
+        var rise = _pctLimit(settings.maxRisePct);
+        var fall = _pctLimit(settings.maxFallPct);
+        if (rise !== null) hi = Math.min(hi, start + rise);
+        if (fall !== null) lo = Math.max(lo, start - fall);
+        // A saved start outside the current bounds (the user narrowed Min/Max
+        // after setting it) can invert the interval; collapse to the bound so
+        // the slider is allowed back inside rather than frozen above the max.
+        if (lo > hi) lo = hi;
+        return { lo: lo, hi: hi };
     }
 
     function thresholds() {
@@ -2003,6 +2042,7 @@
         lastObservedMasteryPct: null,
         lastAutoAction: null,
         lastElo: null,
+        playStartPct: null,
         rampDirection: null,
         rampProgress: 0,
         downStreak: 0,
@@ -2780,7 +2820,15 @@
         }
         var step = rampStep(th, state.rampProgress, direction);
         var next = direction === 'up' ? curPct + step : curPct - step;
-        next = Math.max(settings.minMastery, Math.min(settings.maxMastery, next));
+        // #217: capture the play's starting difficulty at its first eligible
+        // phrase (the ramp cannot have moved before WARMUP_PHRASES, so this is
+        // the play's start), then clamp the proposed step to the intersection of
+        // the optional per-play movement limits and the absolute bounds. The
+        // reference is fixed for the play, so movement is positional and going
+        // down then back up never spends a budget.
+        if (state.playStartPct == null) state.playStartPct = curPct;
+        var move = _playMoveBounds(state, curPct);
+        next = Math.max(move.lo, Math.min(move.hi, next));
         if (hooks.applyStep) hooks.applyStep(state, hw, curPct, step, direction, next);
         _afterCommit(hooks, state);
     }
@@ -2874,6 +2922,9 @@
             show_difficulty_guide: settings.showDifficultyGuide,
             // #216: optional first-play starting difficulty (null = unset).
             start_difficulty: _startDifficultyPct(),
+            // #217: optional per-play movement limits (null = unlimited).
+            max_rise_pct: _pctLimit(settings.maxRisePct),
+            max_fall_pct: _pctLimit(settings.maxFallPct),
             phrase_attempt_log: {
                 storage_key: PHRASE_ATTEMPTS_V2_LS_KEY,
                 schema: 'difficulty_ladder.phrase_attempt.v2',
@@ -3350,6 +3401,10 @@
         // the next song's first diagnostics payload (the diagnostic is emitted
         // right after this reset on song:ready).
         _mainScore.lastElo = null;
+        // #217: the per-play movement-limit reference is per play, so a new
+        // song/arrangement starts fresh (seek/loop within a play do not reset
+        // the state and so keep their allowance).
+        _mainScore.playStartPct = null;
         _mainScore.rampDirection = null;
         _mainScore.rampProgress = 0;
         _mainScore.downStreak = 0;
@@ -3681,6 +3736,8 @@
         // Same #113 field on both initializers: cleared on every reset so a
         // reused panel state can't carry a prior song's observation forward.
         state.lastElo = null;
+        // #217: per-play movement-limit reference, reset with the play.
+        state.playStartPct = null;
         state.rampDirection = null;
         state.rampProgress = 0;
         state.downStreak = 0;
@@ -4794,6 +4851,10 @@
         // Changing it never affects the current song — it only seeds future
         // first plays — so no re-apply here.
         if (has('startDifficulty')) settings.startDifficulty = _startDifficultyPct();
+        // #217: normalize the per-play movement limits the same way (null =
+        // unlimited). Applies to the next play's clamp, not the current one.
+        if (has('maxRisePct')) settings.maxRisePct = _pctLimit(settings.maxRisePct);
+        if (has('maxFallPct')) settings.maxFallPct = _pctLimit(settings.maxFallPct);
         // #157: any setting can change the guide's visibility or tiers.
         _syncDifficultyRail();
     }
@@ -4886,6 +4947,7 @@
             rampStep, rampDirection, WARMUP_PHRASES, RAMP_PHRASES,
             RESUME_OFFSET_FRACTION,
             _maybeRestoreSongMastery, _resumeStartPct, _startDifficultyPct,
+            _pctLimit, _playMoveBounds,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
             // #183: library-card regenerate action — registration + run handler

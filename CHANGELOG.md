@@ -34,6 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the gate: C5 (#113) must ship and log data first.
 
 ### Added
+- Optional **per-play movement limits** (#217, parent #81): **Max rise / Max
+  fall** percentage-point caps (`settings.html`, blank = unlimited) on how far
+  auto-adjust may move the difficulty from where the current play started. The
+  limits are **positional** — each proposed step is clamped against the play's
+  fixed starting difficulty, so downward-then-upward movement spends no
+  cumulative budget and cap saturation banks no delayed jump. They intersect the
+  absolute Min/Max bounds, apply only at the existing phrase boundaries and only
+  inside the ramp (a manual move still stands auto-adjust down), and never write
+  best mastery or touch the estimator. Unlimited by default, so the controller's
+  output is byte-identical. The reference is the difficulty at the play's first
+  eligible phrase and resets with the scoring state (song/arrangement change);
+  seeking/looping within a play keeps its allowance. `_pctLimit` /
+  `_playMoveBounds` and `state.playStartPct` in `screen.js`; tested in
+  `tests/screen.test.js` (unset no-op, rise cap, fall cap, positional
+  down-then-up, Min/Max intersection, no delayed jump, zero freeze, reference
+  reset, normalization, diagnostics). Version 0.35.0 -> 0.36.0.
 - Optional **starting difficulty for new songs** (#216, parent #81): a percent
   setting (`settings.html`, blank = off) that seeds the first play of an
   arrangement with **no saved current difficulty**. It applies once, only after

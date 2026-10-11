@@ -117,6 +117,25 @@
     </div>
 
     <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
+        <h3 class="text-sm font-medium text-gray-200 mb-2">Per-play movement limits</h3>
+        <p class="text-[11px] text-gray-500 mb-3">Cap how far Adaptive may move the difficulty from where the current play started. Blank = unlimited (existing behavior). Movement is positional — going down and back up does not use up an allowance. Auto-adjust only, and only between phrases.</p>
+        <div class="flex items-center gap-3">
+            <div class="flex-1">
+                <label class="text-[11px] text-gray-500 block mb-1">Max rise (pts)</label>
+                <input type="number" id="dd-max-rise" min="0" max="100" placeholder="∞"
+                       class="w-full bg-dark-800 border-none rounded-lg px-3 py-2 text-xs text-white focus:ring-1 focus:ring-accent/30 outline-none"
+                       onchange="window._ddSetMovementLimit('maxRisePct', this.value)">
+            </div>
+            <div class="flex-1">
+                <label class="text-[11px] text-gray-500 block mb-1">Max fall (pts)</label>
+                <input type="number" id="dd-max-fall" min="0" max="100" placeholder="∞"
+                       class="w-full bg-dark-800 border-none rounded-lg px-3 py-2 text-xs text-white focus:ring-1 focus:ring-accent/30 outline-none"
+                       onchange="window._ddSetMovementLimit('maxFallPct', this.value)">
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
         <div class="flex items-center justify-between mb-2">
             <h3 id="dd-generate-levels-heading" class="text-sm font-medium text-gray-200">Generate ladder depth cap</h3>
             <span id="dd-generate-levels-label" class="text-[11px] text-gray-500 font-mono">4</span>
@@ -204,6 +223,21 @@
             n = Math.max(0, Math.min(100, n));
             if (el) el.value = String(n);
             window._ddSet('startDifficulty', n);
+        };
+
+        // #217: a per-play movement limit. Blank/unparseable = unlimited (null).
+        window._ddSetMovementLimit = function (key, raw) {
+            var el = document.getElementById(key === 'maxRisePct' ? 'dd-max-rise' : 'dd-max-fall');
+            var s = (raw === null || raw === undefined) ? '' : String(raw).trim();
+            var n = s === '' ? NaN : parseInt(s, 10);
+            if (isNaN(n)) {
+                if (el) el.value = '';
+                window._ddSet(key, null);
+                return;
+            }
+            n = Math.max(0, Math.min(100, n));
+            if (el) el.value = String(n);
+            window._ddSet(key, n);
         };
 
         window._ddSet = function (key, val) {
@@ -299,6 +333,14 @@
             if (startEl) {
                 startEl.value = isNaN(startN) ? '' : String(Math.max(0, Math.min(100, startN)));
             }
+
+            // #217: blank when unlimited (null/garbage); otherwise the clamped value.
+            [['maxRisePct', 'dd-max-rise'], ['maxFallPct', 'dd-max-fall']].forEach(function (pair) {
+                var raw = lsGet(pair[0], null);
+                var n = (raw === null || raw === '') ? NaN : parseInt(raw, 10);
+                var el = document.getElementById(pair[1]);
+                if (el) el.value = isNaN(n) ? '' : String(Math.max(0, Math.min(100, n)));
+            });
 
             var glevelsRaw = parseInt(lsGet('generateLevels', 4), 10);
             var glevels = Math.max(2, Math.min(8, isNaN(glevelsRaw) ? 4 : glevelsRaw));
