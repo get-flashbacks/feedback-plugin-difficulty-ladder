@@ -46,7 +46,8 @@ early answers move a rating more than late ones.
 - Meta-parameters **α = 1, β = 0.06** (prior-knowledge model) and **α = 1, β = 0.05** (current-
   knowledge model) were grid-searched on real geography data; the authors stress the exact values
   are not critical — "many different choices … provide very similar results" (Pelánek et al. 2017;
-  Pelánek 2016). Prior student modeling used a constant `K = 0.4` (Antal 2013; Wauters 2012).
+  Pelánek 2016). Earlier student modeling used a constant `K = 0.4` (surveyed in
+  Pelánek 2016).
 - **Math Garden** (Klinkenberg, Straatemeier & van der Maas 2011) runs the largest deployed case:
   3,648 children, >3.5M arithmetic problems, ability *and* item difficulty updated every response.
   It uses a **dynamic K**: default `K = 0.0075`, with weights `K⁺ = 4` / `K− = 0.5` scaled by an
@@ -132,9 +133,11 @@ density** filter). The scaffold already speaks this language (["Skill/item RMSE 
 candidate must state its logit/Elo scaling and identification anchor before reporting these
 values"], plus the per-note Brier and calibration bins).
 
-A 2025 result adds a caution: learning a Kalman filter's **latent state** from outputs alone is
-provably hard (`Ω(T)` regret) — informative measurements (here: the logit transform, and count
-`n`) are what make it tractable. This argues for the logit/binomial route, not raw rates.
+Ye et al. (2026) add a caution: learning a Kalman filter's **latent state** from outputs alone is
+provably hard — they show no algorithm can achieve sublinear regret in the horizon `T` (i.e. the
+regret is `Ω(T)`) — and it becomes tractable only with **informative measurements** (here: the
+logit transform, and the count `n`) via a limited-query scheme. This argues for the logit/binomial
+route, not raw rates.
 
 **Transfer risk.** Low — this is a statistical layer, domain-independent. The only risk is
 mis-specifying the observation model, which the scaffold's metric design already guards against.
@@ -147,7 +150,11 @@ express the deconfounded `ability − difficulty` state the issue asks for.
 **Sources.** Muth (1960) / Kalman (1960); Harvey (1989) *Forecasting, Structural Time Series*;
 "Kalman Foundations of Adaptive Learning" (Ohio State,
 [pdf](https://www.asc.ohio-state.edu/mcculloch.2/papers/KalmanAL.pdf)); statsmodels exponential-
-smoothing-as-state-space ([docs](https://www.statsmodels.org/dev/generated/statsmodels.tsa.statespace.exponential_smoothing.ExponentialSmoothing.html)).
+smoothing-as-state-space ([docs](https://www.statsmodels.org/dev/generated/statsmodels.tsa.statespace.exponential_smoothing.ExponentialSmoothing.html));
+Ye, Zhang, Chi, Du & Hu (2026), "Online Learning of Kalman Filtering: From Output to State
+Estimation", arXiv:2603.27159 ([abs](https://arxiv.org/abs/2603.27159)) — output estimation is
+`log T`-regret, but state estimation admits no sublinear-regret algorithm (the `Ω(T)` bound cited
+above) unless given limited queries to more informative measurements.
 
 ## 4. The item-difficulty confound in adaptive systems
 
@@ -229,8 +236,8 @@ gradient-descent/binary classification and demonstrate it on artificial and biol
 **neural networks**, not on human motor or musical practice. It is the origin of the "~85% target
 accuracy" heuristic, not a validated music-practice constant. Notably a published music-practice
 tool chains these framings while explicitly warning that applying 85% to instrumental practice is
-"an extrapolation, not a direct empirical finding for musicians" (ModusPractica Pro, §"The
-Science").
+"an extrapolation, not a direct empirical finding for musicians" (ModusPractica Pro, "The
+Science", <https://www.parturamusic.com/ModusPractica_Pro/science.html>).
 
 **Motor-sequence evidence that *does* support challenge point.** Wadden et al. 2018
 (*J. Motor Behavior*) used a computer-controlled **learner-adapted** schedule derived from each
@@ -267,10 +274,11 @@ specific adaptive difficulty *algorithm* for performance, and none for the candi
   but a serial RT task.
 - **Deliberate practice in music:** meta-analytic effect of accumulated task-relevant practice on
   musical achievement **r ≈ 0.61** (Frontiers 2014 meta-analysis, 13 studies, N = 788), but the
-  broader Macnamara 2014 meta-analysis puts deliberate practice at only **~24% of music-performance
-  variance** (14% overall), with a published Ericsson rebuttal. **Conclusion:** practice *quality/
-  difficulty* plausibly matters, but the effect size is contested and the field has not produced a
-  validated adaptive-difficulty law for instrumental practice.
+  broader Macnamara et al. 2014 meta-analysis puts deliberate practice at only **21% of music-
+  performance variance** (12% overall) — the 2018 corrigendum revises these to 23% and 14% — with a
+  published Ericsson rebuttal. **Conclusion:** practice *quality/difficulty* plausibly matters, but
+  the effect size is contested and the field has not produced a validated adaptive-difficulty law
+  for instrumental practice.
 
 **Transfer verdict (the issue's explicit ask).** Transfer from **discrete testing items to
 continuous motor performance is unsupported** for the *quantitative* candidates (Elo setpoint,
@@ -282,7 +290,8 @@ music-learning value.
 
 **Sources.** BACh (CHI 2016, [doi](https://doi.org/10.1145/2858036.2858388)); FretFlow (CHI 2026,
 [doi](https://doi.org/10.1145/3772318.3791540)); Frontiers 2014 DP meta-analysis
-([doi](https://doi.org/10.3389/fpsyg.2014.00646)); Macnamara et al. 2014 (DP ~14% overall).
+([doi](https://doi.org/10.3389/fpsyg.2014.00646)); Macnamara et al. 2014 (DP 21% music / 12%
+overall; 2018 corrigendum 23% / 14%, doi:10.1177/0956797618769891).
 
 ## 8. Ranked recommendation for Phase 2
 
@@ -376,6 +385,8 @@ engagement).
 16. Robb & Zhang (2022). Performance-based DDA and player experience in a 2D digital game: a
     controlled experiment. *Acta Ludologica* 5(1):4–22.
 17. Macnamara, Hambrick & Oswald (2014). Deliberate practice and performance: a meta-analysis.
+    *Psychological Science* 25(8):1608–1618. doi:10.1177/0956797614535810 (corrigendum 2018:
+    doi:10.1177/0956797618769891).
 18. Platz et al. (2014). The influence of deliberate practice on musical achievement: a meta-analysis.
     *Frontiers in Psychology* 5:646. doi:10.3389/fpsyg.2014.00646
 19. BACh (2016). Learn piano with BACh. CHI 2016. doi:10.1145/2858036.2858388
