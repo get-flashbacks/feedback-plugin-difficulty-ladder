@@ -188,6 +188,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refactor, no behavior change).
 
 ### Fixed
+- Elo phrase seeding treated a missing `difficulty_cost` as the hardest phrase
+  instead of the neutral one (#209 review follow-up). `Number(null)` and
+  `Number('')` are both `0`, so a host that predates the field — exactly the
+  case documented as seeding at the neutral 0.5 — passed the `!isFinite` guard
+  and seeded at the hardest 0.98. `_eloSeedChance` now returns the neutral 0.5
+  for `null`/`''`/`undefined` before coercing, while a real numeric `0` cost
+  still maps to 0.98. Regression test added.
+  Version 0.34.0 -> 0.34.1.
 - Removed leftover duplication from the scoring-pipeline unification and
   documented the single pipeline (Stage 4-4, #166, part of #139). Factored
   the thrice-repeated abandon-phrase reset (discontinuity step's two branches,
