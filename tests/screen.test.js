@@ -4719,6 +4719,170 @@ test('the first-play seed is isolated per player context', () => {
     assert.equal(mod.readProgress(b).currentDifficulty, 35, 'B gets its own first-play seed');
 });
 
+// ── Per-play movement limits (#217, M4) ────────────────────────────────────
+// Optional caps on how far Adaptive may move the difficulty from where the
+// play started. Unlimited by default.
+
+test('per-play movement limits are off by default and preserve current output', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    assert.equal(mod.settings.maxRisePct, null);
+    assert.equal(mod.settings.maxFallPct, null);
+    const calls = attachHighwayStub(50);
+
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(1.0);
+
+    // Unbounded: a long run of perfect phrases climbs well past any 5-point cap.
+    assert.ok(global.window.highway.getMastery() > 0.55, 'no implicit cap when unset');
+    assert.ok(calls.length > 0);
+});
+
+test('a persisted movement limit loads from storage at construction', () => {
+    const stored = { 'difficulty_ladder.maxRisePct': JSON.stringify(12) };
+    assert.equal(freshPlugin({ stored }).settings.maxRisePct, 12);
+});
+
+test('maxRisePct caps the climb at the play start plus the limit', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 3; // step 20 → reaches the cap fast
+    mod.settings.maxRisePct = 5;
+    const calls = attachHighwayStub(50);
+
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(1.0);
+
+    assert.ok(calls.every(p => p <= 55), `no move above 55: ${calls}`);
+    assert.equal(global.window.highway.getMastery(), 0.55);
+    assert.equal(mod._mainScore().playStartPct, 50);
+});
+
+test('maxFallPct caps the descent at the play start minus the limit', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 3;
+    mod.settings.maxFallPct = 5;
+    const calls = attachHighwayStub(50);
+
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(0.0);
+
+    assert.ok(calls.every(p => p >= 45), `no move below 45: ${calls}`);
+    assert.equal(global.window.highway.getMastery(), 0.45);
+});
+
+test('the limits are positional: a climb to the cap then a fall can still reach the fall cap', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 3;
+    mod.settings.maxRisePct = 10;
+    mod.settings.maxFallPct = 10;
+    attachHighwayStub(50);
+
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(1.0);
+    assert.equal(global.window.highway.getMastery(), 0.6, 'climbs to start + rise');
+
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(0.0);
+    assert.equal(global.window.highway.getMastery(), 0.4,
+        'falls to start - fall, not capped relative to the peak');
+});
+
+test('the movement limits intersect the absolute Min/Max bounds', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 3;
+    mod.settings.minMastery = 45;
+    mod.settings.maxMastery = 55;
+    mod.settings.maxRisePct = 100;
+    mod.settings.maxFallPct = 100;
+    const calls = attachHighwayStub(50);
+
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(1.0);
+    assert.ok(calls.every(p => p <= 55));
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(0.0);
+    assert.ok(calls.every(p => p >= 45));
+    assert.equal(global.window.highway.getMastery(), 0.45);
+});
+
+test('saturating at a movement cap produces no delayed jump', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 3;
+    mod.settings.maxRisePct = 5;
+    const calls = attachHighwayStub(50);
+
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(1.0);
+    assert.equal(global.window.highway.getMastery(), 0.55);
+    const atCap = calls.length;
+
+    // More perfect phrases while already at the cap move nothing — no banked
+    // allowance waiting to fire on the next reset.
+    for (let i = 0; i < 20; i++) mod.commitPhraseResult(1.0);
+    assert.equal(calls.length, atCap, 'no further moves once saturated');
+    assert.equal(global.window.highway.getMastery(), 0.55);
+});
+
+test('a zero movement limit freezes adaptive movement without touching other behavior', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    mod.settings.maxRisePct = 0;
+    mod.settings.maxFallPct = 0;
+    const calls = attachHighwayStub(50);
+
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(1.0);
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(0.0);
+    assert.deepEqual(calls, [], 'both directions frozen at the start');
+    assert.equal(global.window.highway.getMastery(), 0.5);
+});
+
+test('the play reference is fixed for the play and cleared only on a song reset', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    attachHighwayStub(50);
+
+    for (let i = 0; i < mod.WARMUP_PHRASES; i++) mod.commitPhraseResult(1.0);
+    assert.equal(mod._mainScore().playStartPct, 50, 'captured at the first eligible phrase');
+    mod.commitPhraseResult(1.0);
+    assert.equal(mod._mainScore().playStartPct, 50, 'a later phrase keeps the same reference');
+
+    mod.resetPerSongState();
+    assert.equal(mod._mainScore().playStartPct, null, 'a song/arrangement change starts a new play');
+});
+
+test('_pctLimit normalizes garbage to unlimited (null) and clamps numbers', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._pctLimit(null), null);
+    assert.equal(mod._pctLimit(''), null);
+    assert.equal(mod._pctLimit('abc'), null);
+    assert.equal(mod._pctLimit(0), 0);
+    assert.equal(mod._pctLimit(150), 100);
+    assert.equal(mod._pctLimit(-5), 0);
+});
+
+test('_playMoveBounds falls back to the absolute bounds when limits are unset', () => {
+    const mod = freshPlugin();
+    mod.settings.minMastery = 10;
+    mod.settings.maxMastery = 90;
+    mod.settings.maxRisePct = null;
+    mod.settings.maxFallPct = null;
+    assert.deepEqual(mod._playMoveBounds({ playStartPct: 50 }, 50), { lo: 10, hi: 90 });
+});
+
+test('a movement limit setting change clamps a number and unsets garbage', () => {
+    const mod = freshPlugin();
+    global.window.dispatchEvent({
+        type: 'difficulty_ladder:settings-changed',
+        detail: { maxRisePct: '150' },
+    });
+    assert.equal(mod.settings.maxRisePct, 100, 'a settings change clamps and stores the number');
+    global.window.dispatchEvent({
+        type: 'difficulty_ladder:settings-changed',
+        detail: { maxFallPct: 'nope' },
+    });
+    assert.equal(mod.settings.maxFallPct, null, 'garbage becomes unlimited');
+});
+
 test('a record the ramp moved before any restore keeps its own value, not a concession', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
