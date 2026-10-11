@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Documentation
+- Added `ADAPTIVE_DIFFICULTY_LITERATURE.md`, the Phase 1 source-backed review for
+  #54 (parent #31): core claims, per-source confidence and transfer risk for
+  Elo/Glicko online Rasch, IRT/LLTM cold start, the binomial/logit Kalman
+  refinement layer, the item-difficulty confound, the mixed DDA/flow evidence,
+  and the practice-specific challenge-point / desirable-difficulties / 85% framing.
+  Flags that transfer from discrete testing items to continuous instrument
+  practice is unsupported for the quantitative candidates, and hands #55 a ranked
+  candidate list plus the parameter/observation-model checklist (binomial
+  observation, logit scale with an explicit identification anchor, declared
+  setpoint, closed-loop evaluation). Documentation only; changes no runtime behaviour.
 - Added the Phase 2 adaptive-difficulty simulation scaffold (#55, parent #31):
   reproducible changing-skill/item traces, variable note counts, exploration,
   pre-update EMA metrics, seed-level baseline results and an estimator replay seam.
