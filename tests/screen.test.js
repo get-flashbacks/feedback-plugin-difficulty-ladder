@@ -4953,6 +4953,35 @@ test('the import never overrides an explicit Difficulty Ladder preference', () =
     assert.equal(mod.settings.maxFallPct, null, 'nothing else was imported');
 });
 
+test('an explicit stored levelUpOnly:false is respected, not treated as unset', () => {
+    const mod = freshPlugin({ stored: {
+        'song_mastery_dd': JSON.stringify({ allowDecrease: false }),
+        'difficulty_ladder.levelUpOnly': JSON.stringify(false),
+    } });
+    assert.equal(mod.settings.levelUpOnly, false, 'the user deliberately allows decreases');
+    const marker = JSON.parse(global.localStorage.getItem('difficulty_ladder.songMasteryDDImport.v1'));
+    assert.equal(marker.applied.levelUpOnly, undefined);
+});
+
+test('an explicitly blank movement limit is respected, not treated as unset', () => {
+    // A user who cleared Max rise to blank (stored null) means "unlimited".
+    const mod = freshPlugin({ stored: {
+        'song_mastery_dd': JSON.stringify({ maxStepsUp: 2, stepSize: 5 }),
+        'difficulty_ladder.maxRisePct': JSON.stringify(null),
+    } });
+    assert.equal(mod.settings.maxRisePct, null, 'the explicit blank stays unlimited');
+});
+
+test('_lsHasKey distinguishes an absent key from a stored false/null', () => {
+    const mod = freshPlugin({ stored: {
+        'difficulty_ladder.levelUpOnly': JSON.stringify(false),
+        'difficulty_ladder.maxRisePct': JSON.stringify(null),
+    } });
+    assert.equal(mod._lsHasKey('levelUpOnly'), true, 'stored false is present');
+    assert.equal(mod._lsHasKey('maxRisePct'), true, 'stored null is present');
+    assert.equal(mod._lsHasKey('startDifficulty'), false, 'never set is absent');
+});
+
 test('allowDecrease true is never inferred into Level up only', () => {
     const mod = freshPlugin({ stored: {
         'song_mastery_dd': JSON.stringify({ allowDecrease: true, increaseThreshold: 88, decreaseThreshold: 68 }),

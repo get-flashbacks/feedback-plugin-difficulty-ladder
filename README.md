@@ -617,11 +617,12 @@ concurrent-tab clobber), the both-installed conflict decision, and the gated
 removal timeline — is in [`MIGRATION.md`](MIGRATION.md).
 
 The two plugins coexist in **read-only compatibility mode**. On first run,
-Difficulty Ladder **reads** (and never writes) the separate Song Mastery
-plugin's Dynamic Difficulty settings blob (`song_mastery_dd`) for a one-time
-settings import — `allowDecrease:false` → *Level up only*, `defaultDifficulty`
-→ *Starting difficulty for new songs*, and `maxStepsUp`/`maxStepsDown × stepSize`
-→ the per-play movement limits — applied only where Difficulty Ladder has no
+Difficulty Ladder reads the separate Song Mastery plugin's Dynamic Difficulty
+settings blob (`song_mastery_dd`) — never modifying it — and initializes the
+Difficulty Ladder settings it can express exactly, in its own namespaced keys:
+`allowDecrease:false` → *Level up only*, `defaultDifficulty` → *Starting
+difficulty for new songs*, and `maxStepsUp`/`maxStepsDown × stepSize` → the
+per-play movement limits — applied only where Difficulty Ladder has no
 preference of its own (the full mapping table, including the values deliberately
 **not** imported, is in [`MIGRATION.md` §6](MIGRATION.md)). It never reads or
 writes that plugin's **score** storage, and registers its own card action under

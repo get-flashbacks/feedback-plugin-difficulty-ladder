@@ -1691,12 +1691,20 @@
     // has no preference of its own; everything else is documented as
     // unsupported (MIGRATION.md) rather than silently reinterpreted. No second
     // DD loop is created — these are settings, not a controller.
-    function _rawLsGet(key) {
-        try { return localStorage.getItem(key); } catch (_) { return null; }
+    // A prefixed key is "set" iff it is present at all. Used to distinguish an
+    // explicit Difficulty Ladder choice (including a stored `false` or a blank
+    // `null`) from a setting the user has never touched — the value alone can't
+    // (screen.js initializes `levelUpOnly` from `lsGet(..., false) === true`,
+    // so absent and stored-false are indistinguishable by value).
+    function _lsHasKey(key) {
+        try { return localStorage.getItem(`${LS_PREFIX}${key}`) !== null; } catch (_) { return false; }
     }
 
     function _readSongMasteryDDSettings() {
-        var raw = _rawLsGet(SONG_MASTERY_DD_LS_KEY);
+        // The Song Mastery key is un-prefixed, so lsGet (which always adds our
+        // prefix) cannot read it — read it raw, then parse defensively.
+        var raw = null;
+        try { raw = localStorage.getItem(SONG_MASTERY_DD_LS_KEY); } catch (_) { raw = null; }
         if (!raw) return null;
         try {
             var parsed = JSON.parse(raw);
@@ -1720,27 +1728,28 @@
     // attempt happened so a later Song Mastery edit is not re-imported over a
     // Difficulty Ladder choice.
     function _importSongMasteryDDSettings() {
-        if (lsGet('songMasteryDDImport.v1', null)) return null; // already attempted
+        if (_lsHasKey('songMasteryDDImport.v1')) return null; // already attempted
         var sm = _readSongMasteryDDSettings();
         if (!sm) return null; // no Song Mastery DD settings on this device
         var applied = {};
 
-        // allowDecrease:false => Level up only. Only when it is not already set,
-        // and only from the explicit flag — never from thresholds or presets.
-        if (sm.allowDecrease === false && settings.levelUpOnly !== true) {
+        // allowDecrease:false => Level up only. Only when the user has never set
+        // Level up only (presence, not value: a stored `false` is a real
+        // preference), and only from the explicit flag — never from thresholds.
+        if (sm.allowDecrease === false && !_lsHasKey('levelUpOnly')) {
             settings.levelUpOnly = true;
             lsSet('levelUpOnly', true);
             applied.levelUpOnly = true;
         }
         // defaultDifficulty => first-play starting difficulty (#216).
-        if (settings.startDifficulty == null && isFinite(Number(sm.defaultDifficulty))) {
+        if (!_lsHasKey('startDifficulty') && isFinite(Number(sm.defaultDifficulty))) {
             var d = Math.max(0, Math.min(100, Math.round(Number(sm.defaultDifficulty))));
             settings.startDifficulty = d;
             lsSet('startDifficulty', d);
             applied.startDifficulty = d;
         }
         // maxStepsUp/Down × stepSize => per-play point limits (#217).
-        if (settings.maxRisePct == null) {
+        if (!_lsHasKey('maxRisePct')) {
             var rise = _songMasteryStepLimit(sm.maxStepsUp, sm.stepSize);
             if (rise !== null) {
                 settings.maxRisePct = rise;
@@ -1748,7 +1757,7 @@
                 applied.maxRisePct = rise;
             }
         }
-        if (settings.maxFallPct == null) {
+        if (!_lsHasKey('maxFallPct')) {
             var fall = _songMasteryStepLimit(sm.maxStepsDown, sm.stepSize);
             if (fall !== null) {
                 settings.maxFallPct = fall;
@@ -5045,7 +5054,7 @@
             RESUME_OFFSET_FRACTION,
             _maybeRestoreSongMastery, _resumeStartPct, _startDifficultyPct,
             _pctLimit, _playMoveBounds,
-            _importSongMasteryDDSettings, _songMasteryStepLimit, _readSongMasteryDDSettings,
+            _importSongMasteryDDSettings, _songMasteryStepLimit, _readSongMasteryDDSettings, _lsHasKey,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
             // #183: library-card regenerate action — registration + run handler

@@ -49,9 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event subscription or `setMastery` wrapper is created; the phrase-boundary
   controller is unchanged and the manual slider still overrides automatic
   changes. `_importSongMasteryDDSettings` / `_songMasteryStepLimit` /
-  `_readSongMasteryDDSettings` in `screen.js`; mapping table and unsupported-list
+  `_readSongMasteryDDSettings` / `_lsHasKey` in `screen.js`; mapping table and
+  unsupported-list
   in `MIGRATION.md` §6. Tested in `tests/screen.test.js` (no-source no-op, full
-  map, DL-preference precedence, allowDecrease:true not inferred, thresholds-only
+  map, DL-preference precedence incl. an explicit stored `false`/blank `null`
+  respected via key presence, allowDecrease:true not inferred, thresholds-only
   no-op, run-once, malformed/non-object payloads, step-limit translation).
   Version 0.36.0 -> 0.37.0.
 - Optional **per-play movement limits** (#217, parent #81): **Max rise / Max

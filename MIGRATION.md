@@ -151,9 +151,16 @@ the bare `song_mastery_dd` key (its `window._smDD` object). Difficulty Ladder
 imports the subset it can express **exactly**, once, on first run
 (`_importSongMasteryDDSettings`, `screen.js`), and only where Difficulty Ladder
 has **no preference of its own** (the setting is still at its default). The
-attempt is recorded under `difficulty_ladder.songMasteryDDImport.v1` so it never
-re-runs or re-applies over a later Difficulty Ladder choice. The import only
-changes settings — it creates **no second DD loop**.
+attempt is recorded under `difficulty_ladder.songMasteryDDImport.v1` as
+`{ completed: true, applied: { <setting>: <value>, ... } }` — `applied` is an
+audit record of which Difficulty Ladder settings the import initialized (empty
+when nothing mapped); only `completed` is consumed, as the run-once guard. So
+the import never re-runs or re-applies over a later Difficulty Ladder choice.
+The import only changes settings — it creates **no second DD loop**.
+
+"Unset" is decided by **key presence**, not value: an explicit stored
+`levelUpOnly: false` or a blank (`null`) movement limit is a real user choice
+and is respected, exactly as an explicit `true` or numeric value is.
 
 | `song_mastery_dd` key | Difficulty Ladder setting | Rule |
 |---|---|---|
