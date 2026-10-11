@@ -1490,8 +1490,13 @@
         if (!hw || typeof hw.hasPhraseData !== 'function' || !hw.hasPhraseData()) return false;
         var record = readProgress(ctx);
         var saved = record && _pct(record.currentDifficulty);
-        if (saved === null) return false;
         var recordKey = persistenceContextKey(ctx);
+        if (saved === null) {
+            // Issue #216: no saved difficulty for this arrangement — this is a
+            // first play. Apply the optional starting difficulty once, as the
+            // arrangement's baseline.
+            return _applyFirstPlayStart(ctx, hw);
+        }
         var previous = _resumeStarts.get(recordKey);
         var start;
         if (!previous) {
@@ -1526,6 +1531,23 @@
         // and derives the same value from the unchanged store regardless.
         if (applied) _resumeStarts.set(recordKey, { source: saved, start: start });
         return applied;
+    }
+
+    // Issue #216: seed a first play from the optional starting-difficulty
+    // setting, clamped to the current Min/Max bounds. Returns false (leaving the
+    // host's own default in place) when the setting is unset or the value can't
+    // be reached. Deliberately applied WITHOUT `_applyingResumeStart`, so it is
+    // persisted as the arrangement's real baseline — unlike #112's warm-up start,
+    // which is a live-only concession below a peak the player already earned, so
+    // it earns no #112 offset. Persisting also makes this idempotent: a later
+    // song-ready or re-restore reads the value back through the normal restore
+    // path, and the ramp's first move (which re-records `currentDifficulty`)
+    // stops the default from ever overwriting a live adaptive adjustment.
+    function _applyFirstPlayStart(ctx, hw) {
+        var startPct = _startDifficultyPct();
+        if (startPct === null) return false;
+        var clamped = Math.max(settings.minMastery, Math.min(settings.maxMastery, startPct));
+        return _applyDifficultyForContext(ctx, clamped, hw, 'first-play');
     }
 
     // How far below a cold start begins, as a fraction of the ramp step
@@ -1565,6 +1587,9 @@
         minMastery: lsGet('minMastery', 0),     // percent
         maxMastery: lsGet('maxMastery', 100),   // percent
         generateLevels: lsGet('generateLevels', 4), // 2..8 cap — phrase-ladder tier cap sent to /generate
+        // #216: optional first-play difficulty (percent) for an arrangement with
+        // no saved current difficulty. `null` (unset) preserves prior behavior.
+        startDifficulty: lsGet('startDifficulty', null),
     };
 
     // Issue #64: minMastery/maxMastery are read and written independently
@@ -1589,6 +1614,21 @@
         settings.maxMastery = max;
     }
     _normalizeMasteryBounds();
+
+    // Issue #216: the optional starting difficulty applied on a first play of an
+    // arrangement that has no saved current difficulty. `null` (the default —
+    // the setting is unset) is "do nothing", preserving pre-#216 behavior for
+    // every existing user. A non-finite/garbage value is treated as unset
+    // rather than coerced (so a corrupt write can't silently impose a
+    // difficulty); a finite value is clamped to 0..100 and, at application time,
+    // to the current Min/Max bounds — so a later bounds change is honored.
+    function _startDifficultyPct() {
+        var raw = settings.startDifficulty;
+        if (raw === null || raw === undefined || raw === '') return null;
+        var n = Number(raw);
+        if (!isFinite(n)) return null;
+        return Math.max(0, Math.min(100, Math.round(n)));
+    }
 
     function thresholds() {
         var s = Math.max(1, Math.min(3, settings.sensitivity));
@@ -2832,6 +2872,8 @@
             host_reports_phrase_tiers: _hostReportsPhraseTiers(hw),
             auto_adjust_enabled: settings.autoAdjust,
             show_difficulty_guide: settings.showDifficultyGuide,
+            // #216: optional first-play starting difficulty (null = unset).
+            start_difficulty: _startDifficultyPct(),
             phrase_attempt_log: {
                 storage_key: PHRASE_ATTEMPTS_V2_LS_KEY,
                 schema: 'difficulty_ladder.phrase_attempt.v2',
@@ -4748,6 +4790,10 @@
             _mainScore.rampProgress = 0;
         }
         if (has('minMastery') || has('maxMastery')) _normalizeMasteryBounds();
+        // #216: normalize the new setting to null (unset) or an integer 0..100.
+        // Changing it never affects the current song — it only seeds future
+        // first plays — so no re-apply here.
+        if (has('startDifficulty')) settings.startDifficulty = _startDifficultyPct();
         // #157: any setting can change the guide's visibility or tiers.
         _syncDifficultyRail();
     }
@@ -4839,7 +4885,7 @@
             MASTERY_STREAK_PHRASES, MASTERY_STREAK_ACCURACY,
             rampStep, rampDirection, WARMUP_PHRASES, RAMP_PHRASES,
             RESUME_OFFSET_FRACTION,
-            _maybeRestoreSongMastery, _resumeStartPct,
+            _maybeRestoreSongMastery, _resumeStartPct, _startDifficultyPct,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
             // #183: library-card regenerate action — registration + run handler

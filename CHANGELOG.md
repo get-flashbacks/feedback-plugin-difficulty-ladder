@@ -34,6 +34,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the gate: C5 (#113) must ship and log data first.
 
 ### Added
+- Optional **starting difficulty for new songs** (#216, parent #81): a percent
+  setting (`settings.html`, blank = off) that seeds the first play of an
+  arrangement with **no saved current difficulty**. It applies once, only after
+  song/arrangement/player/profile identity is ready and the arrangement has
+  phrase data, clamped to the current Min/Max bounds, and is persisted as that
+  arrangement's baseline — unlike #112's warm-up start it is not a live-only
+  concession and takes no offset. A saved/migrated difficulty or a manual slider
+  move always takes precedence, and because the seed is written per player
+  context it never crosses profiles; repeated `song:ready`/re-restore events reuse
+  the remembered value rather than re-seeding, so a live adaptive adjustment is
+  never overwritten. Off by default, so existing behavior is unchanged.
+  `_startDifficultyPct` / `_applyFirstPlayStart` in `screen.js`; tested in
+  `tests/screen.test.js` (unset, seed+persist, no-#112-offset, saved precedence,
+  no re-seed after adjustment, Min/Max clamp, zero/100/invalid, garbage-no-op,
+  diagnostics, per-context isolation). Version 0.34.3 -> 0.35.0.
 - Elo player and phrase ratings, logged only (#113, M4 roadmap C5): on every
   finalized phrase the player's Elo (K=32, neutral 1500, scale 400) is updated
   against a per-phrase Elo keyed by `phrase_id`, and the predicted win chance is
