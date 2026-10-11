@@ -923,6 +923,32 @@ test('Elo phrase ratings are per phrase and persist across attempts', () => {
     assert.equal(progress.eloPhrases[key1], undefined, 'an unplayed phrase gets no rating');
 });
 
+test('missing, empty, or null difficulty_cost all seed at neutral (not hardest)', () => {
+    const mod = freshPlugin();
+    const missing = { start_time: 0, end_time: 10, max_difficulty: 3 };
+    const empty = { start_time: 10, end_time: 20, max_difficulty: 3, difficulty_cost: '' };
+    const nullCost = { start_time: 20, end_time: 30, max_difficulty: 3, difficulty_cost: null };
+    const highway = stubHighwayForSectionDifficulty({ phrases: [missing, empty, nullCost], sections: [], mastery: 0.5 });
+
+    const results = {};
+    for (let i = 0; i < 3; i++) {
+        // Use distinct profile_hash so each gets a fresh player Elo (store keyed by profile_hash)
+        const ctx = playerContext({ profile_hash: 'hash-' + i });
+        const state = { curPhraseIdx: i, phraseTotal: 3, phraseHits: 3, phraseJudgments: [] };
+        mod.recordPhraseAttempt(1, ctx, state, highway);
+        const key = mod._nodeKey(mod._phraseIdOf('song.feedpak::lead', i, highway.getPhrases()[i]));
+        results[key] = mod.readProgress(ctx).eloPhrases[key];
+    }
+
+    const keyMissing = mod._nodeKey(mod._phraseIdOf('song.feedpak::lead', 0, missing));
+    const keyEmpty = mod._nodeKey(mod._phraseIdOf('song.feedpak::lead', 1, empty));
+    const keyNull = mod._nodeKey(mod._phraseIdOf('song.feedpak::lead', 2, nullCost));
+    // All three seed at neutral 1500 → expected 0.5 → clean hit drops phrase to 1484
+    assert.equal(results[keyMissing], 1484, 'missing cost seeds neutral');
+    assert.equal(results[keyEmpty], 1484, 'empty string seeds neutral');
+    assert.equal(results[keyNull], 1484, 'null cost seeds neutral');
+});
+
 test('Elo updates never touch difficulty or best mastery', () => {
     const mod = freshPlugin();
     const ctx = playerContext();

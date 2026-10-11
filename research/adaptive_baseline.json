@@ -1,0 +1,1673 @@
+{
+  "schema": "difficulty_ladder.adaptive_simulation.v1",
+  "synthetic": true,
+  "controllerSha256": "fde6c78291e5c84314670cddc3cc214fb5921c5283778d47155cfa510bd884fe",
+  "config": {
+    "sessions": 8,
+    "phrasesPerSession": 100,
+    "items": 9,
+    "maxTier": 10,
+    "noteCounts": [
+      6,
+      16,
+      40
+    ],
+    "exploration": 0.2,
+    "sensitivity": 2,
+    "reactionSpeed": 2,
+    "dropResistance": false,
+    "downStepRatio": 1,
+    "startPct": 50,
+    "convergenceWindow": 20,
+    "convergenceThreshold": 0.1
+  },
+  "seeds": 20,
+  "selectionPolicy": "shipped EMA; epsilon item exploration; discrete synthetic tiers",
+  "results": [
+    {
+      "scenario": "fast-learner",
+      "meanProbabilityRmse": 0.09886487787181888,
+      "minProbabilityRmse": 0.09099750566214933,
+      "maxProbabilityRmse": 0.10532409516808469,
+      "meanNoteBrier": 0.17335240719441625,
+      "meanMovementSdPct": 1.7182678427684561,
+      "meanMovesPer100": 11.875,
+      "runs": [
+        {
+          "seed": 1000,
+          "probabilityRmse": 0.10061462710780204,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17223101791735435,
+          "calibrationBias": -0.004210921533839525,
+          "movementSdPct": 1.8624475663760376,
+          "movesPer100": 13.875,
+          "convergencePhrasesBySession": [
+            36,
+            20,
+            20,
+            26,
+            27,
+            20,
+            24,
+            20
+          ]
+        },
+        {
+          "seed": 1001,
+          "probabilityRmse": 0.09957242939408747,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1756094845373175,
+          "calibrationBias": -0.0048007040734315085,
+          "movementSdPct": 1.7853133478468157,
+          "movesPer100": 12.75,
+          "convergencePhrasesBySession": [
+            26,
+            21,
+            20,
+            25,
+            21,
+            22,
+            31,
+            25
+          ]
+        },
+        {
+          "seed": 1002,
+          "probabilityRmse": 0.09665333456068954,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1733677705243401,
+          "calibrationBias": -0.004121242183111243,
+          "movementSdPct": 1.6199922839322234,
+          "movesPer100": 10.5,
+          "convergencePhrasesBySession": [
+            30,
+            20,
+            25,
+            20,
+            20,
+            21,
+            20,
+            22
+          ]
+        },
+        {
+          "seed": 1003,
+          "probabilityRmse": 0.1003000605416595,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17307035470172955,
+          "calibrationBias": -0.00583136428514155,
+          "movementSdPct": 1.8540496217739157,
+          "movesPer100": 13.75,
+          "convergencePhrasesBySession": [
+            45,
+            21,
+            33,
+            21,
+            25,
+            20,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1004,
+          "probabilityRmse": 0.10201446759120776,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17484212628456453,
+          "calibrationBias": 0.00011866149502607134,
+          "movementSdPct": 1.8027756377319946,
+          "movesPer100": 13,
+          "convergencePhrasesBySession": [
+            28,
+            21,
+            20,
+            21,
+            26,
+            21,
+            21,
+            20
+          ]
+        },
+        {
+          "seed": 1005,
+          "probabilityRmse": 0.09988941186179146,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17479269240353412,
+          "calibrationBias": -0.0016311184278872657,
+          "movementSdPct": 1.7138680666842387,
+          "movesPer100": 11.75,
+          "convergencePhrasesBySession": [
+            31,
+            21,
+            23,
+            26,
+            20,
+            21,
+            37,
+            20
+          ]
+        },
+        {
+          "seed": 1006,
+          "probabilityRmse": 0.09545836344306821,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.173990764329617,
+          "calibrationBias": -0.007605881552693311,
+          "movementSdPct": 1.551196614713953,
+          "movesPer100": 9.625,
+          "convergencePhrasesBySession": [
+            33,
+            21,
+            21,
+            23,
+            21,
+            20,
+            21,
+            26
+          ]
+        },
+        {
+          "seed": 1007,
+          "probabilityRmse": 0.0977636369840461,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17605885411692704,
+          "calibrationBias": -0.00690426639344618,
+          "movementSdPct": 1.5811388300841898,
+          "movesPer100": 10,
+          "convergencePhrasesBySession": [
+            35,
+            29,
+            21,
+            21,
+            33,
+            20,
+            20,
+            39
+          ]
+        },
+        {
+          "seed": 1008,
+          "probabilityRmse": 0.09396105691282124,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17438643283401095,
+          "calibrationBias": 0.0007857171868746794,
+          "movementSdPct": 1.479019945774904,
+          "movesPer100": 8.75,
+          "convergencePhrasesBySession": [
+            34,
+            20,
+            42,
+            21,
+            26,
+            21,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1009,
+          "probabilityRmse": 0.09894196979071969,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17286937221320703,
+          "calibrationBias": -0.0014534582194382284,
+          "movementSdPct": 1.7410373165156543,
+          "movesPer100": 12.125,
+          "convergencePhrasesBySession": [
+            21,
+            26,
+            21,
+            21,
+            32,
+            22,
+            22,
+            21
+          ]
+        },
+        {
+          "seed": 1010,
+          "probabilityRmse": 0.10221240889372682,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17009364302415286,
+          "calibrationBias": -0.008995718221036642,
+          "movementSdPct": 1.9364916731037085,
+          "movesPer100": 15,
+          "convergencePhrasesBySession": [
+            35,
+            22,
+            37,
+            21,
+            20,
+            22,
+            21,
+            35
+          ]
+        },
+        {
+          "seed": 1011,
+          "probabilityRmse": 0.09099750566214933,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17551518242660558,
+          "calibrationBias": -0.0028897122149299233,
+          "movementSdPct": 1.5511966147139535,
+          "movesPer100": 9.625,
+          "convergencePhrasesBySession": [
+            34,
+            21,
+            21,
+            21,
+            38,
+            20,
+            30,
+            20
+          ]
+        },
+        {
+          "seed": 1012,
+          "probabilityRmse": 0.10087582360625796,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1669966724754194,
+          "calibrationBias": -0.007466582412075353,
+          "movementSdPct": 1.9283959493579186,
+          "movesPer100": 14.875,
+          "convergencePhrasesBySession": [
+            49,
+            22,
+            20,
+            47,
+            32,
+            22,
+            21,
+            20
+          ]
+        },
+        {
+          "seed": 1013,
+          "probabilityRmse": 0.10516392713411707,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1715488642289705,
+          "calibrationBias": -0.015331279339599197,
+          "movementSdPct": 1.8874172167276695,
+          "movesPer100": 14.25,
+          "convergencePhrasesBySession": [
+            30,
+            22,
+            29,
+            21,
+            58,
+            21,
+            25,
+            23
+          ]
+        },
+        {
+          "seed": 1014,
+          "probabilityRmse": 0.10532409516808469,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17445112297514984,
+          "calibrationBias": -0.007538277186898546,
+          "movementSdPct": 1.7047612552788811,
+          "movesPer100": 11.625,
+          "convergencePhrasesBySession": [
+            31,
+            21,
+            23,
+            20,
+            20,
+            24,
+            20,
+            20
+          ]
+        },
+        {
+          "seed": 1015,
+          "probabilityRmse": 0.09389653356021209,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17192383292532615,
+          "calibrationBias": -0.007820119081506828,
+          "movementSdPct": 1.6676962965420374,
+          "movesPer100": 11.125,
+          "convergencePhrasesBySession": [
+            30,
+            21,
+            20,
+            28,
+            21,
+            21,
+            20,
+            20
+          ]
+        },
+        {
+          "seed": 1016,
+          "probabilityRmse": 0.09722359308484108,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17682677988600015,
+          "calibrationBias": 0.001447945834307244,
+          "movementSdPct": 1.6770509831248424,
+          "movesPer100": 11.25,
+          "convergencePhrasesBySession": [
+            31,
+            26,
+            24,
+            21,
+            25,
+            20,
+            23,
+            21
+          ]
+        },
+        {
+          "seed": 1017,
+          "probabilityRmse": 0.09491174744810994,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17309399516165527,
+          "calibrationBias": -0.0024031207981920354,
+          "movementSdPct": 1.6770043977282774,
+          "movesPer100": 11.25,
+          "convergencePhrasesBySession": [
+            27,
+            20,
+            22,
+            21,
+            21,
+            20,
+            36,
+            32
+          ]
+        },
+        {
+          "seed": 1018,
+          "probabilityRmse": 0.09896123916175643,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17274206586603877,
+          "calibrationBias": -0.004525483005390169,
+          "movementSdPct": 1.6582652833608906,
+          "movesPer100": 11,
+          "convergencePhrasesBySession": [
+            23,
+            20,
+            26,
+            21,
+            21,
+            25,
+            53,
+            20
+          ]
+        },
+        {
+          "seed": 1019,
+          "probabilityRmse": 0.10256132552922956,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.172637115056404,
+          "calibrationBias": 0.0004705673840347378,
+          "movementSdPct": 1.6862379539970087,
+          "movesPer100": 11.375,
+          "convergencePhrasesBySession": [
+            32,
+            38,
+            31,
+            22,
+            21,
+            22,
+            23,
+            21
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": "plateau",
+      "meanProbabilityRmse": 0.0995666058372385,
+      "minProbabilityRmse": 0.09258244025178627,
+      "maxProbabilityRmse": 0.10704084288874675,
+      "meanNoteBrier": 0.17817737399879544,
+      "meanMovementSdPct": 1.639182393412146,
+      "meanMovesPer100": 10.81875,
+      "runs": [
+        {
+          "seed": 1000,
+          "probabilityRmse": 0.10087544057879769,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1758729809463411,
+          "calibrationBias": -0.0016767064709524773,
+          "movementSdPct": 1.7938153298207706,
+          "movesPer100": 12.875,
+          "convergencePhrasesBySession": [
+            39,
+            20,
+            20,
+            26,
+            27,
+            21,
+            24,
+            20
+          ]
+        },
+        {
+          "seed": 1001,
+          "probabilityRmse": 0.10035391760647872,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17876374421085167,
+          "calibrationBias": -0.00486872252563911,
+          "movementSdPct": 1.7404987611314116,
+          "movesPer100": 12.125,
+          "convergencePhrasesBySession": [
+            26,
+            34,
+            20,
+            25,
+            21,
+            29,
+            31,
+            26
+          ]
+        },
+        {
+          "seed": 1002,
+          "probabilityRmse": 0.09949685593542563,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17992946105517252,
+          "calibrationBias": -0.0051385382344668155,
+          "movementSdPct": 1.4563975247163805,
+          "movesPer100": 8.5,
+          "convergencePhrasesBySession": [
+            30,
+            20,
+            21,
+            21,
+            21,
+            21,
+            20,
+            27
+          ]
+        },
+        {
+          "seed": 1003,
+          "probabilityRmse": 0.1004978733024239,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17526182386618083,
+          "calibrationBias": -0.006396913139941814,
+          "movementSdPct": 1.784963234915487,
+          "movesPer100": 12.75,
+          "convergencePhrasesBySession": [
+            53,
+            20,
+            22,
+            44,
+            20,
+            20,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1004,
+          "probabilityRmse": 0.10090695269926374,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17947508831296502,
+          "calibrationBias": -0.0015096909212779324,
+          "movementSdPct": 1.6860526200270263,
+          "movesPer100": 11.375,
+          "convergencePhrasesBySession": [
+            35,
+            22,
+            20,
+            21,
+            26,
+            25,
+            20,
+            20
+          ]
+        },
+        {
+          "seed": 1005,
+          "probabilityRmse": 0.10082855936950198,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1789531753458153,
+          "calibrationBias": -0.0037840889242054727,
+          "movementSdPct": 1.6296927432801676,
+          "movesPer100": 10.625,
+          "convergencePhrasesBySession": [
+            37,
+            47,
+            21,
+            26,
+            20,
+            21,
+            37,
+            20
+          ]
+        },
+        {
+          "seed": 1006,
+          "probabilityRmse": 0.09622499111876041,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18079245282048986,
+          "calibrationBias": -0.005672394779698199,
+          "movementSdPct": 1.510057428543696,
+          "movesPer100": 9.125,
+          "convergencePhrasesBySession": [
+            30,
+            21,
+            21,
+            23,
+            21,
+            21,
+            20,
+            25
+          ]
+        },
+        {
+          "seed": 1007,
+          "probabilityRmse": 0.0990835431048185,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18100745092783754,
+          "calibrationBias": -0.004913006674681984,
+          "movementSdPct": 1.6389306727253488,
+          "movesPer100": 10.75,
+          "convergencePhrasesBySession": [
+            39,
+            29,
+            21,
+            21,
+            32,
+            22,
+            20,
+            39
+          ]
+        },
+        {
+          "seed": 1008,
+          "probabilityRmse": 0.09638102576665453,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17999649858491498,
+          "calibrationBias": 0.0015386303650849475,
+          "movementSdPct": 1.4356509847452341,
+          "movesPer100": 8.25,
+          "convergencePhrasesBySession": [
+            47,
+            20,
+            28,
+            21,
+            21,
+            24,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1009,
+          "probabilityRmse": 0.10029298510638951,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.178607293840631,
+          "calibrationBias": 0.0003493473161238816,
+          "movementSdPct": 1.6482827237764688,
+          "movesPer100": 10.875,
+          "convergencePhrasesBySession": [
+            21,
+            26,
+            21,
+            21,
+            32,
+            31,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1010,
+          "probabilityRmse": 0.10375323928864315,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17509938047787094,
+          "calibrationBias": -0.009030178582654693,
+          "movementSdPct": 1.9035739413009312,
+          "movesPer100": 14.5,
+          "convergencePhrasesBySession": [
+            35,
+            21,
+            31,
+            21,
+            20,
+            23,
+            21,
+            35
+          ]
+        },
+        {
+          "seed": 1011,
+          "probabilityRmse": 0.09258244025178627,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17934398957678002,
+          "calibrationBias": -0.004952904146414517,
+          "movementSdPct": 1.435270009440745,
+          "movesPer100": 8.25,
+          "convergencePhrasesBySession": [
+            34,
+            21,
+            21,
+            28,
+            35,
+            20,
+            21,
+            20
+          ]
+        },
+        {
+          "seed": 1012,
+          "probabilityRmse": 0.10044704511924493,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1697670179116916,
+          "calibrationBias": -0.006987220530099359,
+          "movementSdPct": 1.8196411047236647,
+          "movesPer100": 13.25,
+          "convergencePhrasesBySession": [
+            49,
+            20,
+            20,
+            45,
+            26,
+            21,
+            24,
+            21
+          ]
+        },
+        {
+          "seed": 1013,
+          "probabilityRmse": 0.10202796436271952,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17578318313449348,
+          "calibrationBias": -0.01159512759345537,
+          "movementSdPct": 1.6482827237764683,
+          "movesPer100": 10.875,
+          "convergencePhrasesBySession": [
+            31,
+            20,
+            35,
+            21,
+            23,
+            20,
+            21,
+            22
+          ]
+        },
+        {
+          "seed": 1014,
+          "probabilityRmse": 0.10704084288874675,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18174472937347297,
+          "calibrationBias": -0.0064421394534963745,
+          "movementSdPct": 1.6102091284985314,
+          "movesPer100": 10.375,
+          "convergencePhrasesBySession": [
+            31,
+            20,
+            23,
+            20,
+            21,
+            25,
+            20,
+            21
+          ]
+        },
+        {
+          "seed": 1015,
+          "probabilityRmse": 0.09661240104620746,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1778654582868892,
+          "calibrationBias": -0.008584999133046877,
+          "movementSdPct": 1.7042112361734902,
+          "movesPer100": 11.625,
+          "convergencePhrasesBySession": [
+            36,
+            21,
+            20,
+            28,
+            26,
+            21,
+            20,
+            20
+          ]
+        },
+        {
+          "seed": 1016,
+          "probabilityRmse": 0.09980769890690125,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17769285685693298,
+          "calibrationBias": 0.0010736100905171032,
+          "movementSdPct": 1.638930672725348,
+          "movesPer100": 10.75,
+          "convergencePhrasesBySession": [
+            31,
+            21,
+            24,
+            21,
+            24,
+            20,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1017,
+          "probabilityRmse": 0.09529615463193543,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17803031574348208,
+          "calibrationBias": -0.0028883841129789685,
+          "movementSdPct": 1.6391689967785412,
+          "movesPer100": 10.75,
+          "convergencePhrasesBySession": [
+            27,
+            21,
+            22,
+            21,
+            21,
+            20,
+            36,
+            28
+          ]
+        },
+        {
+          "seed": 1018,
+          "probabilityRmse": 0.0965373214805063,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17838904294067698,
+          "calibrationBias": -0.004220579593229994,
+          "movementSdPct": 1.4889042741224077,
+          "movesPer100": 8.875,
+          "convergencePhrasesBySession": [
+            24,
+            23,
+            26,
+            20,
+            20,
+            21,
+            21,
+            20
+          ]
+        },
+        {
+          "seed": 1019,
+          "probabilityRmse": 0.1022848641795641,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18117153576241943,
+          "calibrationBias": 0.0003342071045328752,
+          "movementSdPct": 1.5711137570208054,
+          "movesPer100": 9.875,
+          "convergencePhrasesBySession": [
+            33,
+            26,
+            31,
+            23,
+            25,
+            20,
+            22,
+            20
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": "fatigue",
+      "meanProbabilityRmse": 0.10486100445895452,
+      "minProbabilityRmse": 0.10085212406273232,
+      "maxProbabilityRmse": 0.10930094860896195,
+      "meanNoteBrier": 0.1836810938218085,
+      "meanMovementSdPct": 1.9572140565967433,
+      "meanMovesPer100": 15.3625,
+      "runs": [
+        {
+          "seed": 1000,
+          "probabilityRmse": 0.10520498122984573,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18708065866307722,
+          "calibrationBias": 0.005142724761396129,
+          "movementSdPct": 2.007009202146335,
+          "movesPer100": 16.125,
+          "convergencePhrasesBySession": [
+            21,
+            21,
+            21,
+            21,
+            21,
+            21,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1001,
+          "probabilityRmse": 0.10270610612738763,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18229271449932466,
+          "calibrationBias": 0.005515195630658934,
+          "movementSdPct": 1.869784412706449,
+          "movesPer100": 14,
+          "convergencePhrasesBySession": [
+            28,
+            27,
+            20,
+            21,
+            21,
+            21,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1002,
+          "probabilityRmse": 0.10262103914677997,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18401622692280628,
+          "calibrationBias": -4.91249480117565e-05,
+          "movementSdPct": 1.8864235340983213,
+          "movesPer100": 14.25,
+          "convergencePhrasesBySession": [
+            22,
+            21,
+            21,
+            21,
+            31,
+            21,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1003,
+          "probabilityRmse": 0.10811240682288543,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18470801417070312,
+          "calibrationBias": -0.001557241203291636,
+          "movementSdPct": 1.9675095298371492,
+          "movesPer100": 15.5,
+          "convergencePhrasesBySession": [
+            53,
+            21,
+            32,
+            21,
+            21,
+            21,
+            59,
+            22
+          ]
+        },
+        {
+          "seed": 1004,
+          "probabilityRmse": 0.10527612254880296,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18381746216730122,
+          "calibrationBias": 0.005163602768307443,
+          "movementSdPct": 1.943729903433105,
+          "movesPer100": 15.125,
+          "convergencePhrasesBySession": [
+            27,
+            21,
+            21,
+            21,
+            21,
+            21,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1005,
+          "probabilityRmse": 0.10374741914038842,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18209262909643273,
+          "calibrationBias": 0.0002723103242260382,
+          "movementSdPct": 1.919269066598011,
+          "movesPer100": 14.75,
+          "convergencePhrasesBySession": [
+            25,
+            21,
+            21,
+            21,
+            21,
+            21,
+            26,
+            20
+          ]
+        },
+        {
+          "seed": 1006,
+          "probabilityRmse": 0.10123532127845292,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1842902338558853,
+          "calibrationBias": -0.0034091426907420924,
+          "movementSdPct": 1.8360538526960477,
+          "movesPer100": 13.5,
+          "convergencePhrasesBySession": [
+            21,
+            21,
+            21,
+            21,
+            21,
+            21,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1007,
+          "probabilityRmse": 0.1073174094216105,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18001702605089467,
+          "calibrationBias": -0.0017360113791018118,
+          "movementSdPct": 2.0453835214941964,
+          "movesPer100": 16.75,
+          "convergencePhrasesBySession": [
+            33,
+            38,
+            21,
+            21,
+            33,
+            21,
+            21,
+            39
+          ]
+        },
+        {
+          "seed": 1008,
+          "probabilityRmse": 0.10298112511451483,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18570277656985446,
+          "calibrationBias": 0.007569973247166249,
+          "movementSdPct": 1.8864235340983213,
+          "movesPer100": 14.25,
+          "convergencePhrasesBySession": [
+            47,
+            21,
+            21,
+            26,
+            21,
+            24,
+            38,
+            21
+          ]
+        },
+        {
+          "seed": 1009,
+          "probabilityRmse": 0.1064595641857979,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1876002760009268,
+          "calibrationBias": 0.00355584473797826,
+          "movementSdPct": 2.0453835214941964,
+          "movesPer100": 16.75,
+          "convergencePhrasesBySession": [
+            21,
+            26,
+            21,
+            21,
+            32,
+            21,
+            36,
+            21
+          ]
+        },
+        {
+          "seed": 1010,
+          "probabilityRmse": 0.10930094860896195,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18347405418208532,
+          "calibrationBias": 7.46590522331836e-05,
+          "movementSdPct": 2.14967294023998,
+          "movesPer100": 18.5,
+          "convergencePhrasesBySession": [
+            35,
+            21,
+            31,
+            32,
+            21,
+            21,
+            21,
+            41
+          ]
+        },
+        {
+          "seed": 1011,
+          "probabilityRmse": 0.10289083764484268,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18590549965246578,
+          "calibrationBias": -0.00070883400159509,
+          "movementSdPct": 1.919269066598011,
+          "movesPer100": 14.75,
+          "convergencePhrasesBySession": [
+            34,
+            21,
+            21,
+            21,
+            38,
+            21,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1012,
+          "probabilityRmse": 0.10189309402574574,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1777299998598179,
+          "calibrationBias": -0.0010639646675367864,
+          "movementSdPct": 2.0300477211139643,
+          "movesPer100": 16.5,
+          "convergencePhrasesBySession": [
+            52,
+            21,
+            20,
+            45,
+            21,
+            21,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1013,
+          "probabilityRmse": 0.10888609719001606,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18211281767882578,
+          "calibrationBias": -0.006824877984320129,
+          "movementSdPct": 2.014595182660775,
+          "movesPer100": 16.25,
+          "convergencePhrasesBySession": [
+            21,
+            21,
+            36,
+            21,
+            23,
+            21,
+            21,
+            33
+          ]
+        },
+        {
+          "seed": 1014,
+          "probabilityRmse": 0.10681136061400126,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18583164141307884,
+          "calibrationBias": 0.0007782707685293629,
+          "movementSdPct": 1.9113047735774777,
+          "movesPer100": 14.625,
+          "convergencePhrasesBySession": [
+            22,
+            21,
+            23,
+            21,
+            21,
+            36,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1015,
+          "probabilityRmse": 0.10085212406273232,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1830335666350035,
+          "calibrationBias": -0.005064469709156854,
+          "movementSdPct": 1.9029171684547912,
+          "movesPer100": 14.5,
+          "convergencePhrasesBySession": [
+            51,
+            21,
+            21,
+            21,
+            21,
+            21,
+            23,
+            21
+          ]
+        },
+        {
+          "seed": 1016,
+          "probabilityRmse": 0.10378824410946506,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.183797220320987,
+          "calibrationBias": 0.00301427241718566,
+          "movementSdPct": 2.014595182660775,
+          "movesPer100": 16.25,
+          "convergencePhrasesBySession": [
+            20,
+            43,
+            21,
+            21,
+            21,
+            21,
+            25,
+            21
+          ]
+        },
+        {
+          "seed": 1017,
+          "probabilityRmse": 0.10610574642204815,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1846510877735238,
+          "calibrationBias": 0.0017505229351368076,
+          "movementSdPct": 2.0300477211139643,
+          "movesPer100": 16.5,
+          "convergencePhrasesBySession": [
+            31,
+            21,
+            21,
+            21,
+            49,
+            21,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1018,
+          "probabilityRmse": 0.10678622315777224,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1847549279061924,
+          "calibrationBias": 0.0034159232413788357,
+          "movementSdPct": 1.9029171684547912,
+          "movesPer100": 14.5,
+          "convergencePhrasesBySession": [
+            27,
+            21,
+            21,
+            21,
+            21,
+            31,
+            48,
+            21
+          ]
+        },
+        {
+          "seed": 1019,
+          "probabilityRmse": 0.10424391832703876,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18071304301698396,
+          "calibrationBias": 0.007191994108237183,
+          "movementSdPct": 1.8619441284582023,
+          "movesPer100": 13.875,
+          "convergencePhrasesBySession": [
+            30,
+            30,
+            21,
+            21,
+            21,
+            32,
+            21,
+            21
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": "day-variance",
+      "meanProbabilityRmse": 0.09905063700534343,
+      "minProbabilityRmse": 0.09407450115110841,
+      "maxProbabilityRmse": 0.10376854625590902,
+      "meanNoteBrier": 0.17499370495545793,
+      "meanMovementSdPct": 1.7627699616607113,
+      "meanMovesPer100": 12.49375,
+      "runs": [
+        {
+          "seed": 1000,
+          "probabilityRmse": 0.10115645998701428,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1757158383595605,
+          "calibrationBias": -0.0021723166626064507,
+          "movementSdPct": 1.8114113109672312,
+          "movesPer100": 13.125,
+          "convergencePhrasesBySession": [
+            27,
+            20,
+            20,
+            27,
+            25,
+            20,
+            24,
+            21
+          ]
+        },
+        {
+          "seed": 1001,
+          "probabilityRmse": 0.09814050582866402,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17527196766000577,
+          "calibrationBias": -0.004177251980732909,
+          "movementSdPct": 1.8623636695071137,
+          "movesPer100": 13.875,
+          "convergencePhrasesBySession": [
+            25,
+            58,
+            20,
+            24,
+            21,
+            29,
+            31,
+            21
+          ]
+        },
+        {
+          "seed": 1002,
+          "probabilityRmse": 0.09835672920138425,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17667844030744617,
+          "calibrationBias": -0.004658261965397638,
+          "movementSdPct": 1.6000000000000112,
+          "movesPer100": 10.25,
+          "convergencePhrasesBySession": [
+            30,
+            20,
+            21,
+            20,
+            20,
+            21,
+            21,
+            22
+          ]
+        },
+        {
+          "seed": 1003,
+          "probabilityRmse": 0.09863713241395501,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17334014592492564,
+          "calibrationBias": -0.0038646390675677305,
+          "movementSdPct": 1.8114113109672323,
+          "movesPer100": 13.125,
+          "convergencePhrasesBySession": [
+            31,
+            22,
+            31,
+            36,
+            21,
+            20,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1004,
+          "probabilityRmse": 0.10130308132122169,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17692676022956438,
+          "calibrationBias": -8.511387540983346e-06,
+          "movementSdPct": 1.8367345344387564,
+          "movesPer100": 13.5,
+          "convergencePhrasesBySession": [
+            27,
+            21,
+            20,
+            21,
+            32,
+            21,
+            21,
+            20
+          ]
+        },
+        {
+          "seed": 1005,
+          "probabilityRmse": 0.09956415015678415,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17688846442209502,
+          "calibrationBias": -0.0003545341391684337,
+          "movementSdPct": 1.7498214194597028,
+          "movesPer100": 12.25,
+          "convergencePhrasesBySession": [
+            25,
+            21,
+            23,
+            21,
+            20,
+            21,
+            37,
+            20
+          ]
+        },
+        {
+          "seed": 1006,
+          "probabilityRmse": 0.09418805589579217,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.173643333231637,
+          "calibrationBias": -0.005903597383330453,
+          "movementSdPct": 1.5406471854386246,
+          "movesPer100": 9.5,
+          "convergencePhrasesBySession": [
+            30,
+            21,
+            23,
+            22,
+            21,
+            20,
+            20,
+            22
+          ]
+        },
+        {
+          "seed": 1007,
+          "probabilityRmse": 0.100582974743323,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.18007265120062085,
+          "calibrationBias": -0.005198071143028079,
+          "movementSdPct": 1.6583123951777,
+          "movesPer100": 11,
+          "convergencePhrasesBySession": [
+            33,
+            38,
+            21,
+            21,
+            21,
+            21,
+            20,
+            22
+          ]
+        },
+        {
+          "seed": 1008,
+          "probabilityRmse": 0.09884071033774615,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17888523235625647,
+          "calibrationBias": 0.003739071516581917,
+          "movementSdPct": 1.5505921248026422,
+          "movesPer100": 9.625,
+          "convergencePhrasesBySession": [
+            34,
+            20,
+            42,
+            21,
+            21,
+            27,
+            21,
+            20
+          ]
+        },
+        {
+          "seed": 1009,
+          "probabilityRmse": 0.09991705332297282,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17473248511523554,
+          "calibrationBias": -0.0011914944810849839,
+          "movementSdPct": 1.7932054922679737,
+          "movesPer100": 12.875,
+          "convergencePhrasesBySession": [
+            20,
+            26,
+            20,
+            21,
+            22,
+            27,
+            29,
+            21
+          ]
+        },
+        {
+          "seed": 1010,
+          "probabilityRmse": 0.10224992004691362,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17515079004690434,
+          "calibrationBias": -0.009196792009676935,
+          "movementSdPct": 1.879151653672483,
+          "movesPer100": 14.125,
+          "convergencePhrasesBySession": [
+            31,
+            23,
+            21,
+            21,
+            20,
+            21,
+            34,
+            41
+          ]
+        },
+        {
+          "seed": 1011,
+          "probabilityRmse": 0.09407450115110841,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17636792325703107,
+          "calibrationBias": -0.0022172197689655994,
+          "movementSdPct": 1.7220876683549051,
+          "movesPer100": 11.875,
+          "convergencePhrasesBySession": [
+            34,
+            21,
+            21,
+            24,
+            35,
+            20,
+            31,
+            24
+          ]
+        },
+        {
+          "seed": 1012,
+          "probabilityRmse": 0.09878200665225285,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.16412047796967738,
+          "calibrationBias": -0.006990891689030638,
+          "movementSdPct": 2.023292103849573,
+          "movesPer100": 16.375,
+          "convergencePhrasesBySession": [
+            41,
+            22,
+            20,
+            45,
+            26,
+            24,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1013,
+          "probabilityRmse": 0.10335680708778096,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17351358230305267,
+          "calibrationBias": -0.01244468956379174,
+          "movementSdPct": 1.8956261333659608,
+          "movesPer100": 14.375,
+          "convergencePhrasesBySession": [
+            24,
+            20,
+            36,
+            23,
+            23,
+            21,
+            24,
+            21
+          ]
+        },
+        {
+          "seed": 1014,
+          "probabilityRmse": 0.10376854625590902,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17628194474841583,
+          "calibrationBias": -0.0058787631477154635,
+          "movementSdPct": 1.7586282829239384,
+          "movesPer100": 12.375,
+          "convergencePhrasesBySession": [
+            31,
+            21,
+            28,
+            20,
+            20,
+            26,
+            21,
+            23
+          ]
+        },
+        {
+          "seed": 1015,
+          "probabilityRmse": 0.09563747570361743,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17465654483459245,
+          "calibrationBias": -0.009895671012755522,
+          "movementSdPct": 1.861944128458201,
+          "movesPer100": 13.875,
+          "convergencePhrasesBySession": [
+            36,
+            21,
+            20,
+            21,
+            21,
+            20,
+            21,
+            21
+          ]
+        },
+        {
+          "seed": 1016,
+          "probabilityRmse": 0.09698383030408718,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1770206740384939,
+          "calibrationBias": 0.0009384645386126826,
+          "movementSdPct": 1.7853133478468157,
+          "movesPer100": 12.75,
+          "convergencePhrasesBySession": [
+            20,
+            23,
+            24,
+            21,
+            24,
+            21,
+            20,
+            21
+          ]
+        },
+        {
+          "seed": 1017,
+          "probabilityRmse": 0.09849210172244025,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1753777626781021,
+          "calibrationBias": -0.005001392472459481,
+          "movementSdPct": 1.7853133478468137,
+          "movesPer100": 12.75,
+          "convergencePhrasesBySession": [
+            31,
+            20,
+            22,
+            21,
+            21,
+            20,
+            35,
+            29
+          ]
+        },
+        {
+          "seed": 1018,
+          "probabilityRmse": 0.09974350385435589,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.17195405591260648,
+          "calibrationBias": -0.0035170940320631574,
+          "movementSdPct": 1.7586282829239384,
+          "movesPer100": 12.375,
+          "convergencePhrasesBySession": [
+            27,
+            21,
+            26,
+            36,
+            20,
+            21,
+            21,
+            20
+          ]
+        },
+        {
+          "seed": 1019,
+          "probabilityRmse": 0.09723719411954565,
+          "skillRmse": null,
+          "itemDifficultyRmse": null,
+          "noteBrier": 0.1732750245129355,
+          "calibrationBias": 0.0017753111179010057,
+          "movementSdPct": 1.5709148409446008,
+          "movesPer100": 9.875,
+          "convergencePhrasesBySession": [
+            32,
+            38,
+            30,
+            22,
+            27,
+            20,
+            22,
+            20
+          ]
+        }
+      ]
+    }
+  ],
+  "note": "EMA scaffold baseline only; full calibration bins regenerate with node tools/adaptive_simulation.js. No candidate or human results."
+}

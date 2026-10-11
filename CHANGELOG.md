@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Documentation
+- Added the Phase 2 adaptive-difficulty simulation scaffold (#55, parent #31):
+  reproducible changing-skill/item traces, variable note counts, exploration,
+  pre-update EMA metrics, seed-level baseline results and an estimator replay seam.
+  Research tooling only; candidate ranking/adoption and real-player validation remain open.
+  Version 0.34.0 -> 0.34.1 to satisfy the repository's source-change release gate.
 - Added `TECHNIQUE_WEIGHTING.md`, the design note C7-1 (#167, roadmap #103
   item C7) requires #122 to resolve before any code lands. It answers the two
   open questions — neutral cold start (weight is exactly `1.0` with no
@@ -146,9 +151,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refactored method now scores well under CodeFactor's reporting threshold. The
   section emit also now short-circuits on empty section/phrase data before
   calling `getMastery()`, so an unloaded highway no-ops instead of throwing. The
-  existing 335 JS tests pass unchanged and two new tests pin both guards (a
+  existing 346 JS tests pass unchanged and two new tests pin both guards (a
   highway without `getPhrases`, and a still-loading highway whose `getMastery()`
-  throws). Version 0.34.0 -> 0.34.1.
+  throws). Version 0.34.2 -> 0.34.3.
 - The standalone difficulty guide is now an **event-driven, accessible DOM
   tier rail** instead of a per-frame canvas glass HUD (#157, item 2 of the
   tier rail in #131, part of #139's overlay work). One cell per visible
@@ -204,6 +209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refactor, no behavior change).
 
 ### Fixed
+- Elo phrase seeding treated a missing `difficulty_cost` as the hardest phrase
+  instead of the neutral one (#209 review follow-up). `Number(null)` and
+  `Number('')` are both `0`, so a host that predates the field — exactly the
+  case documented as seeding at the neutral 0.5 — passed the `!isFinite` guard
+  and seeded at the hardest 0.98. `_eloSeedChance` now returns the neutral 0.5
+  for `null`/`''`/`undefined` before coercing, while a real numeric `0` cost
+  still maps to 0.98. Regression test added.
+  Version 0.34.1 -> 0.34.2.
 - Removed leftover duplication from the scoring-pipeline unification and
   documented the single pipeline (Stage 4-4, #166, part of #139). Factored
   the thrice-repeated abandon-phrase reset (discontinuity step's two branches,
