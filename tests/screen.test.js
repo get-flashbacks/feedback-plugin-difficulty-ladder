@@ -4574,6 +4574,151 @@ test('a resume that cannot reach the highway does not spend the warm-up start', 
     assert.equal(hw.mastery, 0.7, 'nothing was handed out, so the next attempt is a first start');
 });
 
+// ── First-play starting difficulty (#216, M4) ──────────────────────────────
+// An optional setting that seeds the difficulty of an arrangement the player
+// has never played (no saved current difficulty). Off by default.
+
+test('an unset starting difficulty leaves a first play exactly as before', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    const hw = resumeHighway(); // hw.mastery === 0.5
+
+    assert.equal(mod.settings.startDifficulty, null, 'off by default');
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), false);
+    assert.equal(hw.mastery, 0.5, "the host's own default is untouched");
+    assert.strictEqual(mod.readProgress(ctx), null, 'nothing is seeded');
+});
+
+test('a configured starting difficulty seeds a first play and becomes the remembered value', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    mod.settings.startDifficulty = 35;
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+
+    assert.equal(hw.mastery, 0.35);
+    assert.equal(mod.readProgress(ctx).currentDifficulty, 35,
+        'unlike the #112 warm-up start, the first-play seed IS the remembered baseline');
+    assert.equal(mod.readProgress(ctx).bestMastery, null,
+        'initialization never creates or alters a best mastery');
+});
+
+test('the first-play seed takes no #112 warm-up offset even with auto-adjust on', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2; // ramp step 15
+    mod.settings.startDifficulty = 80;
+    const ctx = playerContext();
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+
+    assert.equal(hw.mastery, 0.8, 'a first play is 80, not 80 minus the resume offset');
+});
+
+test('a saved difficulty takes precedence over the starting default', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    mod.settings.startDifficulty = 35;
+    mod.writeProgress(ctx, { currentDifficulty: 70 });
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+
+    assert.equal(hw.mastery, 0.7);
+    assert.equal(mod.readProgress(ctx).currentDifficulty, 70, 'the saved value is not overwritten');
+});
+
+test('a repeated load after an adaptive adjustment does not re-seed the default', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    mod.settings.startDifficulty = 35;
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.35);
+
+    mod.writeProgress(ctx, { currentDifficulty: 60 }); // the ramp adapts from the seed
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), true);
+    assert.equal(hw.mastery, 0.6, 'the default must not overwrite a live adjustment');
+});
+
+test('the starting default is clamped to the current Min/Max bounds', () => {
+    const mod = freshPlugin();
+    mod.settings.minMastery = 40;
+    mod.settings.maxMastery = 60;
+
+    mod.settings.startDifficulty = 10;
+    const hw = resumeHighway();
+    assert.equal(mod._maybeRestoreSongMastery(ctxOf('low'), hw), true);
+    assert.equal(hw.mastery, 0.4, 'below Min % clamps up');
+
+    mod.settings.startDifficulty = 90;
+    const hwHigh = resumeHighway();
+    assert.equal(mod._maybeRestoreSongMastery(ctxOf('high'), hwHigh), true);
+    assert.equal(hwHigh.mastery, 0.6, 'above Max % clamps down');
+
+    function ctxOf(tag) { return playerContext({ profile_hash: tag }); }
+});
+
+test('zero and 100 are valid starting values; invalid values are treated as unset', () => {
+    const mod = freshPlugin();
+
+    mod.settings.startDifficulty = 0;
+    assert.equal(mod._startDifficultyPct(), 0);
+    mod.settings.startDifficulty = 100;
+    assert.equal(mod._startDifficultyPct(), 100);
+    mod.settings.startDifficulty = 150;
+    assert.equal(mod._startDifficultyPct(), 100, 'out-of-range numbers clamp into 0..100');
+    mod.settings.startDifficulty = -20;
+    assert.equal(mod._startDifficultyPct(), 0);
+    mod.settings.startDifficulty = 'abc';
+    assert.equal(mod._startDifficultyPct(), null, 'garbage is unset, not coerced to 0');
+    mod.settings.startDifficulty = '';
+    assert.equal(mod._startDifficultyPct(), null);
+    mod.settings.startDifficulty = null;
+    assert.equal(mod._startDifficultyPct(), null);
+});
+
+test('a garbage starting default does not seed anything', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    mod.settings.startDifficulty = 'nope';
+    const hw = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(ctx, hw), false);
+    assert.equal(hw.mastery, 0.5);
+    assert.strictEqual(mod.readProgress(ctx), null);
+});
+
+test('a fresh test plugin has the setting off and exposes it to diagnostics', () => {
+    const mod = freshPlugin();
+    const contributed = [];
+    global.window.feedBack = { diagnostics: { contribute: (id, payload) => contributed.push(payload) } };
+    mod.contributeDiagnostics();
+    assert.equal(contributed[0].start_difficulty, null);
+    mod.settings.startDifficulty = 42;
+    mod.contributeDiagnostics();
+    assert.equal(contributed[1].start_difficulty, 42);
+});
+
+test('the first-play seed is isolated per player context', () => {
+    const mod = freshPlugin();
+    mod.settings.startDifficulty = 35;
+    const a = playerContext({ profile_hash: 'a', player_id: 'pa' });
+    const b = playerContext({ profile_hash: 'b', player_id: 'pb' });
+    const hwA = resumeHighway();
+    const hwB = resumeHighway();
+
+    assert.equal(mod._maybeRestoreSongMastery(a, hwA), true);
+    mod.writeProgress(a, { currentDifficulty: 80 }); // A is adjusted independently
+    assert.equal(mod._maybeRestoreSongMastery(b, hwB), true);
+
+    assert.equal(mod.readProgress(a).currentDifficulty, 80, "A's later adjustment is not reset");
+    assert.equal(mod.readProgress(b).currentDifficulty, 35, 'B gets its own first-play seed');
+});
+
 test('a record the ramp moved before any restore keeps its own value, not a concession', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;

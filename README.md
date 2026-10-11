@@ -635,6 +635,7 @@ Exposed via Settings → Plugins → Difficulty Ladder:
 | Reaction speed (1-3) | How much weight a single section's result carries in the rolling accuracy average (`EMA_ALPHA`) — independent of Sensitivity. Default (2) reproduces this plugin's original, pre-#5 behavior. |
 | Difficulty drop speed (1×-2×) | Multiplies only the downward auto-adjust target so difficulty can ease off faster than it climbs. The default 1× preserves symmetric behavior. Inert while *Level up only* is on. |
 | Min / Max % | Hard bounds auto-adjust will never cross. |
+| Starting difficulty for new songs (#216) | Optional first-play difficulty (percent; blank = off) for an arrangement that has **no saved difficulty yet**. It seeds once, only after song/arrangement/profile identity is ready and phrase data exists, clamped to Min/Max, and is remembered as that arrangement's baseline (it is not a #112 warm-up concession). A saved/migrated difficulty or a manual slider move always takes precedence, and the seed is applied per player context so it never crosses profiles. Off by default, so existing behavior is unchanged. Presented as a comfort/control option, not a claimed learning optimum. |
 | Generate ladder depth cap (2-8) | Maximum difficulty tiers "⚙️ Generate Difficulties" can give a phrase when building a ladder for a song that doesn't have one yet — threaded into `/generate`'s existing `levels` parameter. |
 
 `staged_chords` (#103/B10) is an additional opt-in `/generate` and

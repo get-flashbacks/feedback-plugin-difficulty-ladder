@@ -104,6 +104,19 @@
     </div>
 
     <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
+        <h3 class="text-sm font-medium text-gray-200 mb-1">Starting difficulty for new songs</h3>
+        <div class="flex items-center gap-3">
+            <div class="flex-1">
+                <label class="text-[11px] text-gray-500 block mb-1">Start % (blank = off)</label>
+                <input type="number" id="dd-start-difficulty" min="0" max="100" placeholder="off"
+                       class="w-full bg-dark-800 border-none rounded-lg px-3 py-2 text-xs text-white focus:ring-1 focus:ring-accent/30 outline-none"
+                       onchange="window._ddSetStartDifficulty(this.value)">
+            </div>
+        </div>
+        <p class="text-[11px] text-gray-500 mt-2">The difficulty a song starts at the first time you play an arrangement that has no saved difficulty yet. Leave blank to keep the game's own default (existing behavior). A remembered difficulty, a migrated score, or a manual slider change always takes precedence, and this only applies once per arrangement.</p>
+    </div>
+
+    <div class="bg-dark-900/50 p-3 rounded-xl border border-gray-800/50">
         <div class="flex items-center justify-between mb-2">
             <h3 id="dd-generate-levels-heading" class="text-sm font-medium text-gray-200">Generate ladder depth cap</h3>
             <span id="dd-generate-levels-label" class="text-[11px] text-gray-500 font-mono">4</span>
@@ -175,6 +188,22 @@
             var maxEl = document.getElementById('dd-max-mastery');
             if (maxEl) maxEl.value = String(max);
             window._ddSet('maxMastery', max);
+        };
+
+        // #216: an optional starting difficulty. Blank (or unparseable) means
+        // "off" and is stored as null so screen.js leaves first plays alone.
+        window._ddSetStartDifficulty = function (raw) {
+            var el = document.getElementById('dd-start-difficulty');
+            var s = (raw === null || raw === undefined) ? '' : String(raw).trim();
+            var n = s === '' ? NaN : parseInt(s, 10);
+            if (isNaN(n)) {
+                if (el) el.value = '';
+                window._ddSet('startDifficulty', null);
+                return;
+            }
+            n = Math.max(0, Math.min(100, n));
+            if (el) el.value = String(n);
+            window._ddSet('startDifficulty', n);
         };
 
         window._ddSet = function (key, val) {
@@ -262,6 +291,14 @@
             if (minEl) minEl.value = String(min);
             var maxEl = document.getElementById('dd-max-mastery');
             if (maxEl) maxEl.value = String(max);
+
+            // #216: blank when unset (null/garbage); otherwise the clamped value.
+            var startRaw = lsGet('startDifficulty', null);
+            var startN = (startRaw === null || startRaw === '') ? NaN : parseInt(startRaw, 10);
+            var startEl = document.getElementById('dd-start-difficulty');
+            if (startEl) {
+                startEl.value = isNaN(startN) ? '' : String(Math.max(0, Math.min(100, startN)));
+            }
 
             var glevelsRaw = parseInt(lsGet('generateLevels', 4), 10);
             var glevels = Math.max(2, Math.min(8, isNaN(glevelsRaw) ? 4 : glevelsRaw));
