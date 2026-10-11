@@ -200,7 +200,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and seeded at the hardest 0.98. `_eloSeedChance` now returns the neutral 0.5
   for `null`/`''`/`undefined` before coercing, while a real numeric `0` cost
   still maps to 0.98. Regression test added.
-  Version 0.34.0 -> 0.34.1.
+  Version 0.34.1 -> 0.34.2.
 - Removed leftover duplication from the scoring-pipeline unification and
   documented the single pipeline (Stage 4-4, #166, part of #139). Factored
   the thrice-repeated abandon-phrase reset (discontinuity step's two branches,
