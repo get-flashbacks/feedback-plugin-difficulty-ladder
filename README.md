@@ -614,12 +614,27 @@ consolidation record — what was absorbed, the exact storage/migration contract
 caveat, the runtime-rewritten legacy `songMastery` key, and the best-effort
 rollback path), an end-to-end compatibility matrix (including the unhandled
 concurrent-tab clobber), the both-installed conflict decision, and the gated
-removal timeline — is in [`MIGRATION.md`](MIGRATION.md). The two plugins
-coexist in **read-only compatibility mode**: this plugin never reads or writes
-the *separate Song Mastery plugin's* storage, and registers its own card action
-under a distinct id. **The separate Song Mastery plugin is not declared
-obsolete** — that step is gated on the matrix's cross-plugin upgrade row
-passing and on #84/#85.
+removal timeline — is in [`MIGRATION.md`](MIGRATION.md).
+
+The two plugins coexist in **read-only compatibility mode**. On first run,
+Difficulty Ladder **reads** (and never writes) the separate Song Mastery
+plugin's Dynamic Difficulty settings blob (`song_mastery_dd`) for a one-time
+settings import — `allowDecrease:false` → *Level up only*, `defaultDifficulty`
+→ *Starting difficulty for new songs*, and `maxStepsUp`/`maxStepsDown × stepSize`
+→ the per-play movement limits — applied only where Difficulty Ladder has no
+preference of its own (the full mapping table, including the values deliberately
+**not** imported, is in [`MIGRATION.md` §6](MIGRATION.md)). It never reads or
+writes that plugin's **score** storage, and registers its own card action under
+a distinct id. **The separate Song Mastery plugin is not declared obsolete** —
+that step is gated on the matrix's cross-plugin upgrade row passing and on
+#84/#85.
+
+**Best mastery vs adaptive difficulty.** *Best mastery* is a per-arrangement,
+monotonic long-term score (`phrase difficulty × hit rate`) persisted with the
+profile; *adaptive difficulty* is the live, per-play controller that moves the
+slider. They are independent: the controller never reads or writes best mastery,
+and this settings import touches only the settings above, never a score or a
+mastery value.
 
 ## Settings
 

@@ -104,6 +104,10 @@
     // you left off, instead of inheriting an unrelated song's difficulty.
     const SONG_MASTERY_LS_KEY = `${LS_PREFIX}songMastery`; // legacy, read-only at runtime
     const PHRASE_ATTEMPTS_LS_KEY = `${LS_PREFIX}phraseAttempts.v1`; // legacy migration source
+    // Issue #85: the separate Song Mastery plugin's Dynamic Difficulty settings
+    // live under this bare (un-prefixed) key. The one-time import marks
+    // completion under the prefixed `songMasteryDDImport.v1` key.
+    const SONG_MASTERY_DD_LS_KEY = 'song_mastery_dd';
     const PROGRESS_LS_KEY = `${LS_PREFIX}progress.v2`;
     const PHRASE_ATTEMPTS_V2_LS_KEY = `${LS_PREFIX}phraseAttempts.v2`;
     const PROGRESS_SCHEMA = 'difficulty_ladder.progress.v2';
@@ -1619,6 +1623,9 @@
         settings.maxMastery = max;
     }
     _normalizeMasteryBounds();
+    // Issue #85: one-time import of the separate Song Mastery plugin's DD
+    // settings, applied only where Difficulty Ladder has no preference yet.
+    _importSongMasteryDDSettings();
 
     // Issue #216: the optional starting difficulty applied on a first play of an
     // arrangement that has no saved current difficulty. `null` (the default —
@@ -1675,6 +1682,84 @@
             hi = inside;
         }
         return { lo: lo, hi: hi };
+    }
+
+    // ---- Song Mastery DD settings import (issue #85) ---------------------
+    // The separate Song Mastery plugin stores its Dynamic Difficulty settings
+    // under the bare `song_mastery_dd` key. On first run, Difficulty Ladder
+    // initializes only the settings it can express exactly, and only where it
+    // has no preference of its own; everything else is documented as
+    // unsupported (MIGRATION.md) rather than silently reinterpreted. No second
+    // DD loop is created — these are settings, not a controller.
+    function _rawLsGet(key) {
+        try { return localStorage.getItem(key); } catch (_) { return null; }
+    }
+
+    function _readSongMasteryDDSettings() {
+        var raw = _rawLsGet(SONG_MASTERY_DD_LS_KEY);
+        if (!raw) return null;
+        try {
+            var parsed = JSON.parse(raw);
+            return _plainObject(parsed) ? parsed : null;
+        } catch (_) { return null; }
+    }
+
+    // Song Mastery caps per-play movement as `maxSteps × stepSize` percentage
+    // points from the starting difficulty; `0` means unlimited. Translate to a
+    // Difficulty Ladder point limit (#217). Returns null for unlimited/absent.
+    function _songMasteryStepLimit(steps, stepSize) {
+        var n = Number(steps);
+        var s = Number(stepSize);
+        if (!isFinite(n) || n <= 0) return null; // 0 = unlimited
+        if (!isFinite(s) || s <= 0) return null;
+        return Math.max(0, Math.min(100, Math.round(n * s)));
+    }
+
+    // Run once. Never overrides an explicit Difficulty Ladder preference, never
+    // infers a mapping from thresholds/presets, and always records that the
+    // attempt happened so a later Song Mastery edit is not re-imported over a
+    // Difficulty Ladder choice.
+    function _importSongMasteryDDSettings() {
+        if (lsGet('songMasteryDDImport.v1', null)) return null; // already attempted
+        var sm = _readSongMasteryDDSettings();
+        if (!sm) return null; // no Song Mastery DD settings on this device
+        var applied = {};
+
+        // allowDecrease:false => Level up only. Only when it is not already set,
+        // and only from the explicit flag — never from thresholds or presets.
+        if (sm.allowDecrease === false && settings.levelUpOnly !== true) {
+            settings.levelUpOnly = true;
+            lsSet('levelUpOnly', true);
+            applied.levelUpOnly = true;
+        }
+        // defaultDifficulty => first-play starting difficulty (#216).
+        if (settings.startDifficulty == null && isFinite(Number(sm.defaultDifficulty))) {
+            var d = Math.max(0, Math.min(100, Math.round(Number(sm.defaultDifficulty))));
+            settings.startDifficulty = d;
+            lsSet('startDifficulty', d);
+            applied.startDifficulty = d;
+        }
+        // maxStepsUp/Down × stepSize => per-play point limits (#217).
+        if (settings.maxRisePct == null) {
+            var rise = _songMasteryStepLimit(sm.maxStepsUp, sm.stepSize);
+            if (rise !== null) {
+                settings.maxRisePct = rise;
+                lsSet('maxRisePct', rise);
+                applied.maxRisePct = rise;
+            }
+        }
+        if (settings.maxFallPct == null) {
+            var fall = _songMasteryStepLimit(sm.maxStepsDown, sm.stepSize);
+            if (fall !== null) {
+                settings.maxFallPct = fall;
+                lsSet('maxFallPct', fall);
+                applied.maxFallPct = fall;
+            }
+        }
+
+        var marker = { completed: true, applied: applied };
+        lsSet('songMasteryDDImport.v1', marker);
+        return marker;
     }
 
     function thresholds() {
@@ -4960,6 +5045,7 @@
             RESUME_OFFSET_FRACTION,
             _maybeRestoreSongMastery, _resumeStartPct, _startDifficultyPct,
             _pctLimit, _playMoveBounds,
+            _importSongMasteryDDSettings, _songMasteryStepLimit, _readSongMasteryDDSettings,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
             // #183: library-card regenerate action — registration + run handler
