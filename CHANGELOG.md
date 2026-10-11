@@ -34,6 +34,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the gate: C5 (#113) must ship and log data first.
 
 ### Added
+- One-time import of the separate Song Mastery plugin's Dynamic Difficulty
+  settings (#85, parent #81). On first run Difficulty Ladder reads (never
+  writes) the bare `song_mastery_dd` blob and initializes only the settings it
+  can express exactly, and only where it has no preference of its own:
+  `allowDecrease:false` → *Level up only*, `defaultDifficulty` → *Starting
+  difficulty for new songs* (#216), and `maxStepsUp`/`maxStepsDown × stepSize`
+  → the per-play movement limits (#217). Thresholds, step size, clock-based
+  cooldowns/windows and debug are **not** imported (no exact equivalent) and are
+  documented as such rather than reinterpreted; Song Mastery's `enabled` flag is
+  not mapped (it would silently switch a migrated user into automatic movement).
+  The attempt is recorded under `difficulty_ladder.songMasteryDDImport.v1`, so it
+  never re-runs or overrides a later Difficulty Ladder choice. No second DD loop,
+  event subscription or `setMastery` wrapper is created; the phrase-boundary
+  controller is unchanged and the manual slider still overrides automatic
+  changes. `_importSongMasteryDDSettings` / `_songMasteryStepLimit` /
+  `_readSongMasteryDDSettings` / `_lsHasKey` in `screen.js`; mapping table and
+  unsupported-list
+  in `MIGRATION.md` §6. Tested in `tests/screen.test.js` (no-source no-op, full
+  map, DL-preference precedence incl. an explicit stored `false`/blank `null`
+  respected via key presence, allowDecrease:true not inferred, thresholds-only
+  no-op, run-once, malformed/non-object payloads, step-limit translation).
+  Version 0.36.0 -> 0.37.0.
 - Optional **per-play movement limits** (#217, parent #81): **Max rise / Max
   fall** percentage-point caps (`settings.html`, blank = unlimited) on how far
   auto-adjust may move the difficulty from where the current play started. The

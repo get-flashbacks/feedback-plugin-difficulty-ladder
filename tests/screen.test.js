@@ -4907,6 +4907,130 @@ test('a movement limit setting change clamps a number and unsets garbage', () =>
     assert.equal(mod.settings.maxFallPct, null, 'garbage becomes unlimited');
 });
 
+// ── Song Mastery DD settings import (#85, M4) ──────────────────────────────
+
+test('no Song Mastery DD settings means no import and no marker', () => {
+    const mod = freshPlugin();
+    assert.equal(mod.settings.levelUpOnly, false);
+    assert.equal(mod.settings.startDifficulty, null);
+    assert.equal(mod.settings.maxRisePct, null);
+    assert.equal(mod.settings.maxFallPct, null);
+    assert.equal(global.localStorage.getItem('difficulty_ladder.songMasteryDDImport.v1'), null);
+});
+
+test('a full Song Mastery DD settings object maps to Difficulty Ladder settings once', () => {
+    const mod = freshPlugin({ stored: {
+        'song_mastery_dd': JSON.stringify({
+            enabled: true, defaultDifficulty: 62,
+            increaseThreshold: 75, decreaseThreshold: 55, stepSize: 5,
+            maxStepsUp: 2, maxStepsDown: 3, allowDecrease: false,
+        }),
+    } });
+
+    assert.equal(mod.settings.levelUpOnly, true, 'allowDecrease:false => Level up only');
+    assert.equal(mod.settings.startDifficulty, 62, 'defaultDifficulty => startDifficulty');
+    assert.equal(mod.settings.maxRisePct, 10, 'maxStepsUp 2 x stepSize 5');
+    assert.equal(mod.settings.maxFallPct, 15, 'maxStepsDown 3 x stepSize 5');
+    // Persisted for the live store too, not just the in-memory settings.
+    assert.equal(JSON.parse(global.localStorage.getItem('difficulty_ladder.startDifficulty')), 62);
+    const marker = JSON.parse(global.localStorage.getItem('difficulty_ladder.songMasteryDDImport.v1'));
+    assert.equal(marker.completed, true);
+    assert.deepEqual(marker.applied,
+        { levelUpOnly: true, startDifficulty: 62, maxRisePct: 10, maxFallPct: 15 });
+});
+
+test('the import never overrides an explicit Difficulty Ladder preference', () => {
+    const mod = freshPlugin({ stored: {
+        'song_mastery_dd': JSON.stringify({ defaultDifficulty: 62, maxStepsUp: 2, stepSize: 5, allowDecrease: false }),
+        'difficulty_ladder.startDifficulty': JSON.stringify(40),
+        'difficulty_ladder.maxRisePct': JSON.stringify(3),
+        'difficulty_ladder.levelUpOnly': JSON.stringify(true),
+    } });
+
+    assert.equal(mod.settings.startDifficulty, 40, 'the explicit DL start wins');
+    assert.equal(mod.settings.maxRisePct, 3, 'the explicit DL limit wins');
+    assert.equal(mod.settings.levelUpOnly, true, 'already set; not re-derived');
+    assert.equal(mod.settings.maxFallPct, null, 'nothing else was imported');
+});
+
+test('an explicit stored levelUpOnly:false is respected, not treated as unset', () => {
+    const mod = freshPlugin({ stored: {
+        'song_mastery_dd': JSON.stringify({ allowDecrease: false }),
+        'difficulty_ladder.levelUpOnly': JSON.stringify(false),
+    } });
+    assert.equal(mod.settings.levelUpOnly, false, 'the user deliberately allows decreases');
+    const marker = JSON.parse(global.localStorage.getItem('difficulty_ladder.songMasteryDDImport.v1'));
+    assert.equal(marker.applied.levelUpOnly, undefined);
+});
+
+test('an explicitly blank movement limit is respected, not treated as unset', () => {
+    // A user who cleared Max rise to blank (stored null) means "unlimited".
+    const mod = freshPlugin({ stored: {
+        'song_mastery_dd': JSON.stringify({ maxStepsUp: 2, stepSize: 5 }),
+        'difficulty_ladder.maxRisePct': JSON.stringify(null),
+    } });
+    assert.equal(mod.settings.maxRisePct, null, 'the explicit blank stays unlimited');
+});
+
+test('_lsHasKey distinguishes an absent key from a stored false/null', () => {
+    const mod = freshPlugin({ stored: {
+        'difficulty_ladder.levelUpOnly': JSON.stringify(false),
+        'difficulty_ladder.maxRisePct': JSON.stringify(null),
+    } });
+    assert.equal(mod._lsHasKey('levelUpOnly'), true, 'stored false is present');
+    assert.equal(mod._lsHasKey('maxRisePct'), true, 'stored null is present');
+    assert.equal(mod._lsHasKey('startDifficulty'), false, 'never set is absent');
+});
+
+test('allowDecrease true is never inferred into Level up only', () => {
+    const mod = freshPlugin({ stored: {
+        'song_mastery_dd': JSON.stringify({ allowDecrease: true, increaseThreshold: 88, decreaseThreshold: 68 }),
+    } });
+    assert.equal(mod.settings.levelUpOnly, false);
+});
+
+test('thresholds and presets alone map to nothing, but record the attempt', () => {
+    const mod = freshPlugin({ stored: {
+        'song_mastery_dd': JSON.stringify({
+            increaseThreshold: 65, decreaseThreshold: 45, cooldownSec: 8, confirmWindows: 2, gracePeriodSec: 5,
+        }),
+    } });
+    assert.equal(mod.settings.levelUpOnly, false);
+    assert.equal(mod.settings.startDifficulty, null);
+    assert.equal(mod.settings.maxRisePct, null);
+    assert.equal(mod.settings.maxFallPct, null);
+    const marker = JSON.parse(global.localStorage.getItem('difficulty_ladder.songMasteryDDImport.v1'));
+    assert.deepEqual(marker.applied, {});
+});
+
+test('the import runs at most once', () => {
+    const mod = freshPlugin({ stored: { 'song_mastery_dd': JSON.stringify({ defaultDifficulty: 30 }) } });
+    assert.equal(mod.settings.startDifficulty, 30);
+    assert.equal(mod._importSongMasteryDDSettings(), null, 'a second call is a no-op');
+});
+
+test('a malformed Song Mastery DD object is treated as absent', () => {
+    const mod = freshPlugin({ stored: { 'song_mastery_dd': '{not json' } });
+    assert.equal(mod._readSongMasteryDDSettings(), null);
+    assert.equal(mod.settings.startDifficulty, null);
+    assert.equal(global.localStorage.getItem('difficulty_ladder.songMasteryDDImport.v1'), null);
+});
+
+test('a non-object Song Mastery DD payload is treated as absent', () => {
+    const mod = freshPlugin({ stored: { 'song_mastery_dd': JSON.stringify([1, 2, 3]) } });
+    assert.equal(mod._readSongMasteryDDSettings(), null);
+    assert.equal(global.localStorage.getItem('difficulty_ladder.songMasteryDDImport.v1'), null);
+});
+
+test('_songMasteryStepLimit translates steps x stepSize and treats 0 as unlimited', () => {
+    const mod = freshPlugin();
+    assert.equal(mod._songMasteryStepLimit(0, 5), null, '0 steps = unlimited');
+    assert.equal(mod._songMasteryStepLimit(2, 5), 10);
+    assert.equal(mod._songMasteryStepLimit(3, undefined), null, 'no step size => unrepresentable');
+    assert.equal(mod._songMasteryStepLimit(undefined, 5), null);
+    assert.equal(mod._songMasteryStepLimit(-1, 5), null);
+});
+
 test('a record the ramp moved before any restore keeps its own value, not a concession', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;

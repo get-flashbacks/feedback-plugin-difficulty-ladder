@@ -121,8 +121,11 @@ runtime*, distinct from the data cutover marker above.
 
 ## 5. Conflict behaviour when both plugins are installed
 
-**Decision: read-only compatibility mode.** Difficulty Ladder never reads,
-writes, or deletes the *separate Song Mastery plugin's* storage, and registers
+**Decision: read-only compatibility mode.** Difficulty Ladder never writes or
+deletes any of the *separate Song Mastery plugin's* storage, and never reads its
+**score** storage; its only read is the one-time Dynamic Difficulty settings
+import in §6, which reads the bare `song_mastery_dd` settings blob to
+initialize Difficulty Ladder's own namespaced keys. It registers
 its own card action under a distinct id (`difficulty_ladder.mastery_badge`)
 behind the idempotency guard, so it cannot double-register *itself* — it
 cannot suppress the other plugin's badge, so if both render one, disable one in
@@ -146,25 +149,44 @@ from `README.md`.
 
 ## 6. Song Mastery DD settings mapping (#85)
 
-The legacy controller's settings map onto the current settings with explicit
-precedence; no legacy value is silently reinterpreted:
+The separate Song Mastery plugin stores its Dynamic Difficulty settings under
+the bare `song_mastery_dd` key (its `window._smDD` object). Difficulty Ladder
+imports the subset it can express **exactly**, once, on first run
+(`_importSongMasteryDDSettings`, `screen.js`), and only where Difficulty Ladder
+has **no preference of its own** (the setting is still at its default). The
+attempt is recorded under `difficulty_ladder.songMasteryDDImport.v1` as
+`{ completed: true, applied: { <setting>: <value>, ... } }` — `applied` is an
+audit record of which Difficulty Ladder settings the import initialized (empty
+when nothing mapped); only `completed` is consumed, as the run-once guard. So
+the import never re-runs or re-applies over a later Difficulty Ladder choice.
+The import only changes settings — it creates **no second DD loop**.
 
-| Song Mastery concept | Difficulty Ladder setting | Precedence / default |
+"Unset" is decided by **key presence**, not value: an explicit stored
+`levelUpOnly: false` or a blank (`null`) movement limit is a real user choice
+and is respected, exactly as an explicit `true` or numeric value is.
+
+| `song_mastery_dd` key | Difficulty Ladder setting | Rule |
 |---|---|---|
-| Adaptive on/off | Difficulty mode (`autoAdjust`) | Current value wins; legacy "off" maps to **Standard** |
-| Reaction / responsiveness | Reaction speed (`reactionSpeed`, `EMA_ALPHA`) | Current value wins; default 2 reproduces pre-#5 behaviour |
-| Confidence / thresholds | Sensitivity (`sensitivity`, 1-3) | Current value wins; step 10/15/20 points |
-| Downward easing | Difficulty drop speed (`downStepRatio`) | Current wins; default 1× |
-| Isolated-drop damping | Resist isolated difficulty drops (`dropResistance`) | Current wins; default off |
-| "Never lower" comfort preference | Level up only (`levelUpOnly`) | Read as a **comfort preference**, default off; must **not** be derived from a migrated value (see `CHANGELOG.md` #111/#85 note) |
-| Bounds | Min / Max % (`minMastery`, `maxMastery`) | Current wins |
-| Ladder depth | Generate ladder depth cap (`generateLevels`) | Current wins |
+| `allowDecrease: false` | Level up only (`levelUpOnly`) | Set true only from the explicit flag, and only if Level up only is not already on; never inferred from thresholds or presets |
+| `defaultDifficulty` | Starting difficulty for new songs (`startDifficulty`, #216) | Only if unset; the numeric value is clamped 0..100 |
+| `maxStepsUp` + `stepSize` | Per-play movement limits → Max rise (`maxRisePct`, #217) | Only if unset; `maxStepsUp × stepSize` points (Song Mastery `0` = unlimited → not imported) |
+| `maxStepsDown` + `stepSize` | Per-play movement limits → Max fall (`maxFallPct`, #217) | Only if unset; `maxStepsDown × stepSize` points (`0` = unlimited → not imported) |
+
+**Unsupported — documented, not silently reinterpreted:**
+
+| `song_mastery_dd` key | Why it is not imported |
+|---|---|
+| `enabled` | Song Mastery's adaptive controller is a distinct, clock/rolling-window loop; Difficulty Ladder's section-aware Adaptive mode is a different design. Importing `enabled:true` would silently switch a migrated user into automatic movement, so the mode is left at Difficulty Ladder's own default. |
+| `increaseThreshold`, `decreaseThreshold` | Absolute accuracy thresholds with no exact match in the Sensitivity (1-3) presets; do not approximate-and-label-equivalent — pick Sensitivity explicitly if desired. |
+| `stepSize` (alone) | Only meaningful here as the multiplier for `maxSteps*`; there is no standalone step-size setting to translate. |
+| `confirmWindows`, `cooldownSec`, `gracePeriodSec` | Time/clock-based confirmation and cooldown semantics. Difficulty Ladder adjusts at phrase boundaries with its own confirm/ramp logic; there is no clock-cooldown setting, and no second legacy loop is created. |
+| `minNotes`, `maxWindow` | Rolling per-note window parameters internal to Song Mastery's tracker; Difficulty Ladder scores per phrase — no equivalent. |
+| `debug` | Song Mastery's debug HUD; use Difficulty Ladder's diagnostics (`contributeDiagnostics`). |
 
 Precedence rule: **current Difficulty Ladder settings always win**; a legacy
-value is only a *default* for a setting the user has never touched, and the
-manual slider always overrides automatic changes. This mapping is documentation
-only — the live UI/algorithm reconciliation (and its regression tests) remains
-tracked in #85.
+value only initializes a setting the user has never set, and the manual slider
+always overrides automatic changes. The outcome is deterministic and covered by
+the "Song Mastery DD settings import" tests in `tests/screen.test.js`.
 
 ## 7. Rollback path
 
