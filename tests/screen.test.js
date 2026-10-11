@@ -216,6 +216,37 @@ test('calculateAndEmitSectionDifficulties sizes and fills sections by the tier e
     assert.equal(solo.glassSize, 'large');
 });
 
+test('calculateAndEmitSectionDifficulties no-ops for a highway that exposes getSections but not getPhrases', () => {
+    const mod = freshPlugin();
+    // A Host that has not shipped the phrase API must not throw: the section
+    // emit feature-detects getPhrases the same way it does every other getter.
+    global.window.highway = {
+        getSections: () => [{ time: 0, name: 'Verse' }],
+        getMastery: () => 0.5,
+    };
+    const events = collectEmits();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    assert.equal(events.length, 0, 'no section event is emitted for a highway without getPhrases');
+});
+
+test('calculateAndEmitSectionDifficulties bails before getMastery() for an unloaded highway', () => {
+    const mod = freshPlugin();
+    // getMastery() can throw while the chart is still loading, so the section
+    // emit must short-circuit on empty section/phrase data before calling it.
+    global.window.highway = {
+        getSections: () => [],
+        getPhrases: () => [],
+        getMastery: () => { throw new Error('chart not loaded'); },
+    };
+    const events = collectEmits();
+
+    mod.calculateAndEmitSectionDifficulties();
+
+    assert.equal(events.length, 0, 'no section event is emitted, and getMastery() is never reached');
+});
+
 function stubHighwayForSectionDifficulty({ sections, phrases, mastery, notes, chords, time, songInfo }) {
     return {
         getSections: () => sections,
