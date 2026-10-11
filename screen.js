@@ -1663,9 +1663,17 @@
         if (rise !== null) hi = Math.min(hi, start + rise);
         if (fall !== null) lo = Math.max(lo, start - fall);
         // A saved start outside the current bounds (the user narrowed Min/Max
-        // after setting it) can invert the interval; collapse to the bound so
-        // the slider is allowed back inside rather than frozen above the max.
-        if (lo > hi) lo = hi;
+        // after setting it) can invert the interval. Collapse to the NEARER
+        // absolute bound — `maxMastery` when the start is above it, `minMastery`
+        // when below — so the slider can come back inside rather than being
+        // parked under the floor (or above the ceiling). This is a single
+        // unconstrained-ish recovery step: it deliberately ignores the per-play
+        // cap, since the point is to restore the hard Min/Max guarantee.
+        if (lo > hi) {
+            var inside = Math.max(settings.minMastery, Math.min(settings.maxMastery, start));
+            lo = inside;
+            hi = inside;
+        }
         return { lo: lo, hi: hi };
     }
 
@@ -4852,7 +4860,11 @@
         // first plays — so no re-apply here.
         if (has('startDifficulty')) settings.startDifficulty = _startDifficultyPct();
         // #217: normalize the per-play movement limits the same way (null =
-        // unlimited). Applies to the next play's clamp, not the current one.
+        // unlimited). Unlike startDifficulty, these are read live by
+        // _playMoveBounds on every phrase, so a mid-play change takes effect on
+        // the current play's very next step — and can move the slider if the
+        // new cap sits beyond the current difficulty. They are not scoped to
+        // future plays only.
         if (has('maxRisePct')) settings.maxRisePct = _pctLimit(settings.maxRisePct);
         if (has('maxFallPct')) settings.maxFallPct = _pctLimit(settings.maxFallPct);
         // #157: any setting can change the guide's visibility or tiers.

@@ -4869,6 +4869,30 @@ test('_playMoveBounds falls back to the absolute bounds when limits are unset', 
     assert.deepEqual(mod._playMoveBounds({ playStartPct: 50 }, 50), { lo: 10, hi: 90 });
 });
 
+test('a play that starts below Min recovers to Min, not below the floor', () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    mod.settings.sensitivity = 2;
+    mod.settings.minMastery = 50;
+    mod.settings.maxMastery = 90;
+    mod.settings.maxRisePct = 5; // hi = start + rise = 25, below the floor
+    attachHighwayStub(20); // a saved difficulty under the (later raised) floor
+
+    // The inverted interval must collapse to Min, not to `start + rise`.
+    assert.deepEqual(mod._playMoveBounds({ playStartPct: 20 }, 20), { lo: 50, hi: 50 });
+
+    for (let i = 0; i < 40; i++) mod.commitPhraseResult(1.0);
+    assert.equal(global.window.highway.getMastery(), 0.5, 'the slider comes up to the floor');
+});
+
+test('a play that starts above Max recovers to Max, not past the ceiling', () => {
+    const mod = freshPlugin();
+    mod.settings.minMastery = 10;
+    mod.settings.maxMastery = 60;
+    mod.settings.maxFallPct = 5; // lo = start - fall = 75, above the ceiling
+    assert.deepEqual(mod._playMoveBounds({ playStartPct: 80 }, 80), { lo: 60, hi: 60 });
+});
+
 test('a movement limit setting change clamps a number and unsets garbage', () => {
     const mod = freshPlugin();
     global.window.dispatchEvent({
