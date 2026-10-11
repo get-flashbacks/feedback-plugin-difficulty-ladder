@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Section-practice override consumer (#161, M6 cross-repo 3/4): while a
+  section-practice override installed by another plugin is in force, the
+  song-wide controller suspends for the covered player and phrase — no
+  phrase-attempt record, no EMA, no warm-up count, no streak, no best
+  mastery, no slider write — and clears only the transient ramp/drop
+  state so a partial adjustment cannot fire after practice ends. Matching
+  is per player and per phrase: the commit's own context hashed with the
+  same field list + FNV-1a core's `practice-difficulty` domain
+  (feedBack#136, core PR #138, merge `1cc7a6c`) uses for `context_ref`,
+  plus the committed phrase (from the ledger snapshot's `curPhraseIdx`)
+  overlapping the override's half-open window; the highway's own live
+  override read-back (`getDifficultyOverride`) is authoritative per panel
+  when present, and a stale snapshot (arrangement/song switch) can never
+  match. The plugin never activates or clears overrides — core owns the
+  cross-plugin state — and the persisted Adaptive setting stays on; the
+  suspension surfaces through the controls toggle title and a
+  `practice_override` diagnostics field (schema
+  `difficulty_ladder.practice_override.v1`: `suspended`,
+  `active_overrides`, `last_sync`). A read-only capability cache primed via
+  `practice-difficulty / inspect` (re-primed on song/context events and
+  refreshed synchronously from lifecycle events) keeps the gameplay commit
+  path dispatch-free; older Hosts without the capability degrade to
+  byte-identical behavior. `_practiceOverrideFor` /
+  `practiceOverrideSuspendsCommit` / `_refreshPracticeOverrideCache` /
+  `_onPracticeOverrideEvent` in `screen.js`; tested in
+  `tests/screen.test.js` (enter/remain/leave, per-player isolation, stale
+  snapshot, highway read-back, older-Host degradation, controls +
+  diagnostics surface). Version 0.37.0 -> 0.38.0.
+
 ### Documentation
 - Added `ADAPTIVE_DIFFICULTY_LITERATURE.md`, the Phase 1 source-backed review for
   #54 (parent #31): core claims, per-source confidence and transfer risk for

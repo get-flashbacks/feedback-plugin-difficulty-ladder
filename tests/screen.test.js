@@ -6018,3 +6018,328 @@ test('Stage 4-3: the tick commits the completed ledger, so the attempt record na
     assert.equal(attempts[0].phrase_index, 0, 'the attempt names the COMPLETED phrase, not the incoming one');
     assert.equal(attempts[0].note_count, 1);
 });
+
+// ---------------------------------------------------------------------------
+// #161: the section-practice override consumer
+// ---------------------------------------------------------------------------
+// Difficulty Ladder never activates an override — it only suspends song-wide
+// auto-adjust while one another plugin installed is in force. These tests
+// drive the real cache/event/matcher surface (a stubbed
+// `window.feedBack.capabilities` shaped like core's) through the real commit
+// path, so the suspension they pin is the shipped one: no attempt record,
+// no EMA, no warm-up count, no streak, no best mastery, no slider write —
+// only the transient ramp/drop state clears, and the persisted Adaptive
+// setting stays on.
+
+// A capabilities double shaped like core's practice-difficulty domain:
+// `dispatch({capability, command: 'inspect'})` answers handled with the
+// public snapshot, and lifecycle events arrive through subscribe().
+function practiceCapabilitiesDouble({ overrides = [], outcome = 'handled' } = {}) {
+    const handlers = new Map();
+    const calls = [];
+    return {
+        calls,
+        dispatch(request = {}) {
+            calls.push(request);
+            if (request.capability === 'practice-difficulty' && request.command === 'inspect') {
+                return Promise.resolve(outcome === 'handled'
+                    ? {
+                        outcome: 'handled',
+                        payload: {
+                            schema: 'feedBack.practice_difficulty.state.v1',
+                            available: true,
+                            active_overrides: overrides,
+                            participants: [],
+                        },
+                    }
+                    : { outcome });
+            }
+            return Promise.resolve({ outcome: 'no-owner' });
+        },
+        subscribe(event, fn) {
+            if (!handlers.has(event)) handlers.set(event, []);
+            handlers.get(event).push(fn);
+            return () => {};
+        },
+        emitEvent(event, detail) {
+            for (const [name, fns] of handlers) {
+                if (name === event || name.endsWith(':' + event)) fns.forEach(fn => fn(detail));
+            }
+        },
+    };
+}
+
+function practiceOverrideEntry(ctx, mod, { start = 10, end = 20 } = {}) {
+    return {
+        schema: 'feedBack.practice_difficulty.override.v1',
+        context_ref: mod._practiceContextRef(ctx),
+        source: 'plugin.section_practice',
+        difficulty_pct: 40,
+        start_time: start,
+        end_time: end,
+        phrase_indices: [1],
+        label: 'Verse',
+        clamped: false,
+        activated_at: '2026-10-05T00:00:00.000Z',
+    };
+}
+
+// The commit's phrase scope: the ledger snapshot names the COMPLETED phrase
+// (`curPhraseIdx`), resolved against the highway's phrase list.
+function practiceCommit(idx, total = 4, hits = 4) {
+    return {
+        ratio: hits / total,
+        curPhraseIdx: idx,
+        phraseTotal: total,
+        phraseHits: hits,
+        phraseJudgments: [],
+    };
+}
+
+function practiceHighway({ mastery = 0.5, override = undefined } = {}) {
+    let current = mastery;
+    const hw = {
+        hasPhraseData: () => true,
+        getMastery: () => current,
+        setMastery: value => { current = value; },
+        getPhrases: () => [
+            { start_time: 0, end_time: 10, max_difficulty: 3 },
+            { start_time: 10, end_time: 20, max_difficulty: 3 },
+            { start_time: 20, end_time: 30, max_difficulty: 3 },
+        ],
+    };
+    // Only expose the live-override read-back when the caller models it —
+    // the shared section highway stubs predate the API, and an older Host
+    // has no such method.
+    if (override !== undefined) hw.getDifficultyOverride = () => override;
+    return hw;
+}
+
+test('#161: entering an override suspends the song-wide commit (nothing recorded, only ramp state clears)', async () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    const hw = practiceHighway();
+    global.window.highway = hw;
+    global.window.feedBack = { capabilities: practiceCapabilitiesDouble() };
+    await mod._refreshPracticeOverrideCache();
+    assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(1)), false);
+
+    // Enter: the capability snapshot now carries an override for this player
+    // covering phrase 1 [10, 20).
+    global.window.feedBack.capabilities = practiceCapabilitiesDouble({
+        overrides: [practiceOverrideEntry(ctx, mod)],
+    });
+    await mod._refreshPracticeOverrideCache();
+
+    const state = mod._mainScore();
+    state.rampDirection = 'up';
+    state.rampProgress = 2;
+    state.downStreak = 1;
+    const emaBefore = state.emaHitRate;
+    const scoredBefore = state.phrasesScored;
+    mod.commitPhraseResult(practiceCommit(1));
+
+    assert.equal(mod.loadPhraseAttempts(ctx).length, 0, 'no phrase-attempt history from the practiced phrase');
+    assert.equal(state.emaHitRate, emaBefore, 'no EMA update from the practiced phrase');
+    assert.equal(state.phrasesScored, scoredBefore, 'no warm-up count from the practiced phrase');
+    assert.equal(state.rampDirection, null, 'only the transient ramp state clears');
+    assert.equal(state.rampProgress, 0);
+    assert.equal(state.downStreak, 0);
+    assert.equal(hw.getMastery(), 0.5, 'no song-wide mastery write from the practiced phrase');
+    assert.equal(mod.settings.autoAdjust, true, 'the persisted Adaptive setting stays on');
+    assert.equal(mod.readProgress(ctx), null, 'no progress-store write from the practiced phrase');
+});
+
+test('#161: a commit outside the override window still advances the controller', async () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    const hw = practiceHighway();
+    global.window.highway = hw;
+    global.window.feedBack = {
+        capabilities: practiceCapabilitiesDouble({ overrides: [practiceOverrideEntry(ctx, mod)] }),
+    };
+    await mod._refreshPracticeOverrideCache();
+
+    // Phrase 2 [20, 30) does not overlap the [10, 20) window: normal commit.
+    mod.commitPhraseResult(practiceCommit(2));
+
+    assert.equal(mod.loadPhraseAttempts(ctx).length, 1, 'the uncovered phrase records normally');
+    assert.equal(mod._mainScore().emaHitRate, 1, 'the uncovered phrase feeds the EMA');
+    assert.equal(mod._mainScore().phrasesScored, 1, 'the uncovered phrase counts toward warm-up');
+});
+
+test('#161: leaving the override resumes the pre-existing song-wide state', async () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    const hw = practiceHighway();
+    global.window.highway = hw;
+    const caps = practiceCapabilitiesDouble({ overrides: [practiceOverrideEntry(ctx, mod)] });
+    global.window.feedBack = { capabilities: caps };
+    await mod._refreshPracticeOverrideCache();
+    assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(1)), true);
+
+    // Leave: the lifecycle event carries only a context_ref (no full
+    // record), so the cache drops the entry and suspends nothing.
+    const entry = practiceOverrideEntry(ctx, mod);
+    mod._onPracticeOverrideEvent({ context_ref: entry.context_ref, source: entry.source, reason: 'command-clear' });
+    await Promise.resolve();
+
+    assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(1)), false);
+    mod.commitPhraseResult(practiceCommit(1));
+    assert.equal(mod.loadPhraseAttempts(ctx).length, 1, 'commits record again after the override leaves');
+    assert.equal(mod._mainScore().phrasesScored, 1);
+});
+
+test('#161: suspension is per player — another panel keeps committing', async () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const main = playerContext({ player_id: 'main', profile_hash: 'hash-main' });
+    const side = playerContext({ session_id: 'session-1', player_id: 'player-2', profile_hash: 'hash-side' });
+    mod.upsertPlayerContext(main);
+    const hwMain = practiceHighway();
+    const hwSide = practiceHighway();
+    global.window.highway = hwMain;
+    global.window.feedBack = {
+        capabilities: practiceCapabilitiesDouble({ overrides: [practiceOverrideEntry(main, mod)] }),
+    };
+    await mod._refreshPracticeOverrideCache();
+
+    assert.equal(mod.practiceOverrideSuspendsCommit(main, hwMain, practiceCommit(1)), true);
+    assert.equal(mod.practiceOverrideSuspendsCommit(side, hwSide, practiceCommit(1)), false,
+        'the override names the main context, so the side panel is unaffected');
+
+    const sideState = mod.newSplitScoreState(side);
+    mod.commitSplitPhraseResult(sideState, hwSide, practiceCommit(1));
+    assert.equal(mod.loadPhraseAttempts(side).length, 1, 'the isolated panel records normally');
+    assert.equal(sideState.phrasesScored, 1);
+
+    mod.commitPhraseResult(practiceCommit(1));
+    assert.equal(mod.loadPhraseAttempts(main).length, 0, 'the covered player still suspends');
+});
+
+test('#161: a stale snapshot (arrangement switch) never matches the new song', async () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const before = playerContext({ player_id: 'main', arrangement_id: 'lead' });
+    const after = playerContext({ player_id: 'main', arrangement_id: 'rhythm' });
+    mod.upsertPlayerContext(before);
+    const hw = practiceHighway();
+    global.window.highway = hw;
+    global.window.feedBack = {
+        capabilities: practiceCapabilitiesDouble({ overrides: [practiceOverrideEntry(before, mod)] }),
+    };
+    await mod._refreshPracticeOverrideCache();
+    assert.equal(mod.practiceOverrideSuspendsCommit(before, hw, practiceCommit(1)), true);
+
+    // The arrangement changed: the hashed ref no longer matches, exactly the
+    // staleness behavior core's own `no-target` answers with.
+    assert.equal(mod.practiceOverrideSuspendsCommit(after, hw, practiceCommit(1)), false);
+    assert.notEqual(mod._practiceContextRef(before), mod._practiceContextRef(after));
+});
+
+test('#161: an older Host without the capability degrades to byte-identical behavior', async () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    const hw = practiceHighway();
+    global.window.highway = hw;
+
+    // No capabilities surface at all.
+    global.window.feedBack = {};
+    await mod._refreshPracticeOverrideCache();
+    assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(1)), false);
+    mod.commitPhraseResult(practiceCommit(1));
+    assert.equal(mod.loadPhraseAttempts(ctx).length, 1);
+
+    // A Host whose domain answers something other than handled.
+    global.window.feedBack = { capabilities: practiceCapabilitiesDouble({ outcome: 'no-owner' }) };
+    await mod._refreshPracticeOverrideCache();
+    assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(1)), false);
+    mod.commitPhraseResult(practiceCommit(2));
+    assert.equal(mod.loadPhraseAttempts(ctx).length, 2, 'degradation keeps every commit');
+});
+
+test('#161: the highway live-override read-back is authoritative per panel', async () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    // Empty cache, but THIS panel's highway reports core's own install.
+    global.window.feedBack = { capabilities: practiceCapabilitiesDouble({ overrides: [] }) };
+    await mod._refreshPracticeOverrideCache();
+    const hw = practiceHighway({ override: { startTime: 10, endTime: 20, fraction: 0.4 } });
+    global.window.highway = hw;
+
+    assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(1)), true,
+        'the override is in force for exactly the panel it was installed on');
+    assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(2)), false,
+        'outside the half-open window the slider applies');
+
+    // ...while a panel whose highway reports no override is unaffected even
+    // with a cached override for another panel.
+    const other = playerContext({ session_id: 'session-1', player_id: 'other', profile_hash: 'hash-other' });
+    global.window.feedBack.capabilities = practiceCapabilitiesDouble({
+        overrides: [practiceOverrideEntry(other, mod)],
+    });
+    await mod._refreshPracticeOverrideCache();
+    const quiet = practiceHighway({ override: null });
+    assert.equal(mod.practiceOverrideSuspendsCommit(ctx, quiet, practiceCommit(1)), false,
+        'a highway that reports no override suspends nothing, whatever the cache holds elsewhere');
+});
+
+test('#161: suspension surfaces in controls and diagnostics without touching the Adaptive setting', async () => {
+    const mod = freshPlugin();
+    mod.settings.autoAdjust = true;
+    const ctx = playerContext({ player_id: 'main' });
+    mod.upsertPlayerContext(ctx);
+    const hw = practiceHighway();
+    global.window.highway = hw;
+    global.window.feedBack = {
+        capabilities: practiceCapabilitiesDouble({ overrides: [practiceOverrideEntry(ctx, mod)] }),
+    };
+    await mod._refreshPracticeOverrideCache();
+
+    const contributed = [];
+    global.window.feedBack.diagnostics = { contribute: (id, payload) => contributed.push(payload) };
+    mod.contributeDiagnostics();
+    assert.equal(contributed.length, 1);
+    assert.equal(contributed[0].practice_override.suspended, true);
+    assert.equal(contributed[0].practice_override.active_overrides, 1);
+    assert.ok(contributed[0].practice_override.last_sync, 'the sync time is reported');
+    assert.equal(contributed[0].auto_adjust_enabled, true, 'the persisted setting stays on');
+
+    // The controls banner resolves from the same diagnostic, so the two can
+    // never disagree.
+    var created = [];
+    global.document.createElement = function () {
+        var el = {
+            style: {}, title: '', id: '', disabled: false,
+            classList: { toggle: function () {}, add: function () {}, remove: function () {} },
+            appendChild: function () {},
+            contains: function () { return false; },
+            onclick: null,
+        };
+        created.push(el);
+        return el;
+    };
+    var slot = {
+        style: {}, title: '', id: '',
+        classList: { toggle: function () {}, add: function () {}, remove: function () {} },
+        appendChild: function () {},
+        contains: function () { return false; },
+    };
+    global.window.feedBack.uiVersion = 'v3';
+    global.window.feedBack.ui = { playerControlSlot: function () { return slot; } };
+    mod.mountControls();
+    const toggle = created.filter(function (el) { return el.id === 'dynamic-difficulty-toggle'; })[0];
+    mod.syncControlsUI();
+    assert.ok(toggle.title.indexOf('suspended') !== -1, 'the toggle names the temporary suspension');
+    assert.equal(mod.settings.autoAdjust, true);
+});
