@@ -570,10 +570,12 @@ lacks it (tiers are then derived from `max_difficulty` alone on those
 phrases, which cannot tell a collapsed single-level phrase from a full
 one — a mixed host is still a legacy host for those phrases), and `null`
 when there is no phrase data to judge. The three phrase-tier consumers
-(HUD glass, the `difficulty_ladder.sections.v3` event, and the phrase-attempt
-log) and their one intentional divergence on a collapsed ladder
-(`top_difficulty < max_difficulty`) are pinned by `tests/screen.test.js`'s
-host-contract tests.
+(the rendered DOM tier rail — the standalone guide since #157 replaced the
+canvas "glass" HUD — the `difficulty_ladder.sections.v3` event, and the
+phrase-attempt log) and their one intentional divergence on a collapsed ladder
+(`top_difficulty < max_difficulty`: the rail and attempt log report the
+slider's tier, which keeps climbing to `max_tier`, while v3 caps at full
+detail) are pinned by `tests/screen.test.js`'s host-contract tests.
 
 **Peer plugin requirements** (see also `CLAUDE.md` → *Plugin dependencies*,
 [#130](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder/issues/130)).

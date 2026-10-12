@@ -846,6 +846,122 @@ test('host-contract: drawHud fills a collapsed ladder from pTop, not max_difficu
         'the drawn fill reflects pTop (full here), not max_difficulty');
 });
 
+// The rendered guide is the event-driven DOM tier rail since #157, so the
+// host-contract coverage above, which rides the retired glass HUD, is repeated
+// here against the live renderer. The rail's lit segments (= currentTier), its
+// full-detail notch (= topTier) and the accessible description must all read
+// from the same mastery -> tier mapping as the v3 emit and the attempt log —
+// including the one intentional collapse divergence (top_difficulty <
+// max_difficulty: v3 caps at full detail, the rail/attempt log keep climbing).
+function railDom() {
+    function el(tag) {
+        const node = {
+            tagName: tag, id: '', children: [], attributes: {},
+            style: { cssText: '', display: '' }, isConnected: true,
+            appendChild(c) { this.children.push(c); c.parentNode = this; return c; },
+            removeChild(c) { this.children = this.children.filter((x) => x !== c); return c; },
+            setAttribute(k, v) { this.attributes[k] = String(v); },
+            getAttribute(k) { return this.attributes[k]; },
+            addEventListener() {},
+            get firstChild() { return this.children[0] || null; },
+        };
+        return node;
+    }
+    const player = el('div');
+    player.classList = { contains: (c) => c === 'active' };
+    return {
+        player,
+        document: {
+            addEventListener() {},
+            getElementById: (id) => (id === 'player' ? player : null),
+            createElement: (tag) => el(tag),
+        },
+    };
+}
+
+function freshRailPlugin() {
+    const dom = railDom();
+    global.window = { addEventListener() {} };
+    global.document = dom.document;
+    global.localStorage = { getItem: () => null, setItem() {} };
+    global.requestAnimationFrame = () => 1;
+    const file = path.join(__dirname, '..', 'screen.js');
+    delete require.cache[require.resolve(file)];
+    const mod = require(file);
+    mod.settings.showDifficultyGuide = true;
+    return { mod, dom };
+}
+
+function railCell(dom) {
+    const rail = dom.player.children.find((c) => c.id === 'dynamic-difficulty-rail');
+    assert.ok(rail, 'the rendered guide is the DOM tier rail');
+    return rail.children[0];
+}
+
+test('host-contract: the rendered tier rail agrees with the v3 emit and the attempt log on a full ladder', () => {
+    const { mod, dom } = freshRailPlugin();
+    const ctx = playerContext({ song_id: 'song.feedpak', arrangement_id: 'lead' });
+    const phrase = { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 3 };
+    const highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }], phrases: [phrase], mastery: 0.74,
+    });
+    highway.hasPhraseData = () => true;
+    global.window.highway = highway;
+    const state = mod.newSplitScoreState(ctx);
+    state.curPhraseIdx = 0;
+    state.phraseTotal = 1;
+    state.phraseHits = 1;
+
+    mod._syncDifficultyRail();
+    const cell = railCell(dom);
+    const lit = cell.children.filter((s) => s.style.cssText.includes('background:#e8c040'));
+    const notch = cell.children.filter((s) => s.style.cssText.includes('outline:'));
+
+    const collector = collectOneEmit();
+    mod.calculateAndEmitSectionDifficulties(null, highway);
+    const v3 = collector.v3().detail.sections[0].phrases[0];
+    mod.recordPhraseAttempt(1, ctx, state, highway);
+    const attempt = mod.loadPhraseAttempts(ctx)[0].presented_difficulty;
+
+    assert.equal(lit.length - 1, 2, 'tiers 0..2 lit -> currentTier 2');
+    assert.equal(lit.length - 1, v3.current_tier, 'the rail lights the same tier the v3 emit reports');
+    assert.equal(lit.length - 1, attempt, 'and the same tier the attempt log recorded');
+    assert.equal(notch.length, 1, 'exactly one full-detail notch');
+    assert.equal(cell.children.indexOf(notch[0]), v3.top_tier, 'the notch sits at the v3 top tier');
+});
+
+test('host-contract: on a collapsed ladder the rail keeps the slider tier the attempt log records while v3 caps at full detail', () => {
+    const { mod, dom } = freshRailPlugin();
+    const ctx = playerContext({ song_id: 'song.feedpak', arrangement_id: 'lead' });
+    const phrase = { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 };
+    const highway = stubHighwayForSectionDifficulty({
+        sections: [{ time: 0, name: 'Verse' }], phrases: [phrase], mastery: 0.9,
+    });
+    highway.hasPhraseData = () => true;
+    global.window.highway = highway;
+    const state = mod.newSplitScoreState(ctx);
+    state.curPhraseIdx = 0;
+    state.phraseTotal = 1;
+    state.phraseHits = 1;
+
+    mod._syncDifficultyRail();
+    const cell = railCell(dom);
+    const lit = cell.children.filter((s) => s.style.cssText.includes('background:#e8c040'));
+    const notch = cell.children.filter((s) => s.style.cssText.includes('outline:'));
+
+    const collector = collectOneEmit();
+    mod.calculateAndEmitSectionDifficulties(null, highway);
+    const v3 = collector.v3().detail.sections[0].phrases[0];
+    mod.recordPhraseAttempt(1, ctx, state, highway);
+    const attempt = mod.loadPhraseAttempts(ctx)[0].presented_difficulty;
+
+    assert.equal(attempt, 3, 'the attempt log records the uncapped slider tier');
+    assert.equal(lit.length - 1, attempt, 'the rail lights the same uncapped tier');
+    assert.equal(v3.current_tier, 1, 'the v3 emit caps at full detail (top_tier)');
+    assert.notEqual(lit.length - 1, v3.current_tier, 'so the rail and v3 intentionally diverge');
+    assert.equal(cell.children.indexOf(notch[0]), 1, 'the notch marks the collapsed top tier (1)');
+});
+
 test('contributeDiagnostics reports the host tier-semantics signal', () => {
     const mod = freshPlugin();
     const contributed = [];
