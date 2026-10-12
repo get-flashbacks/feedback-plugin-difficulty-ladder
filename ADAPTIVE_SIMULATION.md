@@ -1,9 +1,8 @@
-# Adaptive difficulty: Phase 2 simulation scaffold
+# Adaptive difficulty: Phase 2 simulation evaluation
 
-Research progress for [#55](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder/issues/55),
-under parent [#31](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder/issues/31).
-This completes the unblocked scenario/measurement scaffold. Candidate implementation/ranking
-still waits on the Phase 1 review (#54); this is not a Phase 4 adoption report.
+Computational phase for [#55](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder/issues/55), under [#31](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder/issues/31). It implements the Phase 1-selected estimator candidates, tunes only on declared development seeds, evaluates on held-out seeds, and compares both prequential forecasts and synthetic candidate-controlled runs. **This is not a Phase 3 human benchmark, an adoption decision, or evidence of learning/retention.**
+
+No production controller, setting, storage or runtime behavior changes.
 
 ## Reproduce
 
@@ -11,111 +10,82 @@ Requires Node.js and this repository; no npm dependencies, audio, GPU or player 
 
 ```bash
 node --test
-node tools/adaptive_simulation.js > baseline.json
-node tools/adaptive_simulation.js --trace=fatigue --seed=1000 > fatigue.ndjson
-node tools/adaptive_simulation.js --seeds=2 --sessions=2 --phrases=30 > smoke.json
-node tools/adaptive_simulation.js --exploration=0 > no-exploration.json
+node tools/adaptive_simulation.js --output=research/adaptive_baseline.json
+node tools/adaptive_simulation.js --mode=compare --output=research/adaptive_candidates.json
+node tools/adaptive_simulation.js --mode=compare --train-seeds=2 --eval-seeds=2 --sessions=2 --phrases=30 --output=/tmp/adaptive-smoke.json
+node tools/adaptive_simulation.js --trace=fatigue --seed=1000 > /tmp/fatigue.ndjson
 ```
 
-Summary JSON includes every seed's metrics and calibration bins. Trace NDJSON begins with
-configuration/source metadata, followed by each phrase's observations, pre-update prediction
-and separate evaluation truth. It is synthetic data, not a production phrase-attempt export.
-Unknown/duplicate flags and invalid sample sizes fail rather than producing misleading output.
-Configuration fields beyond these CLI flags can be supplied through the exported JS API.
+Default tuning seeds are 1000–1019; held-out evaluation seeds are 2000–2019. CLI seed counts take the first N seeds from those disjoint ranges. `--output` writes the JSON/NDJSON directly; omit it to print to stdout. Both checked-in result files include source SHA-256 values. Regenerate them if the controller, simulator, estimator or configuration changes.
 
-## Model and scope
+## Synthetic data model
 
-- Twenty independent seeds (1000–1019), four scenarios, eight sessions per seed,
-  100 phrases per session: **64,000 total synthetic phrase attempts**.
-- Nine items have fixed base difficulty from -1 to +1, equally spaced. There are eleven
-  synthetic tiers (0–10): `floor(masteryPct / 100 * 10)`. This is an explicit synthetic
-  tier map, not a certification of any real chart's tier semantics.
-- Item difficulty on each attempt is `baseDifficulty + 0.35 * presentedTier`.
-  Skill and difficulty are on a shared synthetic logit scale. Per-note success probability
-  is `sigmoid(skill - difficulty)`; hits are independent binomial trials.
-- Each phrase draws 6, 16 or 40 judged notes with equal probability. The item-selection,
-  response and day-offset random streams are separate and seeded.
-- Ordinary selection cycles through the middle three items. With probability 0.2,
-  exploration chooses uniformly from the full bank (including those middle items).
-  This jitters **item selection**, not the slider: arbitrary slider drift would trigger
-  the real controller's manual-override guard. It provides coverage without bypassing that guard.
-- Fast learner: rapid exponential improvement; plateau: initial linear improvement followed
-  by flat skill; fatigue: a repeated within-session decline with recovery next session;
-  day variance: a gradual trend plus seeded daily offsets. Exact functions are in `skillAt`.
-- The actual `screen.js` EMA/threshold controller selects mastery. The CommonJS exports run
-  in an isolated VM per run. Default sensitivity/reaction are 2, drop resistance is off,
-  down-step ratio is 1, and starting mastery is 50%. Every session represents a song boundary:
-  EMA resets as in production while the difficulty slider carries over.
-- A prediction is the **previous** EMA, or neutral 0.5 on a fresh session. The outcome then
-  updates the shipped controller. No post-update fitted value is scored as a forecast.
-- This bypasses live judgment polling, phrase finalization/persistence and Elo logging.
-  It tests the EMA commit/selection path, not all of the instrumentation added in #53/#113.
+- Four synthetic skill trajectories: fast learner, plateau, within-session fatigue with recovery at the next session, and day-to-day variance. Exact functions are in `skillAt`.
+- Nine items expose two centered synthetic chart features: density and interval complexity. **Ground-truth** base difficulty is `0.55 × density + 0.45 × interval`, so the item-bank mean is anchored at zero. The LLTM learns these weights from the features; it is intentionally a correctly specified/optimistic feature-model case, not a claim that real chart difficulty has this feature law.
+- Eleven discrete tiers (0–10); each tier adds a known `0.35` to item difficulty on the shared logit scale. Per-note probability is `sigmoid(skill − itemDifficulty)`.
+- Each phrase has 6, 16 or 40 judged notes; outcomes are binomial hit/miss counts. Item selection cycles through the middle three items, with 20% uniform exploration of the whole bank. Separate seeded streams generate item choices, note counts, responses and day offsets.
+- One reference scenario/seed comprises eight sessions × 100 phrases. Tuning comprises 4 × 20 × 800 = **64,000** reference-stream attempts. Evaluation uses another 64,000 EMA reference-stream attempts, plus 4 × 4 × 20 × 800 = **256,000 candidate-controlled attempts**. Candidate replays reuse the paired EMA stream rather than regenerating outcomes.
 
-The source SHA-256 is recorded in every output. These results used controller commit
-`890ad86643d2a369b31fddb1a615c1019a1d79fd` (including merged #113):
-`fde6c78291e5c84314670cddc3cc214fb5921c5283778d47155cfa510bd884fe`.
-Regenerate if the controller/configuration changes; do not silently compare old and new outputs.
+### Compared models
 
-## Measured EMA baseline
+- **EMA baseline:** the shipped `screen.js` controller runs in an isolated VM; its EMA resets at session/song boundaries, while the slider carries over. Default sensitivity/reaction are 2, drop resistance is off and the start is 50%. Its prediction is pre-outcome EMA (or 0.5 at a cold start).
+- **Elo / online Rasch:** player ability and per-item base difficulty update together after each phrase, with symmetric K=32 updates in standard Elo's 400-point scale (converted to natural-logit units). The mean estimated base-item difficulty is centered at zero; the known tier effect is added separately. Note-count reliability is weighted by `sqrt(n/16)`.
+- **Uncertainty-scaled Elo:** same model, with K multiplied by `1/(1 + 0.06 × prior phrase count)` for player and item. This tests the simple dynamic-K variant from Phase 1, **not a full Glicko implementation**.
+- **Kalman-Elo:** online Elo item estimates plus a scalar Kalman ability state. The observation is the smoothed binomial logit, `logit((hits + 0.5)/(n + 1)) + estimated item difficulty`; observation variance uses the delta-method binomial variance plus an item-uncertainty term. Process noise is tuned on training seeds.
+- **LLTM:** online binomial-logistic ability + linear item-feature difficulty. It uses the exact binomial score `hits − n × p`, normalized by 16 notes, with the centered density/interval features. Learning rate is tuned on training seeds. The mean-zero feature anchor identifies the ability/item scale.
 
-Executed with Node.js v24.19.0 using the default command above. All phrases, including cold starts,
-are scored; there is no burn-in exclusion. Values below are means across twenty runs. Min/max
-are the range of **run-level** RMSE, not confidence intervals or pooled phrase quantiles.
-Seed-level scalar metrics and convergence counts are retained in
-[`research/adaptive_baseline.json`](research/adaptive_baseline.json);
-the command regenerates full calibration bins and traces on demand.
+Candidates receive item IDs, the synthetic feature vector, tier and note count before prediction; hit/miss counts arrive only in the subsequent update. They never receive the hidden skill, true item difficulty or response probability. The replay API tests that boundary.
 
-| Scenario | Probability RMSE | Run RMSE min–max | Per-note Brier | Movement SD (percentage points) | Moves / 100 phrases |
+## Comparison protocol
+
+1. **Tuning:** Kalman process noise from `{0.002, 0.01, 0.02, 0.05, 0.1}` and LLTM learning rate from `{0.16, 0.24, 0.3, 0.4, 0.5, 0.6}` are selected by lowest pooled prequential probability RMSE across training seeds 1000–1019 and all four scenarios. Elo K and dynamic-K `β=0.06` are fixed from the literature/design. Selected values: Kalman `q=0.01`; LLTM `η=0.4`.
+2. **Held-out replay:** each estimator predicts the same EMA-selected item/tier/outcome stream for evaluation seeds 2000–2019. This isolates forecasting but does not test the candidate's own selection policy.
+3. **Candidate-controlled:** separately, each estimator selects a tier that minimizes distance to the declared 0.75 predicted-success target for the selected item. All candidates share item/note/response random streams, warm up for two phrases, confirm a direction for two phrases, wait three phrases between steps, and move at most one tier per action. This is a synthetic comparison policy, not a production controller. The EMA baseline continues to use the actual shipped controller.
+
+No evaluation seed participates in tuning. `research/adaptive_candidates.json` retains the full run-level metrics, pooled calibration bins, seed lists, tuning trials, configuration and source hashes.
+
+## Metrics
+
+- **Probability RMSE:** unweighted per-phrase error of the pre-update success-probability forecast.
+- **Skill / item RMSE:** latent logit-scale tracking errors after the explicit mean-item-difficulty anchor. These are `null` for EMA, which estimates a rate, not latent ability/item difficulty.
+- **Brier / calibration:** note-weighted Brier, signed note-weighted predicted-minus-observed hit rate, and ten predicted-probability bins. Bins without notes are `null`.
+- **Movement / oscillation:** population SD and variance of within-phrase slider changes in percentage points, plus moves per 100 phrases. This measures the tested controller policy, not learner experience.
+- **Convergence:** first completed 20-phrase session window with forecast RMSE ≤0.1. It is only the first low-error window for a changing synthetic trajectory, not permanent convergence or proof of skill acquisition.
+
+## Held-out results
+
+Means across the 20 evaluation seeds for each scenario; the first table compares candidate-controlled selection against the current EMA controller.
+
+| Scenario | EMA | Elo | Dynamic-K Elo | Kalman-Elo | LLTM |
 |---|---:|---:|---:|---:|---:|
-| Fast learner | 0.098865 | 0.090998–0.105324 | 0.173352 | 1.718268 | 11.875000 |
-| Plateau | 0.099567 | 0.092582–0.107041 | 0.178177 | 1.639182 | 10.818750 |
-| Fatigue | 0.104861 | 0.100852–0.109301 | 0.183681 | 1.957214 | 15.362500 |
-| Day variance | 0.099051 | 0.094075–0.103769 | 0.174994 | 1.762770 | 12.493750 |
+| Fast learner | 0.1177 | 0.0505 | 0.1247 | 0.0573 | 0.0354 |
+| Plateau | 0.1200 | 0.0474 | 0.0889 | 0.0571 | 0.0348 |
+| Fatigue | 0.1257 | 0.0920 | 0.1044 | 0.0700 | 0.0739 |
+| Day variance | 0.1187 | 0.0637 | 0.0934 | 0.0599 | 0.0486 |
 
-These are measured outputs of the declared synthetic model. They do not establish the performance
-of actual players, the optimal training accuracy, or a candidate's advantage over EMA.
+Probability RMSE, averaged over the four scenario means, is **0.1206 EMA**, **0.0634 Elo**, **0.1028 dynamic-K Elo**, **0.0611 Kalman-Elo**, and **0.0482 LLTM**. In held-out replay, corresponding means are 0.1206, 0.0624, 0.1088, 0.0603 and 0.0460. Thus the replay ordering broadly survives the shared candidate-controlled policy; this is still synthetic forecast accuracy, not learning gain.
 
-## Metrics and comparison contract
+| Candidate-controlled model | Skill RMSE | Item RMSE | Per-note Brier | Movement SD (pp) | Moves / 100 | Converged sessions* | Mean first convergence (phrases) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| EMA baseline | — | — | 0.1775 | 1.81 | 13.18 | 144.5 / 160 | 39.81 |
+| Elo | 0.3445 | 0.2756 | 0.1815 | 3.49 | 12.18 | 160 / 160 | 23.12 |
+| Dynamic-K Elo | 0.7616 | 0.3644 | 0.1595 | 3.23 | 10.46 | 129.25 / 160 | 33.53 |
+| Kalman-Elo | 0.3129 | 0.2584 | 0.1760 | 3.44 | 11.83 | 160 / 160 | 20.85 |
+| LLTM | 0.2193 | 0.1285 | 0.1853 | 3.73 | 13.95 | 160 / 160 | 20.98 |
 
-- **Probability RMSE:** unweighted per-phrase pre-update prediction error against known true
-  success probability. This is a common forecast scale for different estimators.
-- **Skill/item RMSE:** `null` for EMA. It estimates a rate, not latent skill or item difficulty.
-  A future candidate must state its logit/Elo scaling and identification anchor before reporting
-  these values. Subtracting an EMA hit rate from a latent skill value is not a valid comparison.
-- **Brier:** per-note squared error, weighted by judged-note count, computed from hit/miss counts.
-- **Calibration:** signed note-weighted predicted-minus-observed rate, plus ten probability bins.
-  Bins with no notes report `null`, not a zero accuracy. Correlated misses are not modeled here.
-- **Oscillation:** population SD of within-phrase slider changes (percentage points), alongside
-  moves per 100 phrases. Session boundaries are not counted as difficulty jumps.
-- **Convergence:** first completed twenty-phrase window with forecast RMSE at most 0.1, separately
-  for each session. `null` means it never occurred. For changing skill this is only the first
-  low-error window, not evidence of permanent convergence or skill identification.
+*Mean count across the four scenarios; each scenario has 160 held-out sessions (20 seeds × 8 sessions). Convergence window is RMSE ≤0.1 over 20 phrases.
 
-`replay(run, factory)` is the extension seam for Phase 1-selected estimators. `factory()` returns
-`predict(context)` and `update(outcome)`. Prediction sees only session/phrase/item/tier/note count;
-the observed hits/misses arrive afterward. Evaluation truth is never passed to either method.
-Each replay gets a fresh estimator, and malformed predictions fail. An oracle probability trace
-is used only as a test of the scorer (zero RMSE), never as a deployable candidate.
+## Phase 2 conclusion / Phase 3 shortlist
 
-All adapters replay the same **EMA-selected** item/tier/outcome stream, preserving a paired
-forecast comparison. This is not candidate-controlled closed-loop selection. Future work must
-evaluate each candidate's selection policy separately with common random draws; a replay gain
-alone cannot establish the #31 adoption threshold or an oscillation advantage for that candidate.
+- **Advance Kalman-Elo as the primary estimator candidate** and fixed Elo as its reference. Kalman-Elo tracks fast learning, plateau and day variance near fixed Elo, and gives the best controlled-model forecast in fatigue; its binomial/logit observation model is the closest match to the observed counts.
+- **Keep LLTM as an exploratory upper-bound candidate**, not a ready-to-ship winner. It wins this simulation because the synthetic item difficulty is deliberately generated from the exact two centered features the LLTM sees. Real-chart feature validity and calibration remain untested; its controller policy also moves more than EMA.
+- **Do not advance the tested dynamic-K Elo setting as the lead candidate.** Its estimate adapts too slowly to changing skill in this model and it is the only candidate that fails the convergence threshold in a substantial fraction of sessions. This is a result about this fixed decay (`β=0.06`) and these trajectories, not a rejection of Glicko generally.
+- **Do not adopt any candidate from this simulation.** The models estimate synthetic skill and forecast hits; this experiment measures neither retention nor transfer, player comfort, or real-chart difficulty calibration. Phase 3 (#56) still needs real-player data and its own study design; Phase 4 (#57) owns the adopt/defer decision.
 
-## Remaining gates
+## Remaining work
 
-1. Complete #54's source-backed candidate selection and parameter/observation models.
-2. Add the selected Elo/Glicko, binomial/logit Kalman and IRT adapters; predeclare tuning vs.
-   evaluation seeds. Evaluate calibration priors, item coverage and tier-aware item identities.
-   The shipped #113 logger keys by phrase and seeds from relative `difficulty_cost`; neither
-   that prior nor its prediction is assumed calibrated by this scaffold.
-3. Anchor latent skill/item scales before interpreting tracking RMSE; retain probability error
-   as a common comparison metric. Assess correlated phrase errors and richer/chart-derived items.
-4. Compare candidate-controlled runs, not just replay forecasts, before shortlisting in #55.
-5. #56 still requires real-player logs and its study-design choice; #57 owns the adopt/defer
-   decision after simulation and human guardrails. No retention evidence was generated here.
+- #56: human benchmark on real player sessions, with real hit counts and a predeclared privacy/study design.
+- #57: adopt/defer only after the simulation, human evidence and guardrails are considered.
+- No retention outcome, music-learning effect, real `difficulty_cost` calibration, or production-quality item-feature model is established here.
 
-No runtime plugin files, settings, storage layouts or production difficulty behavior are changed.
-The new tests verify deterministic scenarios, binomial-count consistency, prequential scoring,
-session isolation, exploration, truth withholding, oracle metrics, sample-size validation and CLI
-output. `node --test` passes 345 tests (335 existing + 10 scaffold tests).
+`node --test` covers seeded scenario generation, variable binomial counts, truth withholding, per-candidate anchoring/metrics, prequential ordering, disjoint tuning/evaluation seeds, shared random numbers, deterministic CLI/output files and invalid-input rejection. The complete repository suite passes **398 tests**.

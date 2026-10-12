@@ -48,11 +48,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidate list plus the parameter/observation-model checklist (binomial
   observation, logit scale with an explicit identification anchor, declared
   setpoint, closed-loop evaluation). Documentation only; changes no runtime behaviour.
-- Added the Phase 2 adaptive-difficulty simulation scaffold (#55, parent #31):
-  reproducible changing-skill/item traces, variable note counts, exploration,
-  pre-update EMA metrics, seed-level baseline results and an estimator replay seam.
-  Research tooling only; candidate ranking/adoption and real-player validation remain open.
-  Version 0.34.0 -> 0.34.1 to satisfy the repository's source-change release gate.
+- Completed the Phase 2 adaptive-difficulty simulation (#55, parent #31): added
+  prequential online-Rasch Elo, uncertainty-scaled Elo, binomial/logit Kalman-Elo
+  and LLTM estimators; tuned Kalman/LLTM only on seeds 1000–1019; evaluated paired
+  replay and candidate-controlled tier selection on disjoint seeds 2000–2019 with
+  common random numbers. Stores the refreshed EMA baseline and held-out per-run
+  metrics/calibration bins in `research/adaptive_baseline.json` and
+  `research/adaptive_candidates.json`. `ADAPTIVE_SIMULATION.md` reports the model,
+  metrics, results and bounded Phase 3 shortlist; findings are synthetic forecasts,
+  not learning/retention evidence or an adoption decision. Research tooling only.
+  Version 0.38.0 -> 0.38.1.
 - Added `TECHNIQUE_WEIGHTING.md`, the design note C7-1 (#167, roadmap #103
   item C7) requires #122 to resolve before any code lands. It answers the two
   open questions — neutral cold start (weight is exactly `1.0` with no
