@@ -624,8 +624,16 @@ Difficulty Ladder settings it can express exactly, in its own namespaced keys:
 difficulty for new songs*, and `maxStepsUp`/`maxStepsDown × stepSize` → the
 per-play movement limits — applied only where Difficulty Ladder has no
 preference of its own (the full mapping table, including the values deliberately
-**not** imported, is in [`MIGRATION.md` §6](MIGRATION.md)). It never reads or
-writes that plugin's **score** storage, and registers its own card action under
+**not** imported, is in [`MIGRATION.md` §6](MIGRATION.md)). It also imports the
+plugin's own **score/difficulty store** (`song_mastery_v1` /
+`song_mastery_v1_<profile-hash prefix>`) — again never modifying it — mapping
+each saved difficulty to this plugin's remembered *current difficulty* and each
+best mastery to the migrated mastery value, keeping the two strictly separate.
+Arrangement *names* in that store are resolved against Host metadata before
+anything is written, and any record that cannot be resolved (an unknown or
+duplicate name, or a legacy flat record) is deferred into a reviewable list
+rather than guessed; see
+[`MIGRATION.md` §11](MIGRATION.md). It registers its own card action under
 a distinct id. **The separate Song Mastery plugin is not declared obsolete** —
 that step is gated on the matrix's cross-plugin upgrade row passing and on
 #84/#85.

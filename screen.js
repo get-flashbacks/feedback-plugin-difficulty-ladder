@@ -108,6 +108,16 @@
     // live under this bare (un-prefixed) key. The one-time import marks
     // completion under the prefixed `songMasteryDDImport.v1` key.
     const SONG_MASTERY_DD_LS_KEY = 'song_mastery_dd';
+    // Issue #215: the separate Song Mastery plugin's actual score/difficulty
+    // store, keyed by song filename then arrangement NAME (not this plugin's
+    // own legacy `difficulty_ladder.songMastery` map). The bare key is the
+    // pre-profile/unscoped store; a profile-aware install appends the first 12
+    // characters of `player_hash`. The import records its claims under the
+    // prefixed `songMasterySourceImport.v1` marker.
+    const SONG_MASTERY_SOURCE_BASE = 'song_mastery_v1';
+    const SONG_MASTERY_SOURCE_SCHEMA = 'difficulty_ladder.song_mastery_source_import.v1';
+    const SONG_MASTERY_HASH_PREFIX_LEN = 12;
+    const SONG_MASTERY_DEFERRED_MAX = 500;
     const PROGRESS_LS_KEY = `${LS_PREFIX}progress.v2`;
     const PHRASE_ATTEMPTS_V2_LS_KEY = `${LS_PREFIX}phraseAttempts.v2`;
     const PROGRESS_SCHEMA = 'difficulty_ladder.progress.v2';
@@ -1941,6 +1951,12 @@
         // inherits the outgoing profile's EMA/warm-up/judgment state.
         if (persistenceContextKey(ctx) !== previousIdentitySignature) resetPerSongState();
         migrateLegacyData(ctx);
+        // #215: import the separate Song Mastery plugin's own score/difficulty
+        // store, resolving arrangement names against the loaded song's Host
+        // metadata. Unresolvable records are deferred, not guessed.
+        try {
+            _importSongMasterySource(ctx, { arrangements: _songMasteryArrangementMetadata() });
+        } catch (_) { /* never let a legacy import block gameplay */ }
         _restoreOrScheduleSections(ctx, window.highway);
         return ctx;
     }
@@ -3011,6 +3027,255 @@
             flushPhraseAttempts();
         }
         return true;
+    }
+
+    // ---- Song Mastery source-store import (issue #215) -------------------
+    // Imports the SEPARATE Song Mastery plugin's own storage, which is a
+    // different store from this plugin's legacy `difficulty_ladder.songMastery`
+    // map that #82 already migrates:
+    //
+    //   song_mastery_v1                      (unscoped / pre-profile installs)
+    //   song_mastery_v1_<first 12 of hash>   (profile-scoped, current plugin)
+    //
+    // Current shape: { filename -> { ArrangementName -> { difficulty, mastery } } }.
+    // An older flat shape: { filename -> { difficulty?, mastery? } } with no
+    // arrangement key at all.
+    //
+    // Two properties make this import different from the #82 one:
+    //   - the arrangement keys are display NAMES ("Lead"), which must be
+    //     resolved to canonical Host arrangement ids before anything can be
+    //     written — a name is never guessed into an id; and
+    //   - saved difficulty and best mastery are distinct fields that must land
+    //     in distinct canonical fields, so a remembered target can never be
+    //     read back as a historical score.
+    // Records whose arrangement cannot be resolved (unknown/duplicate name, or
+    // a flat record with no arrangement at all) are deferred into the marker's
+    // `deferred` list — a reviewable recovery path — with the source storage
+    // left untouched. See MIGRATION.md ("Song Mastery source-store import").
+    // Backslash normalization mirrors the source plugin's own `_normalizePath`
+    // on save, so a Windows path from a backup resolves against the
+    // forward-slash filename the Host reports at play time.
+    function _normalizeSongMasterySourceFilename(filename) {
+        var text = _id(filename);
+        if (!text) return null;
+        return text.replace(/\\/g, '/');
+    }
+
+    function _readSongMasterySource(sourceKey) {
+        // The source keys are un-prefixed, so lsGet (which always adds our
+        // prefix) cannot read them — read raw, then parse defensively.
+        var raw = null;
+        try { raw = localStorage.getItem(sourceKey); } catch (_) { raw = null; }
+        if (!raw) return null;
+        try {
+            var parsed = JSON.parse(raw);
+            return _plainObject(parsed) ? parsed : null;
+        } catch (_) { return null; }
+    }
+
+    // Current arrangement entry, or null when it carries no score/difficulty
+    // at all. Both fields are independently optional.
+    function _songMasterySourceRecord(entry) {
+        var obj = _plainObject(entry);
+        if (!obj) return null;
+        var difficulty = _pct(obj.difficulty);
+        var mastery = _pct(obj.mastery);
+        if (difficulty === null && mastery === null) return null;
+        return { difficulty: difficulty, mastery: mastery };
+    }
+
+    // The older flat shape ({ difficulty, mastery } directly under a
+    // filename) has no arrangement key, so it cannot be attributed to one
+    // without guessing. The source plugin itself treats it as unreadable.
+    function _isFlatSongMasteryEntry(entry) {
+        var obj = _plainObject(entry);
+        return !!obj && (typeof obj.difficulty === 'number' || typeof obj.mastery === 'number');
+    }
+
+    // Resolve a Song Mastery arrangement NAME to a canonical identity using
+    // Host metadata for one song (`{ index, name, type?, role? }[]`). A name is
+    // imported only when it matches EXACTLY ONE metadata row: an unknown name
+    // and a duplicate display name are both ambiguous and return null (defer).
+    function _songMasteryArrangementIdentity(name, arrangements) {
+        var wanted = _id(name);
+        if (!wanted || !Array.isArray(arrangements)) return null;
+        var lower = wanted.toLowerCase();
+        var matches = arrangements.filter(function (row) {
+            return _plainObject(row) && _id(row.name) && _id(row.name).toLowerCase() === lower;
+        });
+        if (matches.length !== 1) return null;
+        var meta = matches[0];
+        var type = _id(_coalesce([[meta, 'type'], [meta, 'instrument'], [meta, 'instrument_id']]), '');
+        var role = _id(_coalesce([[meta, 'role'], [meta, 'role_id']]), '');
+        if (!role && _isKaraokeRole(type || wanted)) role = 'karaoke';
+        if (!role) role = _fallbackRoleFor(type || wanted);
+        var arrangementId = _coalesce([[meta, 'index'], [meta, 'arrangement_index'], [meta, 'arrangementIndex']]);
+        // The name is the only stable id the metadata offers when it carries no
+        // index; this mirrors _songContextFields' own name-as-id fallback so a
+        // name-keyed play context still reads what the import wrote.
+        if (arrangementId == null) arrangementId = wanted;
+        return {
+            arrangement_id: arrangementId,
+            instrument: _instrumentKindFor(type || wanted, role),
+            role: role,
+        };
+    }
+
+    function _songMasteryClaimKey(ctx, sourceKey) {
+        return [
+            sourceKey, _profileKey(ctx), _nodeKey(ctx.song_id), _nodeKey(ctx.arrangement_id),
+            _nodeKey(ctx.instrument), _nodeKey(ctx.role),
+        ].join('::');
+    }
+
+    // Records a deferral once, so repeated song loads do not grow the list.
+    // Bounded so a large/foreign source store cannot grow storage without
+    // limit; the earliest deferrals are retained for review.
+    function _deferSongMasteryRecord(marker, sourceKey, filename, name) {
+        var songId = _normalizeSongMasterySourceFilename(filename);
+        var key = [sourceKey, songId || '', name == null ? '' : _id(name)].join('::');
+        if (marker.deferred.some(function (entry) { return entry && entry.key === key; })) return false;
+        if (marker.deferred.length >= SONG_MASTERY_DEFERRED_MAX) return false;
+        marker.deferred.push({
+            key: key,
+            source_key: sourceKey,
+            song_id: songId,
+            arrangement_name: name == null ? null : _id(name),
+            reason: name == null ? 'flat-record' : 'unresolved-arrangement',
+        });
+        return true;
+    }
+
+    // The Host metadata for the currently loaded song, as
+    // `{ index, name, type? }[]`. When the Host exposes only the streamed
+    // arrangement, exactly that one row is returned so its own record can
+    // import; every other song's record is deferred rather than guessed.
+    function _songMasteryArrangementMetadata() {
+        var hw = window.highway;
+        var si = (hw && typeof hw.getSongInfo === 'function') ? _plainObject(hw.getSongInfo()) : null;
+        var currentSong = _plainObject(window.feedBack && window.feedBack.currentSong) || {};
+        var list = _coalesce([[si || {}, 'arrangements'], [currentSong, 'arrangements']]);
+        if (Array.isArray(list)) return list;
+        var name = _id(_coalesce([
+            [si || {}, 'arrangement'], [si || {}, 'arrangement_name'],
+            [currentSong, 'arrangement'], [currentSong, 'arrangementName'],
+        ]));
+        if (!name) return [];
+        var index = _coalesce([[si || {}, 'arrangement_index'], [currentSong, 'arrangementIndex']]);
+        var type = _coalesce([
+            [si || {}, 'arrangement_type'], [si || {}, 'type'],
+            [currentSong, 'arrangement_type'], [currentSong, 'type'],
+        ]);
+        return [{ index: index, name: name, type: type }];
+    }
+
+    // Ownership: the unscoped base store may only be claimed by a confirmed
+    // single-player compatibility context on a Host with no profile API — the
+    // same rule #82's legacy migration follows. A profile-aware Host reads only
+    // its own hash-prefixed key and never another profile's.
+    function _songMasterySourceKeys(ctx) {
+        if (ctx.profile_hash) {
+            return [SONG_MASTERY_SOURCE_BASE + '_' + String(ctx.profile_hash).slice(0, SONG_MASTERY_HASH_PREFIX_LEN)];
+        }
+        if (!_profileApisPresent() && ctx.compatibility_adapter) return [SONG_MASTERY_SOURCE_BASE];
+        return [];
+    }
+
+    // Run per song/context. Idempotent per (source key, profile, song,
+    // arrangement, instrument, role): a claimed record is never re-imported,
+    // and an absent source never writes a blanket "done" marker, so a restored
+    // backup can still be imported later. Existing currentDifficulty wins, and
+    // the immutable migratedMastery is written once — a saved difficulty is
+    // never written as mastery, and a source mastery never lowers a live best.
+    function _importSongMasterySource(context, opts) {
+        var ctx = normalizePlayerContext(context);
+        if (!ctx) return null;
+        opts = _plainObject(opts) || {};
+        var sourceKeys = _songMasterySourceKeys(ctx);
+        if (!sourceKeys.length) return { imported: 0, deferred: 0, source_keys: [] };
+
+        var marker = _plainObject(lsGet('songMasterySourceImport.v1', null));
+        if (!marker || marker.schema !== SONG_MASTERY_SOURCE_SCHEMA) {
+            marker = {
+                schema: SONG_MASTERY_SOURCE_SCHEMA, version: 1,
+                claimed: {}, deferred: [], updated_at: null,
+            };
+        }
+        if (!_plainObject(marker.claimed)) marker.claimed = {};
+        if (!Array.isArray(marker.deferred)) marker.deferred = [];
+
+        var store = loadProgressStore();
+        var imported = 0;
+        var deferred = 0;
+        /* eslint-disable security/detect-object-injection --
+           Every key below is either an Object.keys() of an already-enumerated
+           source store or routed through _nodeKey()/_profileKey(), so no
+           bracket access can reach an inherited property. */
+        sourceKeys.forEach(function (sourceKey) {
+            var source = _readSongMasterySource(sourceKey);
+            if (!source) return; // absent: do NOT mark complete — a restored backup imports later
+            var currentFilename = _normalizeSongMasterySourceFilename(ctx.song_id);
+            Object.keys(source).forEach(function (rawFilename) {
+                var filename = _normalizeSongMasterySourceFilename(rawFilename);
+                var fileEntry = _plainObject(source[rawFilename]);
+                if (!filename || !fileEntry) return;
+                if (filename !== currentFilename) {
+                    if (_isFlatSongMasteryEntry(fileEntry)) {
+                        if (_deferSongMasteryRecord(marker, sourceKey, filename, null)) deferred += 1;
+                    } else {
+                        Object.keys(fileEntry).forEach(function (name) {
+                            if (_deferSongMasteryRecord(marker, sourceKey, filename, name)) deferred += 1;
+                        });
+                    }
+                    return;
+                }
+                if (_isFlatSongMasteryEntry(fileEntry)) {
+                    if (_deferSongMasteryRecord(marker, sourceKey, filename, null)) deferred += 1;
+                    return;
+                }
+                Object.keys(fileEntry).forEach(function (name) {
+                    var record = _songMasterySourceRecord(fileEntry[name]);
+                    if (!record) return;
+                    var identity = _songMasteryArrangementIdentity(name, opts.arrangements);
+                    if (!identity) {
+                        if (_deferSongMasteryRecord(marker, sourceKey, filename, name)) deferred += 1;
+                        return;
+                    }
+                    var recordContext = Object.assign({}, ctx, {
+                        song_id: filename,
+                        arrangement_id: identity.arrangement_id,
+                        instrument: identity.instrument,
+                        role: identity.role,
+                        skill: 'overall',
+                    });
+                    var claimKey = _songMasteryClaimKey(recordContext, sourceKey);
+                    if (Object.prototype.hasOwnProperty.call(marker.claimed, claimKey)) return;
+                    var existing = _readExactProgress(store, recordContext);
+                    var patch = { migratedMastery: record.mastery };
+                    if (_pct(existing && existing.currentDifficulty) === null && record.difficulty !== null) {
+                        patch.currentDifficulty = record.difficulty;
+                    }
+                    _writeProgressToStore(store, recordContext, patch);
+                    marker.claimed[claimKey] = {
+                        source_key: sourceKey,
+                        difficulty: record.difficulty,
+                        mastery: record.mastery,
+                        at: new Date().toISOString(),
+                    };
+                    imported += 1;
+                });
+            });
+        });
+        /* eslint-enable security/detect-object-injection */
+        if (imported) {
+            saveProgressStore(store);
+            flushProgressStore(); // cold path: persist immediately, like the #82 migration
+        }
+        if (imported || deferred) {
+            marker.updated_at = new Date().toISOString();
+            lsSet('songMasterySourceImport.v1', marker);
+        }
+        return { imported: imported, deferred: deferred, source_keys: sourceKeys };
     }
 
     // A finalized phrase's mastery is the difficulty that was actually
@@ -5544,6 +5809,12 @@
             _maybeRestoreSongMastery, _resumeStartPct, _startDifficultyPct,
             _pctLimit, _playMoveBounds,
             _importSongMasteryDDSettings, _songMasteryStepLimit, _readSongMasteryDDSettings, _lsHasKey,
+            // #215: import the separate Song Mastery plugin's own score/difficulty
+            // store (arrangement names resolved against Host metadata; unresolved
+            // and flat records deferred with a reviewable recovery list).
+            _importSongMasterySource, _songMasterySourceKeys, _songMasteryArrangementIdentity,
+            _songMasteryArrangementMetadata, _songMasterySourceRecord, _isFlatSongMasteryEntry,
+            _normalizeSongMasterySourceFilename, _readSongMasterySource,
             currentTarget, currentTargetStatus,
             mountControls, onGenerateClick, rememberGeneratedInstruments, onSongEvent,
             // #183: library-card regenerate action — registration + run handler

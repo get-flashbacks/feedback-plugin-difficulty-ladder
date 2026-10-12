@@ -57,6 +57,16 @@ don't look for persisted data that is never written):
 `difficulty_ladder.sections.v2` / `.v3`, `difficulty_ladder.difficulty_event.v1`,
 `difficulty_ladder.difficulty_request.v1`.
 
+**External source keys (the separate plugin's own storage, never prefixed with
+`difficulty_ladder.` and never written by this plugin):**
+
+| Key | Schema / shape | Lifecycle |
+|---|---|---|
+| `song_mastery_v1` | unscoped / pre-profile Song Mastery store: `filename → { ArrangementName → { difficulty?, mastery? } }` (older flat records: `filename → { difficulty?, mastery? }`) | read-only import source (#215), retained; see §11 |
+| `song_mastery_v1_<first 12 of player_hash>` | profile-scoped Song Mastery store, same shape | read-only import source (#215) for the matching profile only, retained; see §11 |
+| `song_mastery_dd` | the Song Mastery plugin's Dynamic Difficulty settings blob | read once for the §6 settings import; retained |
+| `difficulty_ladder.songMasterySourceImport.v1` (prefixed, written by this plugin) | `{ schema, version, claimed: { <sourceKey>::<profile>::<song>::<arrangement>::<instrument>::<role>: { source_key, difficulty, mastery, at } }, deferred: [ { key, source_key, song_id, arrangement_name, reason } ], updated_at }` | import claim/deferral record (#215); absence never blocks a later import (§11) |
+
 Key naming history: the plugin was renamed `dynamic_difficulty` →
 `difficulty_ladder`; the old `dynamic_difficulty.*` keys were **not** migrated
 (documented breaking change). The legacy *content* keys that **are** migrated
@@ -117,15 +127,16 @@ runtime*, distinct from the data cutover marker above.
 | **Concurrent tabs** | **Known limitation, not handled:** every store flushes its whole cached object, so if two tabs both load the store and then write, the later flush replaces the earlier one's profile or `migrations.songMasteryV1` marker, and can lower `bestMastery` (breaking its monotonicity) or drop migrated progress | `flushProgressStore` whole-object write, `screen.js`; **OPEN** — not cross-tab-serialised today |
 | **Private-mode / storage unavailable** | Writes fail quota-safely: bounded exponential retry (`PERSISTENCE_RETRY_MAX = 3`), then give up until the next save; no unbounded loop | `PERSISTENCE_FLUSH_MS` / `PERSISTENCE_RETRY_MAX`, `screen.js:106`; **verified in code** |
 | **Host has no `window.feedBack.libraryCardActions`** | Badge registration no-ops cleanly | `registerLibraryCardBadge` capability check; **verified in code** |
-| **Cross-plugin upgrade from the *separate* Song Mastery plugin's own storage** | **Unverified here**: the Song Mastery repository is not present in this workspace, so its storage schema cannot be inspected. This is the one row that must be validated before the deprecation step | **OPEN — blocks §8** |
+| **Cross-plugin upgrade from the *separate* Song Mastery plugin's own storage** | Source keys `song_mastery_v1` / `song_mastery_v1_<hash12>`, shape `filename → { ArrangementName → { difficulty?, mastery? } }` (flat records inventoried separately), read-only; saved difficulty → remembered `currentDifficulty`, best mastery → `migratedMastery`, kept distinct; arrangement names resolved against Host metadata, unresolved/flat records deferred (§11) | Schema pinned from the reference source (`jamesgaiser/feedBack-plugin-song-mastery`, `screen.js` `_playerStorageKey`/`_getMasteryMap`/`_saveArrangementEntry`); importer covered by fixtures in `tests/screen.test.js`; **verified in code + fixtures** — live-Host certification still pending |
 
 ## 5. Conflict behaviour when both plugins are installed
 
 **Decision: read-only compatibility mode.** Difficulty Ladder never writes or
-deletes any of the *separate Song Mastery plugin's* storage, and never reads its
-**score** storage; its only read is the one-time Dynamic Difficulty settings
-import in §6, which reads the bare `song_mastery_dd` settings blob to
-initialize Difficulty Ladder's own namespaced keys. It registers
+deletes any of the *separate Song Mastery plugin's* storage. It reads that
+plugin's **score** storage once (the §11 source-store import) and its Dynamic
+Difficulty settings once (the §6 import), both through the bare
+`song_mastery_v1*` / `song_mastery_dd` keys, and writes only into its own
+namespaced keys. It registers
 its own card action under a distinct id (`difficulty_ladder.mastery_badge`)
 behind the idempotency guard, so it cannot double-register *itself* — it
 cannot suppress the other plugin's badge, so if both render one, disable one in
@@ -223,12 +234,15 @@ of `localStorage` before uninstalling if exact restoration matters.
 Not yet started. The deprecation notice in the Song Mastery repository and the
 eventual removal of any shim are gated on:
 
-- [ ] The **cross-plugin upgrade row** in §4 verified against the actual Song
-      Mastery storage schema (blocked: that repository is not available here).
+- [x] The **cross-plugin upgrade row** in §4 verified against the actual Song
+      Mastery storage schema (pinned reference source) and implemented by #215
+      (§11). Live-Host certification remains a separate, non-code step.
 - [ ] The **empty-source marker** caveat (§3) and the **concurrent-tab**
       whole-store flush (§4) resolved or explicitly accepted and documented.
 - [x] #84 session-summary item landed and its contract fixtures passing.
-- [ ] #85 live settings reconciliation landed with regression tests.
+- [x] #85 live settings reconciliation landed with regression tests.
+- [x] #215 source-store import landed with fixtures against the pinned schema
+      (§11); the source keys stay read-only and unmatched records are deferred.
 - [ ] The v2 sections event retired only after Section Map migrates to v3
       (#159; depends on feedback-plugin-sectionmap#14 — **still open**).
 
@@ -277,5 +291,72 @@ With representative **Lead / Bass / Rhythm / Keys** arrangements:
    (§3), documenting the one-time window.
 10. **Concurrent tabs** — load the same store in two tabs, write in each, and
     confirm the known whole-store clobber (§4): the later tab's write wins.
+11. **Song Mastery source-store import (#215)** — seed `song_mastery_v1_<the
+    active profile's hash12>` with an arrangement-name record for the song you
+    open next, load that arrangement, and confirm its `difficulty` restores as
+    the current difficulty and its `mastery` appears as best mastery, with the
+    source key byte-identical afterwards. Open a song whose record uses an
+    unresolved/duplicate arrangement name and confirm the record is listed under
+    `difficulty_ladder.songMasterySourceImport.v1.deferred` rather than applied.
 
-Record the outcome of rows 2–10 per arrangement; any failure blocks §8.
+Record the outcome of rows 2–11 per arrangement; any failure blocks §8.
+
+## 11. Song Mastery source-store import (#215)
+
+Follow-up to #82, which migrated this plugin's **own** legacy
+`difficulty_ladder.songMastery` map. #82's migration does not read the separate
+Song Mastery plugin's storage, so an actual Song Mastery user upgrading had
+their remembered difficulty and best mastery left behind. #215 closes that gap
+by importing the source plugin's real store.
+
+**Schema (pinned from the reference source).** Verified against
+`jamesgaiser/feedBack-plugin-song-mastery` `screen.js` (`STORAGE_KEY_BASE =
+'song_mastery_v1'`, `_playerStorageKey()`, `_getMasteryMap`,
+`_saveArrangementEntry`, `_normalizePath`):
+
+| Source | Shape |
+|---|---|
+| `song_mastery_v1` (unscoped) | `{ filename → { ArrangementName → { difficulty?, mastery? } } }` |
+| `song_mastery_v1_<first 12 of player_hash>` | same shape, profile-scoped |
+| older flat record | `{ filename → { difficulty?, mastery? } }` — no arrangement key (`_getFileEntry` treats this as unreadable) |
+
+**Import rules (implemented in `_importSongMasterySource`, `screen.js`):**
+
+- **Ownership.** A profile-aware Host reads only its own
+  `song_mastery_v1_<hash12>` key and never another profile's. The unscoped
+  `song_mastery_v1` store is claimable only by a confirmed single-player
+  compatibility context on a Host with **no** profile API — the same rule #82's
+  migration follows. A context with no profile identity claims nothing. The
+  import runs after profile readiness (`_acceptMainPlayerContext`), never before.
+- **Arrangement names are resolved, never guessed.** The source keys are
+  display names, so a name is imported only when Host metadata for that song
+  matches it to **exactly one** arrangement. An unknown name, or a duplicate
+  display name, is deferred; a flat record with no arrangement key is deferred.
+- **Difficulty and mastery stay separate.** `difficulty` initializes the
+  canonical `currentDifficulty` only when that node has no difficulty yet;
+  `mastery` is written once to the immutable `migratedMastery` (what the mastery
+  surface and badge present). A saved difficulty is never written as a score,
+  and a source mastery never lowers a higher live `bestMastery` (it is stored
+  separately; the live best still wins).
+- **Idempotent, and re-runnable after a restore.** Each imported record is
+  claimed by `(source key, profile, song, arrangement, instrument, role)` under
+  `difficulty_ladder.songMasterySourceImport.v1`, so a repeat run never
+  duplicates or lowers a value. Unlike #82's one-time marker, an **absent**
+  source writes no completion marker — a record restored from a backup later is
+  still imported. Deferred records are recorded once (bounded) in the same
+  marker's `deferred` list, which is the reviewable recovery path.
+- **Source retained; recoverable.** The source keys are never written or
+  deleted. Rollback is to delete the prefixed
+  `difficulty_ladder.songMasterySourceImport.v1` marker (the imported canonical
+  values remain, additive), leaving the untouched source store readable by the
+  prior plugin.
+- **Malformed/quota-safe.** A non-JSON or non-object source is treated as
+  absent; all storage access is already quota-swallowing, and the call site is
+  guarded so a legacy import can never block gameplay.
+
+Because the canonical arrangement identity is the Host arrangement **id**, a
+record can only be imported for a song whose arrangement metadata the Host can
+resolve; records for songs not currently loaded are deferred rather than mapped
+by name. This is deliberate: writing by name would place the value where the
+play-time (id-keyed) context could never read it, silently losing the data.
+
