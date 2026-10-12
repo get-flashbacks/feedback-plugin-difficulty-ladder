@@ -5223,6 +5223,30 @@ test('two arrangements of one source song import independently under their own c
     assert.equal(mod.readProgress(bass).currentDifficulty, 40);
 });
 
+test('Rhythm guitar and Keys source records resolve to their own instrument/role nodes', () => {
+    const hash = sourceHash();
+    const mod = freshPlugin({ stored: {
+        [sourceKeyFor(hash)]: JSON.stringify({
+            'song.feedpak': {
+                Rhythm: { difficulty: 30, mastery: 44 },
+                Keys: { difficulty: 80, mastery: 91 },
+            },
+        }),
+    } });
+    const arrangements = [
+        { index: 2, name: 'Rhythm', type: 'rhythm' },
+        { index: 3, name: 'Keys', type: 'keys' },
+    ];
+    const rhythm = playerContext({ profile_hash: hash, arrangement_id: 2, instrument: 'guitar', role: 'rhythm' });
+    const keys = playerContext({ profile_hash: hash, arrangement_id: 3, instrument: 'keys', role: 'instrumental' });
+
+    assert.equal(mod._importSongMasterySource(rhythm, { arrangements }).imported, 2);
+    assert.equal(mod.readProgress(rhythm).migratedMastery, 44);
+    assert.equal(mod.readProgress(keys).migratedMastery, 91);
+    assert.equal(mod.readProgress(keys).currentDifficulty, 80);
+    assert.equal(mod.readProgress(rhythm).currentDifficulty, 30);
+});
+
 test('a malformed Song Mastery source store is treated as absent without throwing', () => {
     const hash = sourceHash();
     const mod = freshPlugin({ stored: {
