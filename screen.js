@@ -2220,7 +2220,11 @@
         var token = ++_practiceOverrideRefreshToken;
         var primed;
         try {
-            primed = caps.dispatch(PRACTICE_DIFFICULTY_DOMAIN, {
+            // Core's capability dispatcher takes ONE request object and reads
+            // `request.capability` / `request.command` (feedBack
+            // `static/capabilities.js`: `async dispatch(request = {})`).
+            primed = caps.dispatch({
+                capability: PRACTICE_DIFFICULTY_DOMAIN,
                 command: 'inspect',
                 source: PLUGIN_ID,
             });

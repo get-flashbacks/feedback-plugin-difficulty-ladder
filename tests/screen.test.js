@@ -6032,17 +6032,22 @@ test('Stage 4-3: the tick commits the completed ledger, so the attempt record na
 // setting stays on.
 
 // A capabilities double shaped like core's practice-difficulty domain:
-// `dispatch({capability, command: 'inspect'})` answers handled with the
-// public snapshot, and lifecycle events arrive through subscribe().
+// core's dispatcher takes ONE request object and reads `request.capability`
+// / `request.command` (feedBack `static/capabilities.js`:
+// `async dispatch(request = {})`), and lifecycle events arrive through
+// subscribe(). Modelling the single-object contract exactly means a future
+// regression to a two-argument call yields a string request, no capability,
+// `{ outcome: 'failed' }`, and a failing suite rather than a green one.
 function practiceCapabilitiesDouble({ overrides = [], outcome = 'handled', inspect = null } = {}) {
     const handlers = new Map();
     const calls = [];
     return {
         calls,
-        dispatch(domain, request = {}) {
-            calls.push([domain, request]);
-            if (inspect) return inspect(domain, request);
-            if (domain === 'practice-difficulty' && request.command === 'inspect') {
+        dispatch(request = {}) {
+            calls.push(request);
+            const source = request && typeof request === 'object' ? request : {};
+            if (inspect) return inspect(source);
+            if (source.capability === 'practice-difficulty' && source.command === 'inspect') {
                 return Promise.resolve(outcome === 'handled'
                     ? {
                         outcome: 'handled',
@@ -6344,4 +6349,18 @@ test('#161: suspension surfaces in controls and diagnostics without touching the
     mod.syncControlsUI();
     assert.ok(toggle.title.indexOf('suspended') !== -1, 'the toggle names the temporary suspension');
     assert.equal(mod.settings.autoAdjust, true);
+});
+
+test('#161: inspect dispatches ONE request object carrying capability + command (core dispatch contract)', async () => {
+    const mod = freshPlugin();
+    const caps = practiceCapabilitiesDouble({ overrides: [] });
+    global.window.feedBack = { capabilities: caps };
+    await mod._refreshPracticeOverrideCache();
+
+    assert.equal(caps.calls.length, 1, 'one inspect dispatch for the initial prime');
+    const request = caps.calls[0];
+    assert.equal(typeof request, 'object', 'core reads request.capability from a single object');
+    assert.equal(request.capability, 'practice-difficulty');
+    assert.equal(request.command, 'inspect');
+    assert.equal(request.source, 'difficulty_ladder');
 });
