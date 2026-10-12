@@ -3215,18 +3215,25 @@
             var source = _readSongMasterySource(sourceKey);
             if (!source) return; // absent: do NOT mark complete — a restored backup imports later
             var currentFilename = _normalizeSongMasterySourceFilename(ctx.song_id);
-            var rawFilename = Object.keys(source).find(function (key) {
-                return _normalizeSongMasterySourceFilename(key) === currentFilename;
-            });
-            if (!rawFilename) return;
-            var filename = currentFilename;
-            var fileEntry = _plainObject(source[rawFilename]);
-            if (!filename || !fileEntry) return;
-            if (_isFlatSongMasteryEntry(fileEntry)) {
-                if (_deferSongMasteryRecord(marker, sourceKey, filename, null)) deferred += 1;
-                return;
-            }
-            Object.keys(fileEntry).forEach(function (name) {
+            Object.keys(source).forEach(function (rawFilename) {
+                var filename = _normalizeSongMasterySourceFilename(rawFilename);
+                var fileEntry = _plainObject(source[rawFilename]);
+                if (!filename || !fileEntry) return;
+                if (filename !== currentFilename) {
+                    if (_isFlatSongMasteryEntry(fileEntry)) {
+                        if (_deferSongMasteryRecord(marker, sourceKey, filename, null)) deferred += 1;
+                    } else {
+                        Object.keys(fileEntry).forEach(function (name) {
+                            if (_deferSongMasteryRecord(marker, sourceKey, filename, name)) deferred += 1;
+                        });
+                    }
+                    return;
+                }
+                if (_isFlatSongMasteryEntry(fileEntry)) {
+                    if (_deferSongMasteryRecord(marker, sourceKey, filename, null)) deferred += 1;
+                    return;
+                }
+                Object.keys(fileEntry).forEach(function (name) {
                     var record = _songMasterySourceRecord(fileEntry[name]);
                     if (!record) return;
                     var identity = _songMasteryArrangementIdentity(name, opts.arrangements);
@@ -3257,6 +3264,7 @@
                     };
                     imported += 1;
                 });
+            });
         });
         /* eslint-enable security/detect-object-injection */
         if (imported) {
