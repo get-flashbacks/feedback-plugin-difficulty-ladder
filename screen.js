@@ -283,8 +283,24 @@
         // cold paths (one-time legacy migration, immediate-save helpers);
         // returns false and leaves the store dirty so the next scheduled or
         // lifecycle flush retries it.
+        //
+        // Stores with a config.merge hook re-read the key first and fold any
+        // foreign (other-tab) value into the cache before writing, so a whole-
+        // object flush can't clobber a concurrent tab's record (see
+        // _mergeStores). The read is the same synchronous localStorage
+        // access a plain write already did; it stays off the per-frame path
+        // because every caller is behind the debounce or a cold path.
         function write() {
             if (!cache) return false;
+            if (config.merge) {
+                var foreign = null;
+                try { foreign = JSON.parse(localStorage.getItem(config.key) || 'null'); } catch (_) { foreign = null; }
+                if ((config.accept || _plainObject)(foreign)) {
+                    // A merge bug must never block persistence: fall back to
+                    // the unmerged cache, which is no worse than before.
+                    try { config.merge(foreign, cache); } catch (_) { /* noop */ }
+                }
+            }
             try {
                 localStorage.setItem(config.key, JSON.stringify(cache));
                 dirty = false;
@@ -372,9 +388,119 @@
         return { load, save, saveNow, write, flush, markDirty, invalidate };
     }
 
+    // ---- Cross-tab merge for the debounced v2 stores ---------------------
+    // Each store's cache is authoritative in memory, but a foreign tab can
+    // land a whole-object write on the same key between our mutation and our
+    // debounced flush. Writing our cache verbatim then clobbers that foreign
+    // data — for the progress store that can lower a monotonic bestMastery or
+    // drop the one-time cutover marker (MIGRATION.md §4's concurrent-tabs
+    // row). Stores with a `merge` hook re-read the key at write time and fold
+    // the foreign value into the cache first, so the later flush preserves the
+    // other tab's invariant-bearing values instead of replacing them.
+    //
+    // The merge is deliberately asymmetric because the two stores delete data:
+    //   - progress.v2's stale-label repair *deletes* migration-only nodes and
+    //     fields (screen.js `_clearMigratedMasteryNode`). A union that adopted
+    //     every foreign-only branch would silently undo that repair, so a key
+    //     only the foreign tab has is normally left out; only the `migrations`
+    //     subtree adopts foreign-only keys (markers are never deleted, and
+    //     honouring the cutover marker is what keeps the migration one-shot).
+    //     The phrase-attempt store deletes nothing, so it unions fully.
+    //   - a scalar both tabs wrote keeps ours (the write happening now is the
+    //     later one), except the field rules below, which preserve the safer
+    //     of the two where a field has an invariant a timestamp can't order.
+    //
+    // Prototype-dangerous key names are skipped outright: every real key in
+    // these trees is either a `_nodeKey()`-prefixed identity or a fixed field
+    // name, so nothing legitimate is lost, and a corrupted/poisoned foreign
+    // store can never turn a merge into an Object.prototype write.
+    function _isMergeDangerousKey(key) {
+        return key === '__proto__' || key === 'constructor' || key === 'prototype';
+    }
+
+    function _mergeStores(foreign, local, options) {
+        if (!_plainObject(foreign) || !_plainObject(local)) return;
+        options = options || {};
+        var adoptMissing = options.adoptMissing === true;
+        var fieldRules = options.fieldRules;
+        Object.keys(foreign).forEach(function (key) {
+            if (_isMergeDangerousKey(key)) return;
+            var foreignValue = foreign[key];
+            if (foreignValue === undefined) return;
+            var rule = fieldRules && fieldRules[key];
+            if (rule) { rule(foreignValue, local[key], local, key); return; }
+            if (!Object.prototype.hasOwnProperty.call(local, key) || local[key] === undefined) {
+                if (adoptMissing) local[key] = foreignValue;
+                return;
+            }
+            var localValue = local[key];
+            if (_plainObject(localValue) && _plainObject(foreignValue)) {
+                _mergeStores(foreignValue, localValue, {
+                    // `migrations` always unions: a marker written by another
+                    // tab must survive, and markers are never removed.
+                    adoptMissing: adoptMissing || key === 'migrations',
+                    fieldRules: fieldRules,
+                });
+                return;
+            }
+            if (Array.isArray(localValue) && Array.isArray(foreignValue)) {
+                if (adoptMissing) local[key] = _mergeAttemptLists(localValue, foreignValue);
+                return;
+            }
+            // Any other scalar conflict keeps our (later) value; there is no
+            // default rule, only the exceptions in fieldRules above.
+        });
+    }
+
+    // Union two attempt lists by JSON identity, ours first, capped at the
+    // retention limit like every other write path. A record both tabs flushed
+    // is identical JSON, so it is not doubled.
+    function _mergeAttemptLists(localList, foreignList) {
+        var seen = new Set();
+        var merged = [];
+        localList.concat(foreignList).forEach(function (item) {
+            var identity;
+            try { identity = JSON.stringify(item); } catch (_) { identity = null; }
+            if (identity !== null) {
+                if (seen.has(identity)) return;
+                seen.add(identity);
+            }
+            merged.push(item);
+        });
+        return merged.slice(-MAX_PHRASE_ATTEMPTS);
+    }
+
+    // Per-field rules for the progress store's leaf skill node. Only these two
+    // fields are reconciled; every other conflict keeps the writing tab's value.
+    //   - bestMastery is the monotonic long-term best (#84): keep the higher of
+    //     the two so a lower concurrent result can never lower it.
+    //   - migratedMastery is the immutable cutover preserve: never overwrite a
+    //     value we already hold, but adopt a foreign preserved score into an
+    //     unset one so a concurrent whole-store write can't drop it.
+    // currentDifficulty deliberately has no rule: the stale-label repair nulls
+    // it on purpose (screen.js `_clearMigratedMasteryNode`), so "defined beats
+    // unset" would resurrect a difficulty that was just cleared.
+    var _PROGRESS_MERGE_FIELD_RULES = {
+        bestMastery: function (foreignValue, localValue, container, key) {
+            var candidate = _pct(foreignValue);
+            if (candidate === null) return;
+            var current = _pct(container[key]);
+            if (current === null || candidate > current) container[key] = candidate;
+        },
+        migratedMastery: function (foreignValue, localValue, container, key) {
+            var candidate = _pct(foreignValue);
+            if (candidate === null || _pct(container[key]) !== null) return;
+            container[key] = candidate;
+        },
+    };
+
     // The legacy songMastery map remains available to the compatibility/test
     // helpers below. New runtime writes go only through progress.v2 and are
-    // rejected until an explicit profile identity is ready.
+    // rejected until an explicit profile identity is ready. It deliberately
+    // has no merge hook: it is a retained, best-effort rollback source whose
+    // runtime paths intentionally rewrite instrument labels and prune stale
+    // entries (MIGRATION.md §2/§7), so re-materializing a foreign-tab entry a
+    // prune just removed would resurrect dead data.
     const _songMasteryStore = makePersistenceStore({
         key: SONG_MASTERY_LS_KEY,
         // typeof [] === 'object' too — an array here would make
@@ -395,6 +521,9 @@
         validate: function (store) {
             return _plainObject(store) && store.schema === PROGRESS_SCHEMA && _plainObject(store.profiles);
         },
+        merge: function (foreign, cache) {
+            _mergeStores(foreign, cache, { adoptMissing: false, fieldRules: _PROGRESS_MERGE_FIELD_RULES });
+        },
     });
 
     const _phraseAttemptStore = makePersistenceStore({
@@ -404,6 +533,7 @@
         },
         empty: function () { return { schema: PHRASE_ATTEMPTS_SCHEMA, version: 2, profiles: {}, migrations: {} }; },
         ensure: function (store) { if (!_plainObject(store.migrations)) store.migrations = {}; },
+        merge: function (foreign, cache) { _mergeStores(foreign, cache, { adoptMissing: true }); },
     });
 
     function _id(value, fallback) {

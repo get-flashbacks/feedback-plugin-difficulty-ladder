@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Cross-tab persistence no longer clobbers a concurrent tab (MIGRATION.md §4
+  "Concurrent tabs", parent #81): the debounced progress/phrase stores now
+  re-read the key at write time and fold the other tab's invariant-bearing
+  values into the flush instead of overwriting the whole store. The progress
+  merge keeps the higher monotonic `bestMastery` (a later tab can never lower a
+  best ever), preserves a foreign tab's one-time `migrations.songMasteryV1`
+  marker, never adopts a lower `bestMastery`, and does not resurrect a
+  migration-only node the stale-label repair deleted; the phrase-attempt merge
+  unions concurrent attempts by identity. Residual limitation: this is
+  merge-on-write, not a cross-tab lock, so two truly simultaneous writes are
+  still last-write-wins. `_mergeStores` / `_mergeAttemptLists` /
+  `_PROGRESS_MERGE_FIELD_RULES` in `screen.js`; `MIGRATION.md` §4/§7/§8
+  updated; tested in `tests/screen.test.js`. Version 0.39.0 -> 0.40.0.
+
 ### Added
 - Section-practice override consumer (#161, M6 cross-repo 3/4): while a
   section-practice override installed by another plugin is in force, the
