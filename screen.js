@@ -427,7 +427,8 @@
             if (_isMergeDangerousKey(key)) return;
             var foreignValue = foreign[key];
             if (foreignValue === undefined) return;
-            var rule = fieldRules && fieldRules[key];
+            var rule = fieldRules && Object.prototype.hasOwnProperty.call(fieldRules, key)
+                ? fieldRules[key] : null;
             if (rule) { rule(foreignValue, local[key], local, key); return; }
             if (!Object.prototype.hasOwnProperty.call(local, key) || local[key] === undefined) {
                 if (adoptMissing) local[key] = foreignValue;
