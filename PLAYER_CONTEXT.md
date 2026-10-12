@@ -198,6 +198,35 @@ Difficulty changes are requested through `player-difficulty.v1` with the
 player context, so the Host or Split Screen can route them to the correct
 highway.
 
+## Section-practice override suspension (#161)
+
+Core's `practice-difficulty` domain (feedBack#136) owns the cross-plugin
+override state: one active override per player context, with a public
+snapshot (`feedBack.practice_difficulty.state.v1`) and lifecycle events
+(`override-activated`, `override-cleared`, `override-rejected`). Difficulty
+Ladder is a read-only consumer of that domain — it never activates or clears
+an override — and suspends its song-wide controller while one another plugin
+installed is in force for the committing player and phrase:
+
+- Matching is per player and per phrase: the commit's own context hashed
+  with the same field list + FNV-1a the domain uses for `context_ref`, plus
+  the committed phrase (from the ledger snapshot's `curPhraseIdx`) overlapping
+  the override's half-open `[start_time, end_time)` window. The highway's own
+  live override read-back (`getDifficultyOverride`) is authoritative per panel
+  when present; a stale snapshot (arrangement/song switch) can never match.
+- While suspended, a commit records nothing song-wide — no phrase-attempt
+  history, no EMA, no warm-up count, no streak, no best mastery, no slider
+  write — and clears only the transient ramp/drop-confirmation state, so no
+  partial adjustment fires after practice ends. The persisted Adaptive setting
+  stays on throughout.
+- The cache is primed via `practice-difficulty / inspect` (re-primed on
+  song/context lifecycle edges, refreshed synchronously from capability
+  events), so the gameplay commit path never dispatches. Hosts without the
+  capability degrade to byte-identical behavior.
+- Surfaces: the controls toggle title names the temporary suspension, and
+  `contributeDiagnostics` reports it under `practice_override` (schema
+  `difficulty_ladder.practice_override.v1`).
+
 ## Responsibilities by integration
 
 ### Host

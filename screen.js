@@ -2116,6 +2116,444 @@
         return false;
     }
 
+    // ---- Section-practice override consumer (issue #161) -----------------
+    // Difficulty Ladder never activates or clears a practice override -- it
+    // only suspends song-wide auto-adjust while one another plugin installed
+    // is in force. Core owns the cross-plugin state (feedBack#136); this
+    // plugin keeps a local READ-ONLY cache so the gameplay commit path never
+    // awaits a dispatch:
+    //   * `_practiceOverrideCache` is null (capability unavailable/unknown)
+    //     or an array of public override snapshots (see core
+    //     `feedBack.practice_difficulty.override.v1`).
+    //   * `_refreshPracticeOverrideCache` primes it once via dispatch
+    //     `practice-difficulty / inspect` and is re-run ONLY from outside
+    //     gameplay callbacks (song events, context events, startup).
+    //   * `_onPracticeOverrideEvent` is the synchronous event handler that
+    //     refreshes the same cache from capability lifecycle events
+    //     (`override-activated`, `override-cleared`, `override-rejected`).
+    // Before committing a phrase, `_practiceOverrideFor` checks whether any
+    // cached override applies to that player AND that phrase: same player
+    // context (see identity note below), and the committed phrase overlaps
+    // the override's half-open window [start_time, end_time). Phrase indices
+    // are descriptive-only metadata core explicitly does not match on, so
+    // they are never consulted here either.
+    // When it applies, the commit skips every song-wide update the issue
+    // lists (attempt record, EMA, warm-up count, streak, best mastery,
+    // slider write) and clears only the transient ramp/drop-confirmation
+    // state — `_standDown` — so a partial adjustment cannot fire after
+    // practice ends. The persisted Adaptive setting stays on; suspension is
+    // surfaced through the controls title and the diagnostics field below.
+    // Identity: the capability snapshot exposes only a hashed `context_ref`,
+    // never the raw context, so per-player matching must NOT compare against
+    // the domain record. Instead, when the commit path has a highway that
+    // reports its own live override (`getDifficultyOverride`, core's own
+    // install of the same record), that read-back is authoritative: the
+    // override is in force for exactly the panel it was installed on. When
+    // the highway exposes no override API (older Host), the fallback hashes
+    // the commit context with the same field list + FNV-1a the domain uses
+    // and compares against the snapshot's context_ref — an explicit
+    // per-player gate rather than a global "an override exists somewhere"
+    // flag.
+    //
+    // Precedence, not election: the live read-back runs BEFORE the cache
+    // gate, so a highway that reports an override suspends even when the
+    // cache is empty or stale. A concrete null keeps the cache gate (the
+    // method may exist panel-wide while the override is installed on a
+    // different panel's highway); only a missing/throwing read defers
+    // entirely to the cache.
+    var PRACTICE_DIFFICULTY_DOMAIN = 'practice-difficulty';
+    var _practiceOverrideCache = null;
+    var _practiceOverrideSubscribed = false;
+    var _practiceOverrideLastSync = null;
+    var _practiceOverrideRefreshToken = 0;
+
+    function _practiceCapabilities() {
+        var fb = window.feedBack;
+        return fb && fb.capabilities ? fb.capabilities : null;
+    }
+
+    function _practiceCacheable(overrides) {
+        return Array.isArray(overrides) ? overrides.map(function (entry) {
+            entry = entry && typeof entry === 'object' ? entry : {};
+            return {
+                schema: entry.schema,
+                context_ref: entry.context_ref,
+                source: entry.source,
+                difficulty_pct: entry.difficulty_pct,
+                start_time: entry.start_time,
+                end_time: entry.end_time,
+                phrase_indices: Array.isArray(entry.phrase_indices) ? entry.phrase_indices.slice() : [],
+                label: entry.label,
+                clamped: entry.clamped,
+                activated_at: entry.activated_at,
+            };
+        }) : null;
+    }
+
+    function _practiceCacheApply(snapshot) {
+        snapshot = snapshot && typeof snapshot === 'object' ? snapshot : {};
+        var overrides = snapshot.active_overrides;
+        var active = _practiceCacheable(overrides);
+        var retired = Array.isArray(_practiceOverrideCache)
+            ? _practiceOverrideCache.filter(function (entry) { return entry && entry.retired === true; })
+            : [];
+        _practiceOverrideCache = (active || []).concat(retired);
+        _practiceOverrideLastSync = new Date().toISOString();
+        return _practiceOverrideCache;
+    }
+
+    function _practicePayloadOf(result) {
+        if (!result || typeof result !== 'object') return null;
+        if (result.payload && typeof result.payload === 'object') return result.payload;
+        return result;
+    }
+
+    // Prime the read-only cache from the capability's inspect operation.
+    // Async by necessity (dispatch returns a Promise) and NEVER called from
+    // a gameplay callback: song/context lifecycle edges and startup only.
+    // Resolves to the cached array (or null when the capability is absent).
+    function _refreshPracticeOverrideCache() {
+        var caps = _practiceCapabilities();
+        if (!caps || typeof caps.dispatch !== 'function') {
+            return Promise.resolve(_practiceOverrideCache);
+        }
+        var token = ++_practiceOverrideRefreshToken;
+        var primed;
+        try {
+            // Core's capability dispatcher takes ONE request object and reads
+            // `request.capability` / `request.command` (feedBack
+            // `static/capabilities.js`: `async dispatch(request = {})`).
+            primed = caps.dispatch({
+                capability: PRACTICE_DIFFICULTY_DOMAIN,
+                command: 'inspect',
+                source: PLUGIN_ID,
+            });
+        } catch (_) {
+            return Promise.resolve(_practiceOverrideCache);
+        }
+        return Promise.resolve(primed).then(function (result) {
+            if (token !== _practiceOverrideRefreshToken) return _practiceOverrideCache;
+            if (!result || result.outcome !== 'handled') return _practiceOverrideCache;
+            return _practiceCacheApply(_practicePayloadOf(result));
+        }, function () {
+            return _practiceOverrideCache;
+        });
+    }
+
+    // Synchronous event handler: any lifecycle event invalidates the cache
+    // shape, so refresh the snapshot WITHOUT dispatching. The detail may
+    // carry the full record (activated) or only a context_ref (cleared);
+    // rather than merging partial records, drop the affected entry and keep
+    // the rest, falling back to a full re-prime only when the cache is empty.
+    function _onPracticeOverrideEvent(detail, emittedEventName) {
+        detail = (detail && typeof detail === 'object')
+            ? (detail.payload && typeof detail.payload === 'object' ? detail.payload : detail)
+            : {};
+        var eventName = String(emittedEventName || detail.event || detail.type || detail.name || '');
+        if (eventName === 'override-rejected') {
+            // A rejected replacement leaves the incumbent override active.
+            // Do not remove or retire it while a fresh inspect is pending.
+            ++_practiceOverrideRefreshToken;
+            return _practiceOverrideCache;
+        }
+        ++_practiceOverrideRefreshToken;
+        var ref = detail.context_ref != null ? String(detail.context_ref) : null;
+        if (ref && Array.isArray(_practiceOverrideCache)) {
+            _practiceOverrideCache.forEach(function (entry) {
+                if (String(entry.context_ref) === ref) entry.retired = true;
+            });
+        }
+        if (detail && detail.schema === 'feedBack.practice_difficulty.override.v1'
+            && detail.start_time !== undefined && detail.end_time !== undefined) {
+            var cached = _practiceCacheable([detail]);
+            cached[0].retired = false;
+            if (Array.isArray(_practiceOverrideCache)) {
+                var replaced = false;
+                _practiceOverrideCache = _practiceOverrideCache.map(function (entry) {
+                    if (String(entry.context_ref) === String(cached[0].context_ref) && !entry.retired) {
+                        replaced = true;
+                        return cached[0];
+                    }
+                    return entry;
+                });
+                if (!replaced) _practiceOverrideCache.push(cached[0]);
+            } else {
+                _practiceOverrideCache = cached;
+            }
+            _practiceOverrideLastSync = new Date().toISOString();
+            _syncPracticeSuspensionUI();
+            contributeDiagnostics();
+            return _practiceOverrideCache;
+        }
+        // Keep a cleared record as historical evidence for a phrase whose
+        // final commit races the clear event. A successful inspect replaces
+        // active entries but retains retired windows until one matching
+        // commit consumes them.
+        _schedulePracticeReprime();
+        _syncPracticeSuspensionUI();
+        contributeDiagnostics();
+        return _practiceOverrideCache;
+    }
+
+    // Subscribe once to the capability lifecycle events through whichever
+    // surface the host exposes (capabilities.subscribe, feedBack.on, or
+    // window events). Synchronous handlers only — never dispatch here.
+    // A re-prime is scheduled (microtask, never awaited on the commit path)
+    // so the cache converges even if an event payload is partial; the
+    // synchronous filter above keeps the current commit correct first.
+    var _practiceReprimeScheduled = false;
+    function _schedulePracticeReprime() {
+        if (_practiceReprimeScheduled) return;
+        var caps = _practiceCapabilities();
+        if (!caps || typeof caps.dispatch !== 'function') return;
+        _practiceReprimeScheduled = true;
+        var schedule = typeof queueMicrotask === 'function'
+            ? queueMicrotask
+            : function (fn) { setTimeout(fn, 0); };
+        schedule(function () {
+            _practiceReprimeScheduled = false;
+            _refreshPracticeOverrideCache().then(function () {
+                _syncPracticeSuspensionUI();
+                contributeDiagnostics();
+            });
+        });
+    }
+
+    function _subscribePracticeOverrideEvents() {
+        if (_practiceOverrideSubscribed) return;
+        var caps = _practiceCapabilities();
+        var fb = window.feedBack;
+        function handler(detail, name) { _onPracticeOverrideEvent(detail, name); }
+        var names = ['override-activated', 'override-cleared', 'override-rejected'];
+        var subscribed = false;
+        if (caps && typeof caps.subscribe === 'function') {
+            try {
+                names.forEach(function (name) {
+                    caps.subscribe(PRACTICE_DIFFICULTY_DOMAIN + ':' + name, function (detail) { handler(detail, name); });
+                    caps.subscribe(name, function (detail) { handler(detail, name); });
+                });
+                subscribed = true;
+            } catch (_) { subscribed = false; }
+        }
+        if (!subscribed && fb && typeof fb.on === 'function') {
+            try {
+                names.forEach(function (name) {
+                    fb.on(PRACTICE_DIFFICULTY_DOMAIN + ':' + name, function (ev) {
+                        handler(ev && ev.detail !== undefined ? ev.detail : ev, name);
+                    });
+                });
+                // The core runtime also re-emits capability events on the
+                // generic bus name; a host that only forwards that one still
+                // refreshes us.
+                fb.on('capability:event', function (ev) {
+                    var eventDetail = ev && ev.detail !== undefined ? ev.detail : ev;
+                    var capability = eventDetail && (eventDetail.capability || eventDetail.domain);
+                    if (capability === PRACTICE_DIFFICULTY_DOMAIN) handler(eventDetail, eventDetail.event);
+                });
+                subscribed = true;
+            } catch (_) { subscribed = false; }
+        }
+        _practiceOverrideSubscribed = subscribed;
+        return subscribed;
+    }
+
+    function _practiceWindowOf(entry) {
+        var start = Number(entry && entry.start_time);
+        var end = Number(entry && entry.end_time);
+        if (!isFinite(start) || !isFinite(end) || !(end > start)) return null;
+        return { start: start, end: end };
+    }
+
+    function _practiceOverlapsPhrase(entry, phrase) {
+        var window = _practiceWindowOf(entry);
+        if (!window) return false;
+        if (!phrase || typeof phrase !== 'object') return true;
+        var start = Number(phrase.start_time);
+        var end = Number(phrase.end_time);
+        if (!isFinite(start) || !isFinite(end) || !(end > start)) return true;
+        return start < window.end && end > window.start;
+    }
+
+    // The commit's phrase window: the ledger snapshot names the COMPLETED
+    // phrase index (`curPhraseIdx` on the snapshot, never the live state),
+    // resolved against the highway's phrase list. Null when the highway
+    // exposes no phrase list (direct-ratio unit callers) — overlap then
+    // defaults to in-window, since the override is authoritative for the
+    // panel it was installed on.
+    function _practiceCommitPhrase(completed, hw) {
+        if (completed !== null && typeof completed === 'object'
+            && typeof completed.curPhraseIdx === 'number' && completed.curPhraseIdx >= 0
+            && hw && typeof hw.getPhrases === 'function') {
+            try {
+                var phrases = hw.getPhrases();
+                if (Array.isArray(phrases)) {
+                    // eslint-disable-next-line security/detect-object-injection -- curPhraseIdx is a bounded numeric index, not external input
+                    return phrases[completed.curPhraseIdx] || null;
+                }
+            } catch (_) { /* fall through: overlap defaults to in-window */ }
+        }
+        return null;
+    }
+
+    // Whether a cached override applies to THIS commit: same player (the
+    // highway's own live override read-back when available, else the commit
+    // context's identity against the hashed context_ref — no raw identity
+    // ever leaves core, so the comparison hashes the commit context with the
+    // same field list and FNV-1a the domain uses) AND the committed phrase
+    // overlaps the override's half-open window. Returns the matching entry
+    // or null.
+    //
+    // A stale key (arrangement switch, new song) hashes differently, so a
+    // snapshot captured before the switch can never match after it — the
+    // exact staleness behavior core's own `no-target` answers with.
+    var PRACTICE_CONTEXT_FIELDS = ['session_id', 'player_id', 'profile_id', 'profile_hash',
+        'song_id', 'arrangement_id', 'instrument', 'role', 'skill'];
+
+    function _practiceHash(value) {
+        var text = String(value);
+        var h = 2166136261;
+        for (var i = 0; i < text.length; i++) {
+            h ^= text.charCodeAt(i);
+            h = Math.imul(h, 16777619);
+        }
+        return (h >>> 0).toString(36);
+    }
+
+    function _practiceText(value) { return value == null ? '' : String(value); }
+
+    function _practiceContextRef(context) {
+        var normalized = null;
+        try {
+            normalized = normalizePlayerContext(context);
+        } catch (_) { normalized = null; }
+        if (!normalized) return null;
+        var key = PRACTICE_CONTEXT_FIELDS.map(function (field) {
+            return field + '=' + _practiceText(normalized[field]);
+        }).join('|');
+        return 'context-' + _practiceHash(key);
+    }
+
+    function _practiceLiveOverrideFor(hw, phrase) {
+        if (!hw || typeof hw.getDifficultyOverride !== 'function') return { checked: false };
+        var live;
+        try { live = hw.getDifficultyOverride(); } catch (_) { return { checked: false }; }
+        if (live === null) return { checked: true, override: null };
+        if (!live || typeof live !== 'object') return { checked: false };
+        var liveEntry = { start_time: live.startTime, end_time: live.endTime };
+        if (!_practiceWindowOf(liveEntry) || !_practiceOverlapsPhrase(liveEntry, phrase)) {
+            return { checked: true, override: null };
+        }
+        return {
+            checked: true,
+            override: {
+                schema: 'feedBack.practice_difficulty.override.v1',
+                context_ref: null,
+                source: 'highway',
+                difficulty_pct: Math.round(Number(live.fraction) * 100),
+                start_time: live.startTime,
+                end_time: live.endTime,
+                phrase_indices: [],
+                live: true,
+            },
+        };
+    }
+
+    function _practiceCachedOverrideFor(context, phrase, retiredOnly) {
+        if (!Array.isArray(_practiceOverrideCache)) return null;
+        var ref = _practiceContextRef(context);
+        if (!ref) return null;
+        for (var i = 0; i < _practiceOverrideCache.length; i++) {
+            var entry = _practiceOverrideCache[i];
+            if (!entry || typeof entry !== 'object') continue;
+            if (retiredOnly ? entry.retired !== true : entry.retired === true) continue;
+            if (entry.context_ref == null || String(entry.context_ref) !== ref) continue;
+            if (_practiceOverlapsPhrase(entry, phrase)) return entry;
+        }
+        return null;
+    }
+
+    function _practiceOverrideFor(context, hw, completed) {
+        var phrase = _practiceCommitPhrase(completed, hw);
+        var live = _practiceLiveOverrideFor(hw, phrase);
+        if (live.checked) {
+            if (live.override) return live.override;
+            return _practiceCachedOverrideFor(context, phrase, true);
+        }
+        return _practiceCachedOverrideFor(context, phrase, false);
+    }
+
+    function _consumeRetiredPracticeOverride(override) {
+        if (!override || override.retired !== true || !Array.isArray(_practiceOverrideCache)) return;
+        _practiceOverrideCache = _practiceOverrideCache.filter(function (entry) {
+            return entry !== override;
+        });
+    }
+
+    function _practiceSuspendedFor(context, hw, completed) {
+        return _practiceOverrideFor(context, hw, completed) !== null;
+    }
+
+    // The one suspension check the commit path calls: synchronous, no
+    // storage, no dispatch, no fetch. `contextForAttempt`/`hw` are the
+    // commit's own attempt target (main: `_mainPlayerContext` +
+    // `window.highway`; split: panel state + panel highway).
+    function practiceOverrideSuspendsCommit(context, hw, completed) {
+        try {
+            return _practiceSuspendedFor(context, hw || window.highway, completed);
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function _practicePhraseAtTime(hw) {
+        if (!hw || typeof hw.getPhrases !== 'function' || typeof hw.getTime !== 'function') return null;
+        try {
+            var time = Number(hw.getTime());
+            var phrases = hw.getPhrases();
+            if (!isFinite(time) || !Array.isArray(phrases)) return null;
+            for (var i = 0; i < phrases.length; i++) {
+                var phrase = phrases[i];
+                if (!phrase || time < Number(phrase.start_time) || time >= Number(phrase.end_time)) continue;
+                return { curPhraseIdx: i };
+            }
+        } catch (_) { /* no current phrase available */ }
+        return null;
+    }
+
+    // Diagnostics view of the suspension: use the main player's current
+    // phrase, matching the commit path, rather than treating every partial-
+    // song override as active at all playback positions.
+    function _practiceSuspensionDiagnostic() {
+        var suspended = false;
+        try {
+            var hw = window.highway;
+            var currentPhrase = _practicePhraseAtTime(hw);
+            suspended = !!currentPhrase && _practiceSuspendedFor(_mainPlayerContext, hw, currentPhrase);
+        } catch (_) {
+            suspended = false;
+        }
+        var activeCount = Array.isArray(_practiceOverrideCache)
+            ? _practiceOverrideCache.filter(function (entry) { return entry && entry.retired !== true; }).length
+            : 0;
+        return {
+            schema: 'difficulty_ladder.practice_override.v1',
+            suspended: suspended,
+            active_overrides: activeCount,
+            last_sync: _practiceOverrideLastSync,
+        };
+    }
+
+    // Whether the suspension banner applies right now: the same diagnostic
+    // the payload above reports, so the controls and the diagnostics
+    // channel can never disagree.
+    function practiceOverrideSuspended() {
+        try {
+            return !!_practiceSuspensionDiagnostic().suspended;
+        } catch (_) {
+            return false;
+        }
+    }
+
     // ---- Per-song scoring state ----
     // `_mainScore` is the main player's score state -- the DEFAULT STATE of
     // the shared machine below (same fields a per-panel split state holds).
@@ -2875,6 +3313,24 @@
     }
 
     function _commitScoreRatio(state, completed, hw, hooks) {
+        // #161: a practice override suspends the song-wide controller for the
+        // phrase it covers. Skip EVERY song-wide update the issue lists — no
+        // attempt record, no best mastery, no EMA, no warm-up count, no
+        // streak, no slider write — and clear only the transient ramp/drop
+        // state (`_standDown`), so a partial adjustment cannot fire after
+        // practice ends. The persisted Adaptive setting stays on.
+        var practiceOverride = _practiceOverrideFor(
+            hooks.contextForAttempt, hooks.highwayForAttempt || hw, completed);
+        if (practiceOverride) {
+            _standDown(state, hooks);
+            // The override temporarily owns the highway mastery value. Do
+            // not interpret that expected drift as a later manual slider
+            // change when normal scoring resumes.
+            state.lastObservedMasteryPct = null;
+            _consumeRetiredPracticeOverride(practiceOverride);
+            _afterCommit(hooks, state);
+            return;
+        }
         var ratio = _ratioOf(completed);
         _recordAttempt(state, completed, ratio, hw, hooks);
         _updateBestMastery(hooks.contextForAttempt, hw, ratio);
@@ -3020,6 +3476,14 @@
             // host predates tier-number phrase semantics and the HUD/attempt
             // tiers are derived from max_difficulty alone. null = no phrases.
             host_reports_phrase_tiers: _hostReportsPhraseTiers(hw),
+            // #161: the section-practice suspension is temporary — the
+            // persisted Adaptive setting stays on (auto_adjust_enabled
+            // above), and this reports whether the CURRENT commit path is
+            // suspended: an override covering the main player's context, or
+            // any cached override when the context is unresolved. Counts and
+            // bounded strings only, never raw identity (the snapshot the
+            // cache holds exposes only hashed context_refs).
+            practice_override: _practiceSuspensionDiagnostic(),
             auto_adjust_enabled: settings.autoAdjust,
             show_difficulty_guide: settings.showDifficultyGuide,
             // #216: optional first-play starting difficulty (null = unset).
@@ -3952,8 +4416,14 @@
                 ? unsubscribe
                 : (typeof fb.off === 'function' ? function () { fb.off(name, handler); } : function () {}));
         }
-        function upsertEvent(ev) { upsertPlayerContext(ev && ev.detail); }
-        function removeEvent(ev) { removePlayerContext(ev && ev.detail); }
+        function refreshPracticeContext() {
+            _refreshPracticeOverrideCache().then(function () {
+                _syncPracticeSuspensionUI();
+                contributeDiagnostics();
+            });
+        }
+        function upsertEvent(ev) { upsertPlayerContext(ev && ev.detail); refreshPracticeContext(); }
+        function removeEvent(ev) { removePlayerContext(ev && ev.detail); refreshPracticeContext(); }
         subscribe('player-context:ready', upsertEvent);
         subscribe('player-context:changed', upsertEvent);
         subscribe('player-context:left', removeEvent);
@@ -4749,13 +5219,25 @@
 
     // ---- Player-controls toggle (v3 chrome contract) ----
     var _controlsBtn = null;
+    // Re-resolve the suspension banner from the live cache (never a stored
+    // flag): entering an override suspends the next commit, leaving it
+    // resumes — the persisted Adaptive setting is untouched either way.
+    function _syncPracticeSuspensionUI() {
+        syncControlsUI();
+    }
+
     function syncControlsUI() {
         if (!_controlsBtn) return;
         _controlsBtn.classList.toggle('fb-primary', settings.autoAdjust);
         _controlsBtn.style.opacity = settings.autoAdjust ? '1' : '0.6';
-        _controlsBtn.title = settings.autoAdjust
-            ? 'Difficulty Ladder: auto-adjusting from your accuracy (click to pause)'
-            : 'Difficulty Ladder: paused (click to resume auto-adjust)';
+        var suspended = practiceOverrideSuspended();
+        if (suspended && settings.autoAdjust) {
+            _controlsBtn.title = 'Difficulty Ladder: auto-adjust suspended during the practiced section (resumes after — setting stays on)';
+        } else {
+            _controlsBtn.title = settings.autoAdjust
+                ? 'Difficulty Ladder: auto-adjusting from your accuracy (click to pause)'
+                : 'Difficulty Ladder: paused (click to resume auto-adjust)';
+        }
     }
 
     function mountControls() {
@@ -4842,7 +5324,14 @@
         mountControls();
         updateGenerateButtonVisibility();
         startRafLoops();
-        contributeDiagnostics();
+        // #161: re-prime the read-only cache on song changes without dropping
+        // the last valid snapshot. A pending inspect is invalidated by any
+        // later capability lifecycle event; failures preserve the cache.
+        _subscribePracticeOverrideEvents();
+        _refreshPracticeOverrideCache().then(function () {
+            _syncPracticeSuspensionUI();
+            contributeDiagnostics();
+        });
         // Emit section difficulty data for sectionmap plugin. Drop any
         // still-pending debounced emit from the previous song first, so a
         // stray trailing-edge fire can't immediately re-emit stale data for
@@ -5088,6 +5577,23 @@
             // Shared-machine surface (#164/#165): the main player's default
             // state plus the shared steps both pipelines run. Exported for
             // tests.
+            // #161: the section-practice override consumer — cache priming,
+            // lifecycle events, the commit suspension check, and the
+            // diagnostics/controls surface. Exported so enter/remain/leave,
+            // isolation, staleness, and older-Host degradation are testable
+            // without a host.
+            _practiceOverrideCache: function () { return _practiceOverrideCache; },
+            _refreshPracticeOverrideCache: _refreshPracticeOverrideCache,
+            _subscribePracticeOverrideEvents: _subscribePracticeOverrideEvents,
+            _onPracticeOverrideEvent: _onPracticeOverrideEvent,
+            _practiceOverrideFor: function (context, hw, completed) {
+                return _practiceOverrideFor(context, hw, completed);
+            },
+            _practiceContextRef: _practiceContextRef,
+            _practiceSuspensionDiagnostic: _practiceSuspensionDiagnostic,
+            practiceOverrideSuspendsCommit: practiceOverrideSuspendsCommit,
+            practiceOverrideSuspended: practiceOverrideSuspended,
+            syncControlsUI: syncControlsUI,
             _mainScore: function () { return _mainScore; },
             _resetMainScoreState,
             _enqueueScoreEvents, _pollScorePending,
