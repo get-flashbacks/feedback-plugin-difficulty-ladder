@@ -4663,6 +4663,7 @@
     var _untaggedSplitKeys = new WeakMap();
     var _untaggedSplitSequence = 0;
     var _masteryLifecycleUnsubscribes = [];
+    var _profileReadinessSubscriptions = [];
 
     function _splitRegistrationKey(hw, context) {
         var scoped = playerContextKey(context);
@@ -4827,6 +4828,46 @@
 
     function stopPlayerContextSubscriptions() {
         _playerContextUnsubscribers.splice(0).forEach(function (unsubscribe) { unsubscribe(); });
+    }
+
+    // Older profile-aware Hosts expose only window.v3Profile.get(), which is
+    // synchronous and returns null until the initial profile fetch resolves.
+    // On those Hosts the only readiness signal is `profile:changed`
+    // ({ ready: true }); later profile edits arrive as `v3:profile-updated`.
+    // Without these listeners, a song:ready that fires while the profile is
+    // still null leaves the main context gated for the whole song — no
+    // persistence and no library badge — even though identity becomes
+    // available moments later. No-op when the Host owns the player-context
+    // capability (playerContexts present): core re-announces through
+    // player-context:ready/changed there.
+    function resolveCompatibilityContextOnProfileSignal() {
+        var fb = window.feedBack;
+        if (fb && fb.playerContexts && typeof fb.playerContexts.getActive === 'function') return;
+        if (!(window.v3Profile && typeof window.v3Profile.get === 'function')) return;
+        // Only recover an identity for a song that is actually loaded; a
+        // readiness signal at the library resolves on the next song:ready.
+        // Prefer getSongInfo() over the raw currentSong so the recovered
+        // context keys under the same instrument/role branch onSongEvent()
+        // uses — otherwise it would be stranded under a classifier-less node.
+        var hw = window.highway;
+        var si = (hw && typeof hw.getSongInfo === 'function') ? hw.getSongInfo() : null;
+        if (!_plainObject(si) && !(fb && _plainObject(fb.currentSong))) return;
+        activateCompatibilityPlayerContext(si);
+    }
+
+    function startProfileReadinessSubscription() {
+        var fb = window.feedBack;
+        if (_profileReadinessSubscriptions.length || !fb || typeof fb.on !== 'function') return;
+        function subscribe(name, handler) {
+            var unsubscribe = fb.on(name, handler);
+            _profileReadinessSubscriptions.push(typeof unsubscribe === 'function'
+                ? unsubscribe
+                : (typeof fb.off === 'function' ? function () { fb.off(name, handler); } : function () {}));
+        }
+        subscribe('profile:changed', resolveCompatibilityContextOnProfileSignal);
+        subscribe('v3:profile-updated', resolveCompatibilityContextOnProfileSignal);
+        // Catch up if the signal already fired before this subscription bound.
+        resolveCompatibilityContextOnProfileSignal();
     }
 
     function startMasteryLifecycleSubscriptions() {
@@ -5768,6 +5809,7 @@
         // internals.
         startSplitScreenHookSubscription();
         startPlayerContextSubscriptions();
+        startProfileReadinessSubscription();
         window.feedBack.on('library:changed', function () {
             registerLibraryCardBadge();
             registerLibraryCardRegenerateAction();
@@ -5778,6 +5820,7 @@
             if (detail && detail.visible) {
                 startSplitScreenHookSubscription();
                 startPlayerContextSubscriptions();
+                startProfileReadinessSubscription();
                 installSplitScreenDetectorHook();
                 startRafLoops();
             } else {
@@ -5934,6 +5977,10 @@
             commitPhraseResult, resetPerSongState,
             updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,
             startMasteryLifecycleSubscriptions, stopMasteryLifecycleSubscriptions,
+            // #87: v3Profile-only readiness adapter (profile:changed /
+            // v3:profile-updated) exported so the delayed-identity recovery
+            // path is testable without a host.
+            startProfileReadinessSubscription, resolveCompatibilityContextOnProfileSignal,
             MASTERY_STREAK_PHRASES, MASTERY_STREAK_ACCURACY,
             rampStep, rampDirection, WARMUP_PHRASES, RAMP_PHRASES,
             RESUME_OFFSET_FRACTION,
@@ -6014,5 +6061,6 @@
     ensureMasterySaveHook();
     installSplitScreenDetectorHook();
     startPlayerContextSubscriptions();
+    startProfileReadinessSubscription();
     startRafLoops();
 })();

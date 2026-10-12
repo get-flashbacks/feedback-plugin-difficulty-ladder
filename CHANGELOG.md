@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Profile-aware Hosts that expose only `window.v3Profile` (no
+  `playerContexts` capability) now resolve the main player's identity when the
+  Host reports readiness, instead of staying gated for the whole song when
+  `song:ready` fired before the initial profile fetch resolved. Subscribes to
+  `profile:changed` (`{ ready: true }`) and `v3:profile-updated`, re-resolving
+  through `activateCompatibilityPlayerContext` only while a song is active and
+  only on the v3Profile fallback path (a `playerContexts` Host keeps its
+  `player-context:ready`/`changed` path). No new persistence is written before
+  identity is ready. `resolveCompatibilityContextOnProfileSignal` /
+  `startProfileReadinessSubscription` in `screen.js`; the Host identity
+  contract and the device-wide-vs-profile-scoped decision are documented in
+  `PLAYER_CONTEXT.md` ("Readiness and lifecycle", "State scope"); tested in
+  `tests/screen.test.js`. Version 0.40.1 -> 0.40.2.
+
 - Cross-tab persistence now folds a concurrent tab's invariant-bearing values
   into the flush instead of blindly clobbering the store (MIGRATION.md §4
   "Concurrent tabs", parent #81): the debounced progress/phrase stores re-read
