@@ -3038,6 +3038,110 @@ test('async main-profile readiness emits scoped sections without saved difficult
     assert.equal(sectionEvents[0].detail.mastery, 0.55);
 });
 
+test('profile:changed recovers a main context whose v3Profile was still null at song:ready', async () => {
+    const mod = freshPlugin();
+    const events = [];
+    const handlers = new Map();
+    let activeProfile = null;
+    global.window.feedBack = {
+        currentSong: { filename: 'song.feedpak', arrangementIndex: 0 },
+        emit: (name, detail) => events.push({ name, detail }),
+        on: (name, handler) => {
+            if (!handlers.has(name)) handlers.set(name, []);
+            handlers.get(name).push(handler);
+        },
+    };
+    global.window.v3Profile = { get: () => activeProfile };
+    global.window.highway = {
+        getSongInfo: () => ({ arrangement_index: 0, type: 'lead' }),
+        hasPhraseData: () => true,
+        getSections: () => [{ time: 0 }],
+        getPhrases: () => [{ start_time: 0, end_time: 8, max_difficulty: 2 }],
+        getMastery: () => 0.5,
+    };
+
+    mod.startProfileReadinessSubscription();
+
+    // song:ready fires before the Host's initial profile fetch resolves, so
+    // window.v3Profile.get() is still null and the pane must stay gated (no
+    // unscoped Section Map output, no shared persistence key).
+    mod.onSongEvent();
+    assert.equal(
+        events.filter(item => item.name === 'difficulty:sections-updated').length,
+        0,
+        'no unscoped sections may escape while v3Profile.get() is null'
+    );
+
+    // The Host then announces readiness and v3Profile.get() returns identity.
+    activeProfile = { id: 'main-profile', player_hash: 'main-profile-hash' };
+    (handlers.get('profile:changed') || []).forEach(handler => handler({ detail: { ready: true } }));
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    const sectionEvents = events.filter(item => item.name === 'difficulty:sections-updated');
+    assert.equal(sectionEvents.length, 1);
+    assert.equal(sectionEvents[0].detail.player_context.player_id, 'main');
+    assert.equal(sectionEvents[0].detail.player_context.profile_hash, 'main-profile-hash');
+    // The recovered context must key under the same song/arrangement/instrument
+    // branch onSongEvent() uses, not a classifier-less legacy-unknown node.
+    assert.equal(sectionEvents[0].detail.player_context.song_id, 'song.feedpak');
+    assert.equal(sectionEvents[0].detail.player_context.instrument, 'guitar');
+    assert.equal(sectionEvents[0].detail.player_context.role, 'lead');
+});
+
+test('profile readiness is left to the Host when the player-context service is present', () => {
+    const mod = freshPlugin();
+    const events = [];
+    let getActiveCalls = 0;
+    global.window.feedBack = {
+        currentSong: { filename: 'song.feedpak', arrangementIndex: 0 },
+        emit: (name, detail) => events.push({ name, detail }),
+        playerContexts: { getActive: () => { getActiveCalls++; return null; } },
+    };
+    global.window.v3Profile = { get: () => ({ id: 'ignored', player_hash: 'ignored-hash' }) };
+
+    // Modern Hosts re-announce through player-context:ready/changed, so the
+    // v3Profile adapter must not race them by resolving on its own.
+    mod.resolveCompatibilityContextOnProfileSignal();
+
+    assert.equal(getActiveCalls, 0, 'v3Profile adapter must not query on a playerContexts Host');
+    assert.equal(events.filter(item => item.name === 'difficulty:sections-updated').length, 0);
+});
+
+test('v3:profile-updated re-resolves the main context when the active profile changes', async () => {
+    const mod = freshPlugin();
+    const events = [];
+    const handlers = new Map();
+    let activeProfile = { id: 'alice', player_hash: 'alice-hash' };
+    global.window.feedBack = {
+        currentSong: { filename: 'song.feedpak', arrangementIndex: 0 },
+        emit: (name, detail) => events.push({ name, detail }),
+        on: (name, handler) => {
+            if (!handlers.has(name)) handlers.set(name, []);
+            handlers.get(name).push(handler);
+        },
+    };
+    global.window.v3Profile = { get: () => activeProfile };
+    global.window.highway = {
+        getSongInfo: () => ({ arrangement_index: 0, type: 'lead' }),
+        hasPhraseData: () => true,
+        getSections: () => [{ time: 0 }],
+        getPhrases: () => [{ start_time: 0, end_time: 8, max_difficulty: 2 }],
+        getMastery: () => 0.5,
+    };
+
+    mod.startProfileReadinessSubscription();
+    mod.onSongEvent();
+
+    activeProfile = { id: 'bob', player_hash: 'bob-hash' };
+    (handlers.get('v3:profile-updated') || []).forEach(handler => handler({ detail: activeProfile }));
+    await new Promise(resolve => setTimeout(resolve, 200));
+
+    const latest = events.filter(item => item.name === 'difficulty:sections-updated').pop();
+    assert.ok(latest, 'a profile update must re-publish scoped sections');
+    assert.equal(latest.detail.player_context.profile_hash, 'bob-hash');
+    assert.equal(latest.detail.player_context.player_id, 'main');
+});
+
 test('song ready waits for profile readiness before its first Section Map emission', async () => {
     const mod = freshPlugin();
     const events = [];

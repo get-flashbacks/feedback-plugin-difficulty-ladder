@@ -139,10 +139,33 @@ pending state, Difficulty Ladder rejects persistence writes and does not claim
 legacy data. A profile API that is present but unresolved must not silently
 fall back to a shared default profile.
 
+The Host surface for identity is feature-detected in this order:
+
+1. **`window.feedBack.playerContexts`** (preferred, capability-backed):
+   `getActive('main')` returns the active context or `null`, and the Host
+   re-announces resolution and changes through `player-context:ready` /
+   `player-context:changed`. Consumers subscribe to those events; they do not
+   poll.
+2. **`window.v3Profile.get()`** (older profile-aware Hosts): synchronous,
+   returning the profile or `null` until the initial fetch resolves. There is
+   no `player-context:*` capability on these Hosts, so the readiness signals
+   are `profile:changed` (`{ ready: true }`, initial resolution) and
+   `v3:profile-updated` (later profile edits). Consumers must re-resolve on
+   those events; otherwise a `song:ready` whose lookup ran while `get()`
+   returned `null` stays gated for the whole song.
+
+When neither surface exists the Host is a single-player legacy Host and the
+`legacy-default` profile applies.
+
 Profile API exceptions keep the main adapter gated and emit
 `difficulty:profile-context-error` (`difficulty_ladder.profile_context_error.v1`).
 The next song/profile lifecycle activation retries resolution; the
 `legacy-default` profile is used only when no profile API exists.
+
+A profile that is deleted or leaves the session arrives as
+`player-context:left` (or an unmatched `removePlayerContext`). If it is the
+active main identity, the main context is cleared and transient scoring state
+is reset; persisted records for other profiles and players are untouched.
 
 The legacy adapter is allowed only when no profile-context API exists and the
 Host is operating as one main player. It uses `profile_id: "legacy-default"`
@@ -156,6 +179,25 @@ For older lifecycle producers, a `left` payload that omits `session_id` is
 matched against the same current-session default used by `ready`/`changed`.
 Pause, seek, loop, detector replacement, and highway replacement must release
 or reset transient state without changing another player's controller.
+
+## State scope
+
+Two kinds of state have deliberately different scopes, and integrations must
+not conflate them:
+
+- **User preferences are device-wide.** Every `difficulty_ladder.<name>`
+  setting (`autoAdjust`, `dropResistance`, `levelUpOnly`, `sensitivity`,
+  `downStepRatio`, `reactionSpeed`, `minMastery`, `maxMastery`,
+  `generateLevels`, `showDifficultyGuide`, `startDifficulty`, `maxRisePct`,
+  `maxFallPct`) and the library-card badge registration are Host/device
+  preferences, not profile data. Switching profiles must not change the
+  controls, and players sharing one device intentionally share these choices.
+  They are not nested under the profile tree (see `MIGRATION.md` §2).
+- **Play state is profile-scoped.** Progress (`difficulty_ladder.progress.v2`),
+  phrase attempts (`difficulty_ladder.phraseAttempts.v2`), and imported Song
+  Mastery values are nested `profile → player → song → arrangement → instrument
+  → role → skill` and are never read or written across a profile or player
+  boundary.
 
 ## Note detection and finalization
 
