@@ -2004,6 +2004,116 @@ test('a failed foreign-tab recovery write is retried by the debounce without any
     );
 });
 
+// Cross-tab data safety (MIGRATION.md §4 "Concurrent tabs"): a whole-store
+// flush re-reads the key and folds the foreign tab's invariant-bearing values
+// into the write, so it can neither lower a monotonic best-mastery nor drop
+// the one-time cutover marker. The "other tab" is modelled the way the browser
+// models it — a direct write to the same localStorage key — matching the
+// foreign-tab tests above.
+function _progressPayloadFor(entry) {
+    const captured = {};
+    const tab = freshPlugin({ onSet: (key, value) => { captured[key] = value; } });
+    entry(tab);
+    tab.flushProgressStore();
+    assert.notEqual(captured['difficulty_ladder.progress.v2'], undefined,
+        'precondition: the other tab persisted its store');
+    return captured['difficulty_ladder.progress.v2'];
+}
+
+test('a whole-store flush keeps a concurrent tab\u2019s higher best-mastery and cutover marker', () => {
+    const foreignPayload = _progressPayloadFor(tab => {
+        tab.writeProgress(playerContext(), { currentDifficulty: 30, bestMastery: 80 });
+        tab.migrateLegacyData(playerContext({ compatibility_adapter: true }));
+    });
+
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    // Our tab mutates a lower best-mastery and a different difficulty, then the
+    // other tab's whole-store write lands before our debounced flush.
+    mod.writeProgress(ctx, { currentDifficulty: 55, bestMastery: 40 });
+    global.localStorage.setItem('difficulty_ladder.progress.v2', foreignPayload);
+    mod.flushProgressStore();
+
+    const persisted = JSON.parse(global.localStorage.getItem('difficulty_ladder.progress.v2'));
+    const node = persisted.profiles[mod._nodeKey('hash-1')]
+        .players[mod._nodeKey('player-1')].songs[mod._nodeKey('song.feedpak')]
+        .arrangements[mod._nodeKey('lead')].instruments[mod._nodeKey('guitar')]
+        .roles[mod._nodeKey('lead')].skills[mod._nodeKey('overall')];
+    assert.equal(node.bestMastery, 80, 'the concurrent higher best-mastery is not lowered');
+    assert.equal(node.currentDifficulty, 55, 'our later (and only) difficulty write still wins');
+    assert.ok(persisted.migrations.songMasteryV1, 'the other tab\u2019s one-time cutover marker survives');
+});
+
+test('a merge never adopts a lower best-mastery over ours', () => {
+    const foreignPayload = _progressPayloadFor(tab => {
+        tab.writeProgress(playerContext(), { bestMastery: 20 });
+    });
+
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    mod.writeProgress(ctx, { bestMastery: 80 });
+    global.localStorage.setItem('difficulty_ladder.progress.v2', foreignPayload);
+    mod.flushProgressStore();
+
+    assert.equal(mod.readProgress(ctx).bestMastery, 80, 'above-best writes are never lowered by a merge');
+});
+
+test('a whole-store flush does not resurrect a node the stale-label repair deleted', () => {
+    // The other tab still holds the pre-repair node; ours has just pruned it.
+    const foreignPayload = _progressPayloadFor(tab => {
+        tab.writeProgress(playerContext({ instrument: 'guitar' }), { currentDifficulty: 68 });
+    });
+
+    const mod = freshPlugin();
+    mod.saveSongMasteryMap({ 'song.feedpak::1': { mastery: 68, instrument: 'fretted' } });
+    mod.migrateLegacyData(playerContext({ compatibility_adapter: true }));
+    const migrated = playerContext({ song_id: 'song.feedpak', arrangement_id: '1' });
+    playArrangement(mod, {
+        filename: 'song.feedpak', arrangement_index: 1,
+        arrangement_type: '', arrangement: 'Vocals',
+    });
+    assert.equal(mod.readProgress(migrated), null, 'precondition: the repair pruned the migrated node');
+
+    // Our tab later writes an unrelated node; the merge re-reads the key and
+    // must not adopt the other tab's pre-repair branch back into the tree.
+    global.localStorage.setItem('difficulty_ladder.progress.v2', foreignPayload);
+    mod.writeProgress(playerContext({ song_id: 'other.feedpak', arrangement_id: '0' }), {
+        currentDifficulty: 20,
+    });
+    mod.flushProgressStore();
+
+    const persisted = JSON.parse(global.localStorage.getItem('difficulty_ladder.progress.v2'));
+    const songs = persisted.profiles[mod._nodeKey('hash-1')]
+        .players[mod._nodeKey('player-1')].songs;
+    assert.equal(songs[mod._nodeKey('song.feedpak')], undefined, 'a foreign branch cannot undo the repair');
+    assert.notEqual(songs[mod._nodeKey('other.feedpak')], undefined, 'our own write still persists');
+});
+
+test('a whole-store flush unions concurrent phrase attempts instead of replacing them', () => {
+    const captured = {};
+    const foreign = freshPlugin({ onSet: (key, value) => { captured[key] = value; } });
+    foreign.savePhraseAttempts([{ phrase_id: 'theirs' }], playerContext());
+    const foreignPayload = captured['difficulty_ladder.phraseAttempts.v2'];
+    assert.notEqual(foreignPayload, undefined, 'precondition: the other tab persisted attempts');
+
+    const mod = freshPlugin();
+    const ctx = playerContext();
+    mod.savePhraseAttempts([{ phrase_id: 'mine' }], ctx);
+    global.localStorage.setItem('difficulty_ladder.phraseAttempts.v2', foreignPayload);
+    mod.savePhraseAttempts([{ phrase_id: 'mine' }], ctx);
+
+    const persisted = JSON.parse(global.localStorage.getItem('difficulty_ladder.phraseAttempts.v2'));
+    const node = persisted.profiles[mod._nodeKey('hash-1')]
+        .players[mod._nodeKey('player-1')].songs[mod._nodeKey('song.feedpak')]
+        .arrangements[mod._nodeKey('lead')].instruments[mod._nodeKey('guitar')]
+        .roles[mod._nodeKey('lead')].skills[mod._nodeKey('overall')];
+    assert.deepEqual(
+        node.attempts.map(attempt => attempt.phrase_id).sort(),
+        ['mine', 'theirs'],
+        'both tabs\u2019 attempts survive the flush'
+    );
+});
+
 // Deterministic stand-in for setTimeout/clearTimeout: records each armed delay
 // and runs callbacks only when the test says so.
 function stubTimers() {

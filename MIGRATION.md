@@ -124,7 +124,7 @@ runtime*, distinct from the data cutover marker above.
 | **Missing Note Detection** (`window.createNoteDetector` absent) | Standalone operation: slider + authored difficulty still work; no live mastery/best-mastery updates, auto-adjust idle, badge shows only remembered values | Documented in README ("Requirements"); README `## Requirements` (line ~489); **verified in code (feature-detected)** |
 | **Missing phrase data** (`hasPhraseData()` false) | The tier rail is **hidden** — `_railHighwaySnapshot` returns null on `!hasPhraseData()` (`screen.js:3418`). The manual mastery slider and ladder generation (`/generate`) still work | **verified in code** (corrected: the rail does not fall back to authored difficulty without phrase data) |
 | **Multiple arrangements** | Each `(song, arrangement)` migrates independently; a live phrase finalization does not leak across arrangements | Tests named in `CHANGELOG.md` (#82/#83 edge cases): "two arrangements of the same song migrating independently", "a live phrase finalization not leaking across arrangements"; **verified** |
-| **Concurrent tabs** | **Known limitation, not handled:** every store flushes its whole cached object, so if two tabs both load the store and then write, the later flush replaces the earlier one's profile or `migrations.songMasteryV1` marker, and can lower `bestMastery` (breaking its monotonicity) or drop migrated progress | `flushProgressStore` whole-object write, `screen.js`; **OPEN** — not cross-tab-serialised today |
+| **Concurrent tabs** | **Best-effort, merge-on-write (not a cross-tab lock):** the debounced `progress.v2` / `phraseAttempts.v2` stores re-read the key at write time and fold the foreign tab's value into the flush instead of overwriting the whole store. The progress merge keeps the higher monotonic `bestMastery`, preserves a foreign `migrations.songMasteryV1` marker, and does not re-adopt a branch the stale-label repair deleted; the phrase store unions concurrent attempts by identity. Two writes that interleave inside one synchronous task are still last-write-wins (no `navigator.locks` serialization) | `_mergeStores` / `_mergeAttemptLists` / `_PROGRESS_MERGE_FIELD_RULES`, `screen.js` write hook; tests "a whole-store flush keeps a concurrent tab's higher best-mastery and cutover marker", "…never adopts a lower best-mastery", "…does not resurrect a node the stale-label repair deleted", "…unions concurrent phrase attempts" (`tests/screen.test.js`); **mitigated, residual documented** |
 | **Private-mode / storage unavailable** | Writes fail quota-safely: bounded exponential retry (`PERSISTENCE_RETRY_MAX = 3`), then give up until the next save; no unbounded loop | `PERSISTENCE_FLUSH_MS` / `PERSISTENCE_RETRY_MAX`, `screen.js:106`; **verified in code** |
 | **Host has no `window.feedBack.libraryCardActions`** | Badge registration no-ops cleanly | `registerLibraryCardBadge` capability check; **verified in code** |
 | **Cross-plugin upgrade from the *separate* Song Mastery plugin's own storage** | Source keys `song_mastery_v1` / `song_mastery_v1_<hash12>`, shape `filename → { ArrangementName → { difficulty?, mastery? } }` (flat records inventoried separately), read-only; saved difficulty → remembered `currentDifficulty`, best mastery → `migratedMastery`, kept distinct; arrangement names resolved against Host metadata, unresolved/flat records deferred (§11) | Schema pinned from the reference source (`jamesgaiser/feedBack-plugin-song-mastery`, `screen.js` `_playerStorageKey`/`_getMasteryMap`/`_saveArrangementEntry`); importer covered by fixtures in `tests/screen.test.js`; **verified in code + fixtures** — live-Host certification still pending |
@@ -237,8 +237,14 @@ eventual removal of any shim are gated on:
 - [x] The **cross-plugin upgrade row** in §4 verified against the actual Song
       Mastery storage schema (pinned reference source) and implemented by #215
       (§11). Live-Host certification remains a separate, non-code step.
-- [ ] The **empty-source marker** caveat (§3) and the **concurrent-tab**
+- [x] The **empty-source marker** caveat (§3) and the **concurrent-tab**
       whole-store flush (§4) resolved or explicitly accepted and documented.
+      The empty-source marker is an accepted, documented design point: it marks
+      "the one-time window has passed", not "the source was present", and the
+      #215 source-store import (§11) deliberately does not share that limitation
+      (an absent source writes no marker). The concurrent-tab flush is mitigated
+      by merge-on-write (§4), with the un-lockable simultaneous-write residual
+      documented there.
 - [x] #84 session-summary item landed and its contract fixtures passing.
 - [x] #85 live settings reconciliation landed with regression tests.
 - [x] #215 source-store import landed with fixtures against the pinned schema
