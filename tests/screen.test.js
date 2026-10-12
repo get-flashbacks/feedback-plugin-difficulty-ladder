@@ -6041,8 +6041,13 @@ test('Stage 4-3: the tick commits the completed ledger, so the attempt record na
 function practiceCapabilitiesDouble({ overrides = [], outcome = 'handled', inspect = null } = {}) {
     const handlers = new Map();
     const calls = [];
+    let active = overrides;
     return {
         calls,
+        // Core's inspect always answers from the domain's CURRENT state, so a
+        // test that emits a lifecycle event updates the snapshot the same way
+        // the real domain would rather than replaying a stale one.
+        setOverrides(next) { active = next; },
         dispatch(request = {}) {
             calls.push(request);
             const source = request && typeof request === 'object' ? request : {};
@@ -6054,7 +6059,7 @@ function practiceCapabilitiesDouble({ overrides = [], outcome = 'handled', inspe
                         payload: {
                             schema: 'feedBack.practice_difficulty.state.v1',
                             available: true,
-                            active_overrides: overrides,
+                            active_overrides: active,
                             participants: [],
                         },
                     }
@@ -6133,6 +6138,18 @@ test('#161: entering an override suspends the song-wide commit (nothing recorded
     await mod._refreshPracticeOverrideCache();
     assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(1)), false);
 
+    // Warm the score past the two-phrase warm-up guard first. Without this a
+    // broken suspension would still pass the slider assertion below: the
+    // covered commit would return at the warm-up guard before applyStep, so
+    // no write would happen even with the override matcher disabled.
+    mod.commitPhraseResult(practiceCommit(0));
+    mod.commitPhraseResult(practiceCommit(2));
+    const warmedAttempts = mod.loadPhraseAttempts(ctx).length;
+    const warmedScored = mod._mainScore().phrasesScored;
+    const warmedProgress = mod.readProgress(ctx);
+    assert.equal(warmedScored, 2, 'precondition: past the two-phrase warm-up guard');
+    assert.equal(warmedAttempts, 2, 'precondition: both uncovered phrases recorded');
+
     // Enter: the capability snapshot now carries an override for this player
     // covering phrase 1 [10, 20).
     global.window.feedBack.capabilities = practiceCapabilitiesDouble({
@@ -6140,23 +6157,28 @@ test('#161: entering an override suspends the song-wide commit (nothing recorded
     });
     await mod._refreshPracticeOverrideCache();
 
+    // Spy on the one slider write the main commit hook performs
+    // (`window.setMastery`), so a covered commit that slips past BOTH the
+    // suspension and the warm-up guard is still detected.
+    const masteryWrites = [];
+    global.window.setMastery = (value) => masteryWrites.push(value);
+
     const state = mod._mainScore();
     state.rampDirection = 'up';
     state.rampProgress = 2;
     state.downStreak = 1;
     const emaBefore = state.emaHitRate;
-    const scoredBefore = state.phrasesScored;
     mod.commitPhraseResult(practiceCommit(1));
 
-    assert.equal(mod.loadPhraseAttempts(ctx).length, 0, 'no phrase-attempt history from the practiced phrase');
+    assert.deepEqual(masteryWrites, [], 'no song-wide mastery write from the practiced phrase');
+    assert.equal(mod.loadPhraseAttempts(ctx).length, warmedAttempts, 'no phrase-attempt history from the practiced phrase');
     assert.equal(state.emaHitRate, emaBefore, 'no EMA update from the practiced phrase');
-    assert.equal(state.phrasesScored, scoredBefore, 'no warm-up count from the practiced phrase');
+    assert.equal(state.phrasesScored, warmedScored, 'no warm-up count from the practiced phrase');
     assert.equal(state.rampDirection, null, 'only the transient ramp state clears');
     assert.equal(state.rampProgress, 0);
     assert.equal(state.downStreak, 0);
-    assert.equal(hw.getMastery(), 0.5, 'no song-wide mastery write from the practiced phrase');
     assert.equal(mod.settings.autoAdjust, true, 'the persisted Adaptive setting stays on');
-    assert.equal(mod.readProgress(ctx), null, 'no progress-store write from the practiced phrase');
+    assert.deepEqual(mod.readProgress(ctx), warmedProgress, 'no progress-store write from the practiced phrase');
 });
 
 test('#161: a commit outside the override window still advances the controller', async () => {
@@ -6189,12 +6211,19 @@ test('#161: leaving the override resumes the pre-existing song-wide state', asyn
     const caps = practiceCapabilitiesDouble({ overrides: [practiceOverrideEntry(ctx, mod)] });
     global.window.feedBack = { capabilities: caps };
     await mod._refreshPracticeOverrideCache();
+    mod._subscribePracticeOverrideEvents();
     assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(1)), true);
 
-    // Leave: the lifecycle event carries only a context_ref (no full
-    // record), so the cache drops the entry and suspends nothing.
+    // Leave: core emits override-cleared through the SUBSCRIBED lifecycle
+    // surface (not a direct handler call) and its inspect now answers without
+    // the override, so a broken subscription or delivery path fails here
+    // instead of passing silently. The cleared window is retired rather than
+    // dropped, so a final commit racing the clear still suspends once.
     const entry = practiceOverrideEntry(ctx, mod);
-    mod._onPracticeOverrideEvent({ context_ref: entry.context_ref, source: entry.source, reason: 'command-clear' });
+    caps.setOverrides([]);
+    caps.emitEvent('override-cleared', {
+        context_ref: entry.context_ref, source: entry.source, reason: 'command-clear',
+    });
     await Promise.resolve();
 
     assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(1)), false);
@@ -6288,6 +6317,15 @@ test('#161: the highway live-override read-back is authoritative per panel', asy
         'the override is in force for exactly the panel it was installed on');
     assert.equal(mod.practiceOverrideSuspendsCommit(ctx, hw, practiceCommit(2)), false,
         'outside the half-open window the slider applies');
+
+    // The commit path itself must suspend, not just the predicate: with an
+    // empty cache and only the highway's live read-back, a covered phrase
+    // records nothing and the uncovered one still does.
+    mod.commitPhraseResult(practiceCommit(1));
+    assert.equal(mod.loadPhraseAttempts(ctx).length, 0,
+        'the live read-back suspends the covered commit even with an empty cache');
+    mod.commitPhraseResult(practiceCommit(2));
+    assert.equal(mod.loadPhraseAttempts(ctx).length, 1, 'the uncovered phrase still records');
 
     // ...while a panel whose highway reports no override is unaffected even
     // with a cached override for another panel.
