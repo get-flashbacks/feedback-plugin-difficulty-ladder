@@ -6034,14 +6034,15 @@ test('Stage 4-3: the tick commits the completed ledger, so the attempt record na
 // A capabilities double shaped like core's practice-difficulty domain:
 // `dispatch({capability, command: 'inspect'})` answers handled with the
 // public snapshot, and lifecycle events arrive through subscribe().
-function practiceCapabilitiesDouble({ overrides = [], outcome = 'handled' } = {}) {
+function practiceCapabilitiesDouble({ overrides = [], outcome = 'handled', inspect = null } = {}) {
     const handlers = new Map();
     const calls = [];
     return {
         calls,
-        dispatch(request = {}) {
-            calls.push(request);
-            if (request.capability === 'practice-difficulty' && request.command === 'inspect') {
+        dispatch(domain, request = {}) {
+            calls.push([domain, request]);
+            if (inspect) return inspect(domain, request);
+            if (domain === 'practice-difficulty' && request.command === 'inspect') {
                 return Promise.resolve(outcome === 'handled'
                     ? {
                         outcome: 'handled',
@@ -6096,7 +6097,7 @@ function practiceCommit(idx, total = 4, hits = 4) {
     };
 }
 
-function practiceHighway({ mastery = 0.5, override = undefined } = {}) {
+function practiceHighway({ mastery = 0.5, override = undefined, time = 15 } = {}) {
     let current = mastery;
     const hw = {
         hasPhraseData: () => true,
@@ -6107,6 +6108,7 @@ function practiceHighway({ mastery = 0.5, override = undefined } = {}) {
             { start_time: 10, end_time: 20, max_difficulty: 3 },
             { start_time: 20, end_time: 30, max_difficulty: 3 },
         ],
+        getTime: () => time,
     };
     // Only expose the live-override read-back when the caller models it —
     // the shared section highway stubs predate the API, and an older Host
