@@ -132,11 +132,12 @@ snapshot, this one included.
 ## Testing
 
 ```bash
-node --test                                            # JS: all tests/*.test.js (393 tests)
+node --test                                            # JS: all tests/*.test.js (398 tests)
 python3 -m pip install -r requirements-test.txt        # Python test environment
 python3 -m pytest tests/test_dd_generation.py -q       # Python generator tests — CI's own invocation
 node tools/settle_points.js                            # auto-adjust settle-point simulation, see README
-node tools/adaptive_simulation.js                      # dynamic-player/item EMA baseline, see ADAPTIVE_SIMULATION.md
+node tools/adaptive_simulation.js                      # dynamic-player/item EMA baseline
+node tools/adaptive_simulation.js --mode=compare        # held-out Elo/Kalman/LLTM comparison, see ADAPTIVE_SIMULATION.md
 ```
 
 The pytest file bootstraps `sys.path` from a **sibling `feedBack` checkout**

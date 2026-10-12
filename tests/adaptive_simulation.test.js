@@ -2,9 +2,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const sim = require('../tools/adaptive_simulation.js');
+const estimators = require('../tools/adaptive_estimators.js');
 const small = { sessions: 2, phrasesPerSession: 30 };
 const run = (scenario = 'plateau', config = {}) => sim.simulate({
     scenario, seed: 1234, config: { ...small, ...config },
@@ -142,4 +145,105 @@ test('seed aggregation and trace CLI are reproducible and label synthetic eviden
     assert.equal(lines[0].synthetic, true);
     assert.equal(lines.length, 3);
     assert.equal(lines[1].prediction, 0.5);
+});
+
+test('synthetic item features are centered and generate hidden base difficulty', () => {
+    const bank = sim.itemBank(sim.configWith());
+    const average = key => bank.reduce((sum, item) => sum + item.features[key], 0) / bank.length;
+    assert.ok(Math.abs(average('density')) < 1e-12);
+    assert.ok(Math.abs(average('interval')) < 1e-12);
+    for (const item of bank) {
+        assert.equal(item.baseDifficulty, 0.55 * item.features.density + 0.45 * item.features.interval);
+    }
+});
+
+test('online Rasch, uncertainty-scaled Elo, Kalman-Elo and LLTM replay without truth leakage', () => {
+    const r = run('plateau', { sessions: 3, phrasesPerSession: 30 });
+    for (const candidate of estimators.CANDIDATES) {
+        const result = sim.replay(r, ({ itemBank, config }) => {
+            assert.ok(itemBank.every(item => !Object.hasOwn(item, 'baseDifficulty')));
+            const model = estimators.createEstimator(candidate, { itemBank, config });
+            return {
+                predict(context) {
+                    for (const key of ['truth', 'baseDifficulty', 'difficulty', 'hitCount', 'hitRate']) {
+                        assert.equal(context[key], undefined);
+                    }
+                    return model.predict(context);
+                },
+                update(outcome) {
+                    assert.equal(outcome.truth, undefined);
+                    assert.equal(outcome.hitCount + outcome.missCount, outcome.noteCount);
+                    model.update(outcome);
+                },
+                beginSession: session => model.beginSession(session),
+            };
+        });
+        assert.ok(Number.isFinite(result.probabilityRmse));
+        assert.ok(Number.isFinite(result.skillRmse));
+        assert.ok(Number.isFinite(result.itemDifficultyRmse));
+        assert.ok(Number.isFinite(result.noteBrier));
+    }
+});
+
+test('candidate-controlled runs share item/note draws and stabilize movement', () => {
+    const config = { sessions: 2, phrasesPerSession: 30 };
+    const runs = estimators.CANDIDATES.map(candidate =>
+        sim.simulateControlled({ scenario: 'fatigue', candidate, seed: 4321, config }));
+    for (const other of runs.slice(1)) {
+        assert.deepEqual(other.rows.map(row => [row.itemId, row.noteCount, row.exploration]),
+            runs[0].rows.map(row => [row.itemId, row.noteCount, row.exploration]));
+    }
+    for (const run of runs) {
+        assert.equal(run.rows[0].tier, 5);
+        assert.equal(run.rows[1].tier, 5);
+        assert.ok(run.rows.every(row => Math.abs(row.tier - Math.floor(row.proposedPct / 10)) <= 1));
+        assert.ok(run.rows.every(row => row.prediction >= 0 && row.prediction <= 1));
+    }
+});
+
+test('candidate experiment uses disjoint tuning/evaluation seeds and reports replay and controlled metrics', () => {
+    const result = sim.candidateExperiment({
+        trainingSeeds: [1000], evaluationSeeds: [2000],
+        config: { sessions: 1, phrasesPerSession: 30 },
+    });
+    assert.equal(result.synthetic, true);
+    assert.equal(result.evaluationDisjointFromTuning, true);
+    assert.deepEqual(result.trainingSeeds, [1000]);
+    assert.deepEqual(result.evaluationSeeds, [2000]);
+    assert.equal(result.results.length, 4);
+    for (const scenario of result.results) {
+        assert.equal(scenario.baseline.runs.length, 1);
+        for (const name of estimators.CANDIDATES) {
+            assert.equal(scenario.replay[name].runs.length, 1);
+            assert.equal(scenario.controlled[name].runs.length, 1);
+            assert.ok(Number.isFinite(scenario.controlled[name].meanSkillRmse));
+            assert.equal(scenario.controlled[name].calibrationBins.length, 10);
+        }
+    }
+    assert.ok(result.tuning['kalman-elo'].parameters.processNoise > 0);
+    assert.ok(result.tuning.lltm.parameters.learningRate > 0);
+    assert.throws(() => sim.candidateExperiment({
+        trainingSeeds: [5], evaluationSeeds: [5], config: { sessions: 1, phrasesPerSession: 5 },
+    }), /disjoint/);
+});
+
+test('comparison CLI writes reproducible output and rejects mixed modes', () => {
+    const args = [path.join(__dirname, '../tools/adaptive_simulation.js'), '--mode=compare',
+        '--train-seeds=1', '--eval-seeds=1', '--sessions=1', '--phrases=15'];
+    const first = spawnSync(process.execPath, args, { encoding: 'utf8' });
+    const second = spawnSync(process.execPath, args, { encoding: 'utf8' });
+    assert.equal(first.status, 0, first.stderr);
+    assert.deepEqual(JSON.parse(first.stdout), JSON.parse(second.stdout));
+    const outputPath = path.join(os.tmpdir(), `adaptive-candidates-${process.pid}.json`);
+    try {
+        const written = spawnSync(process.execPath, [...args, `--output=${outputPath}`], { encoding: 'utf8' });
+        assert.equal(written.status, 0, written.stderr);
+        assert.equal(written.stdout, '');
+        assert.deepEqual(JSON.parse(fs.readFileSync(outputPath, 'utf8')), JSON.parse(first.stdout));
+    } finally {
+        if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    }
+    const bad = spawnSync(process.execPath, [...args, '--seeds=2'], { encoding: 'utf8' });
+    assert.equal(bad.status, 1);
+    assert.match(bad.stderr, /uses --train-seeds and --eval-seeds/);
 });
