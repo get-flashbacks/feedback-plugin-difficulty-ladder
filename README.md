@@ -724,7 +724,7 @@ the burn-in caveat below for why sensitivity 1's spread is less
 trustworthy than 2/3's to begin with).
 Roadmap C2 (#103) calls for a table across *both* dimensions; this
 section documents only Sensitivity at a fixed Reaction speed — the
-Reaction-speed dimension stays open under #55.
+Reaction-speed dimension stays open.
 
 Findings, in order of confidence:
 - **All three settings land slightly below the ~0.80–0.85 figure roadmap
@@ -786,22 +786,25 @@ Finding 1's "sensitivity 1 is closest" ranking rests on this least-settled
 row; take it as directional, not as precise as the table formatting
 implies.
 
-**Adaptive research scaffold (#55, parent #31):**
+**Adaptive research simulation (#55, parent #31):**
 [`ADAPTIVE_SIMULATION.md`](ADAPTIVE_SIMULATION.md) documents the seeded dynamic-player/item
-simulation, EMA baseline measurements and estimator replay contract. Run
-`node tools/adaptive_simulation.js` for summary JSON or
-`node tools/adaptive_simulation.js --trace=fatigue --seed=1000` for an auditable synthetic trace.
-This complements the constant-skill settle-point study; candidate ranking and real-player
-validation remain open. It does not change the live controller.
+simulation, its held-out Elo/Kalman/LLTM comparison and a bounded Phase 3 shortlist
+(Kalman-Elo primary, fixed Elo reference, LLTM exploratory). Run
+`node tools/adaptive_simulation.js` for the EMA baseline summary JSON,
+`node tools/adaptive_simulation.js --mode=compare` for the held-out candidate comparison,
+or `node tools/adaptive_simulation.js --trace=fatigue --seed=1000` for an auditable
+synthetic trace. This complements the constant-skill settle-point study; the ranking is
+synthetic forecast evidence, and real-player validation (#56) and the adopt/defer
+decision (#57) remain open. It does not change the live controller.
 
 **Not done here:** no setting has been retuned as a result of these
 numbers (e.g. weighting the EMA by note count, or adjusting strict's step
 size/dead band) — that's a separate decision pending review of the data
 above, not something this measurement does on its own authority. The
-Reaction-speed half of C2's table, the broader comparison against
-Elo/Glicko, Kalman, and IRT estimators remain open under #55.
-The dynamic synthetic-player/item scaffold is now documented in
-`ADAPTIVE_SIMULATION.md`; it supplies EMA baseline traces, not a candidate ranking.
+Reaction-speed half of C2's table remains open under roadmap #103.
+The dynamic synthetic-player/item simulation is now documented in
+`ADAPTIVE_SIMULATION.md`; it supplies a held-out candidate ranking rather than
+only EMA baseline traces.
 
 All settings persist in `localStorage`, prefixed `difficulty_ladder.`.
 

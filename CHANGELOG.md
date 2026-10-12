@@ -56,8 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   metrics/calibration bins in `research/adaptive_baseline.json` and
   `research/adaptive_candidates.json`. `ADAPTIVE_SIMULATION.md` reports the model,
   metrics, results and bounded Phase 3 shortlist; findings are synthetic forecasts,
-  not learning/retention evidence or an adoption decision. Research tooling only.
-  Version 0.38.0 -> 0.38.1.
+  not learning/retention evidence or an adoption decision. The README's
+  adaptive-research note is reconciled to the completed Phase 2 state (a candidate
+  ranking exists; real-player validation and adopt/defer remain open). Research
+  tooling only. Version 0.38.0 -> 0.38.1.
 - Added `TECHNIQUE_WEIGHTING.md`, the design note C7-1 (#167, roadmap #103
   item C7) requires #122 to resolve before any code lands. It answers the two
   open questions — neutral cold start (weight is exactly `1.0` with no
