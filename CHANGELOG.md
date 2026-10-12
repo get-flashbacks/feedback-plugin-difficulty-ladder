@@ -104,6 +104,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejected alternative for each, states the technique vocabulary reused from
   `_tech_score`/`_TECH_GATE_FRAC`, and records the weak evidence confidence and
   the gate: C5 (#113) must ship and log data first.
+- Re-pointed the #129 host-contract coverage at the live renderer: the
+  phrase-tier consumer tests now drive the event-driven DOM tier rail (#157)
+  that replaced the canvas "glass" HUD, asserting its lit segments/notch agree
+  with the `difficulty_ladder.sections.v3` emit and the phrase-attempt log on
+  both a full and a collapsed ladder. Updated the README host-compatibility
+  section to name the rail (not the retired glass) as the rendered consumer and
+  refreshed the stale JS test count in `CLAUDE.md`. Tests/docs only; no runtime
+  behaviour changes. Version 0.40.0 -> 0.40.1.
 
 ### Added
 - One-time import of the separate Song Mastery plugin's Dynamic Difficulty
