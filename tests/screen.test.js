@@ -5031,6 +5031,222 @@ test('_songMasteryStepLimit translates steps x stepSize and treats 0 as unlimite
     assert.equal(mod._songMasteryStepLimit(-1, 5), null);
 });
 
+// ── Song Mastery source-store import (issue #215) ─────────────────────────
+// The separate Song Mastery plugin keeps its own store under `song_mastery_v1`
+// / `song_mastery_v1_<hash12>`, keyed by arrangement NAME — a different store
+// from this plugin's legacy `difficulty_ladder.songMastery` map (#82). Its
+// arrangement names must be resolved against Host metadata, saved difficulty
+// and best mastery must land in distinct canonical fields, and unresolved
+// records must be deferred rather than guessed.
+
+function sourceHash() { return 'abcdefghijklmnop'; }
+function sourceKeyFor(hash = sourceHash()) { return 'song_mastery_v1_' + hash.slice(0, 12); }
+const SOURCE_MARKER = 'difficulty_ladder.songMasterySourceImport.v1';
+function readSourceMarker() { return JSON.parse(global.localStorage.getItem(SOURCE_MARKER)); }
+
+test('_songMasteryArrangementIdentity resolves a unique name and refuses unknown or duplicate names', () => {
+    const mod = freshPlugin();
+    const arrangements = [
+        { index: 0, name: 'Lead', type: 'lead' },
+        { index: 1, name: 'Bass', type: 'bass' },
+    ];
+    assert.deepEqual(mod._songMasteryArrangementIdentity('Lead', arrangements),
+        { arrangement_id: 0, instrument: 'guitar', role: 'lead' });
+    assert.deepEqual(mod._songMasteryArrangementIdentity('bass', arrangements),
+        { arrangement_id: 1, instrument: 'bass', role: 'bass' });
+    assert.equal(mod._songMasteryArrangementIdentity('Rhythm', arrangements), null, 'an unknown name is not guessed');
+    assert.equal(mod._songMasteryArrangementIdentity('Lead', [
+        { index: 0, name: 'Lead' }, { index: 1, name: 'lead' },
+    ]), null, 'a duplicate display name is ambiguous');
+    assert.equal(mod._songMasteryArrangementIdentity('', arrangements), null);
+    assert.equal(mod._songMasteryArrangementIdentity('Lead', null), null);
+});
+
+test('_songMasterySourceRecord keeps difficulty and mastery independent, and flags flat records', () => {
+    const mod = freshPlugin();
+    assert.deepEqual(mod._songMasterySourceRecord({ difficulty: 55, mastery: 72 }), { difficulty: 55, mastery: 72 });
+    assert.deepEqual(mod._songMasterySourceRecord({ difficulty: 55 }), { difficulty: 55, mastery: null });
+    assert.deepEqual(mod._songMasterySourceRecord({ mastery: 72 }), { difficulty: null, mastery: 72 });
+    assert.equal(mod._songMasterySourceRecord({}), null);
+    assert.equal(mod._songMasterySourceRecord(null), null);
+    assert.equal(mod._isFlatSongMasteryEntry({ mastery: 30 }), true);
+    assert.equal(mod._isFlatSongMasteryEntry({ difficulty: 10 }), true);
+    assert.equal(mod._isFlatSongMasteryEntry({ Lead: { mastery: 30 } }), false);
+});
+
+test('the Song Mastery source store imports difficulty and best mastery into distinct canonical fields', () => {
+    const hash = sourceHash();
+    const stored = {
+        [sourceKeyFor(hash)]: JSON.stringify({
+            'song.feedpak': { Lead: { difficulty: 55, mastery: 72 } },
+        }),
+    };
+    const mod = freshPlugin({ stored });
+    const ctx = playerContext({
+        profile_hash: hash, song_id: 'song.feedpak', arrangement_id: 0,
+        instrument: 'guitar', role: 'lead',
+    });
+
+    const result = mod._importSongMasterySource(ctx, { arrangements: [{ index: 0, name: 'Lead', type: 'lead' }] });
+
+    assert.equal(result.imported, 1);
+    assert.deepEqual(result.source_keys, [sourceKeyFor(hash)]);
+    const node = mod.readProgress(ctx);
+    assert.equal(node.currentDifficulty, 55, 'the saved difficulty lands in the difficulty field');
+    assert.equal(node.migratedMastery, 72, 'the best mastery lands in the mastery field');
+    assert.equal(node.bestMastery, null, 'a saved difficulty must never become a historical mastery score');
+    assert.equal(global.localStorage.getItem(sourceKeyFor(hash)), stored[sourceKeyFor(hash)], 'source storage retained');
+    assert.equal(readSourceMarker().schema, 'difficulty_ladder.song_mastery_source_import.v1');
+});
+
+test('the Song Mastery source import is idempotent and never lowers a higher live best mastery', () => {
+    const hash = sourceHash();
+    const mod = freshPlugin({ stored: {
+        [sourceKeyFor(hash)]: JSON.stringify({ 'song.feedpak': { Lead: { difficulty: 55, mastery: 72 } } }),
+    } });
+    const ctx = playerContext({ profile_hash: hash, arrangement_id: 0, instrument: 'guitar', role: 'lead' });
+    const arrangements = [{ index: 0, name: 'Lead', type: 'lead' }];
+    // A live best higher than the migrated score must survive the import.
+    mod.writeProgress(ctx, { bestMastery: 90, currentDifficulty: 40 });
+
+    assert.equal(mod._importSongMasterySource(ctx, { arrangements }).imported, 1);
+    assert.equal(mod._importSongMasterySource(ctx, { arrangements }).imported, 0, 'a claimed record is never re-imported');
+
+    const node = mod.readProgress(ctx);
+    assert.equal(node.bestMastery, 90, 'a source mastery must not lower a higher live best');
+    assert.equal(node.migratedMastery, 72);
+    assert.equal(node.currentDifficulty, 40, 'an existing difficulty wins over the imported one');
+    assert.equal(mod._bestMasteryOf(node), 90);
+});
+
+test('unresolved arrangement names and flat source records are deferred, never guessed', () => {
+    const hash = sourceHash();
+    const key = sourceKeyFor(hash);
+    const mod = freshPlugin({ stored: {
+        [key]: JSON.stringify({
+            'song.feedpak': { Lead: { difficulty: 55 }, Rhythm: { mastery: 40 } },
+            'flat.feedpak': { mastery: 30 },
+        }),
+    } });
+    const ctx = playerContext({ profile_hash: hash, arrangement_id: 0, instrument: 'guitar', role: 'lead' });
+
+    const result = mod._importSongMasterySource(ctx, { arrangements: [{ index: 0, name: 'Lead', type: 'lead' }] });
+
+    assert.equal(result.imported, 1);
+    assert.equal(result.deferred, 2);
+    const deferred = readSourceMarker().deferred;
+    assert.deepEqual(deferred.map((entry) => [entry.song_id, entry.arrangement_name, entry.reason]), [
+        ['song.feedpak', 'Rhythm', 'unresolved-arrangement'],
+        ['flat.feedpak', null, 'flat-record'],
+    ]);
+    assert.equal(global.localStorage.getItem(key), JSON.stringify({
+        'song.feedpak': { Lead: { difficulty: 55 }, Rhythm: { mastery: 40 } },
+        'flat.feedpak': { mastery: 30 },
+    }), 'deferred records leave the source untouched');
+});
+
+test('an absent Song Mastery source does not block a later import from a restored backup', () => {
+    const hash = sourceHash();
+    const mod = freshPlugin();
+    const ctx = playerContext({ profile_hash: hash, arrangement_id: 0, instrument: 'guitar', role: 'lead' });
+    const arrangements = [{ index: 0, name: 'Lead', type: 'lead' }];
+
+    assert.equal(mod._importSongMasterySource(ctx, { arrangements }).imported, 0);
+    assert.equal(global.localStorage.getItem(SOURCE_MARKER), null, 'an absent source writes no completion marker');
+
+    // The user restores a backup afterwards: the record still imports.
+    global.localStorage.setItem(sourceKeyFor(hash), JSON.stringify({ 'song.feedpak': { Lead: { mastery: 72 } } }));
+    assert.equal(mod._importSongMasterySource(ctx, { arrangements }).imported, 1);
+    assert.equal(mod.readProgress(ctx).migratedMastery, 72);
+});
+
+test('a profile-aware host never claims the unscoped Song Mastery source store', () => {
+    const mod = freshPlugin({ stored: {
+        'song_mastery_v1': JSON.stringify({ 'song.feedpak': { Lead: { mastery: 72 } } }),
+    } });
+    global.window.v3Profile = { get: () => ({ player_hash: 'somethingelse123456' }) };
+    const ctx = playerContext({ profile_hash: null, compatibility_adapter: true, arrangement_id: 0, instrument: 'guitar', role: 'lead' });
+
+    const result = mod._importSongMasterySource(ctx, { arrangements: [{ index: 0, name: 'Lead', type: 'lead' }] });
+
+    assert.deepEqual(result.source_keys, [], 'no key may be claimed without a profile identity');
+    assert.equal(result.imported, 0);
+    assert.equal(mod.readProgress(ctx), null);
+});
+
+test('only the current profile hash prefix is read; another profile is never imported', () => {
+    const mod = freshPlugin({ stored: {
+        'song_mastery_v1_aaaaaaaaaaaa': JSON.stringify({ 'song.feedpak': { Lead: { mastery: 72 } } }),
+        'song_mastery_v1_bbbbbbbbbbbb': JSON.stringify({ 'song.feedpak': { Lead: { mastery: 12 } } }),
+    } });
+    const ctx = playerContext({ profile_hash: 'bbbbbbbbbbbb9999', arrangement_id: 0, instrument: 'guitar', role: 'lead' });
+
+    const result = mod._importSongMasterySource(ctx, { arrangements: [{ index: 0, name: 'Lead', type: 'lead' }] });
+
+    assert.deepEqual(result.source_keys, ['song_mastery_v1_bbbbbbbbbbbb']);
+    assert.equal(mod.readProgress(ctx).migratedMastery, 12, 'the other profile\'s score is never read');
+});
+
+test('a Windows-path filename in the source store normalizes to the Host forward-slash filename', () => {
+    const hash = sourceHash();
+    const mod = freshPlugin({ stored: {
+        [sourceKeyFor(hash)]: JSON.stringify({
+            'C:\\Music\\song.feedpak': { Lead: { difficulty: 55, mastery: 72 } },
+        }),
+    } });
+    const ctx = playerContext({
+        profile_hash: hash, song_id: 'C:/Music/song.feedpak',
+        arrangement_id: 0, instrument: 'guitar', role: 'lead',
+    });
+
+    assert.equal(mod._importSongMasterySource(ctx, { arrangements: [{ index: 0, name: 'Lead', type: 'lead' }] }).imported, 1);
+    assert.equal(mod.readProgress(ctx).migratedMastery, 72);
+});
+
+test('two arrangements of one source song import independently under their own claims', () => {
+    const hash = sourceHash();
+    const mod = freshPlugin({ stored: {
+        [sourceKeyFor(hash)]: JSON.stringify({
+            'song.feedpak': {
+                Lead: { difficulty: 55, mastery: 72 },
+                Bass: { difficulty: 40, mastery: 61 },
+            },
+        }),
+    } });
+    const arrangements = [{ index: 0, name: 'Lead', type: 'lead' }, { index: 1, name: 'Bass', type: 'bass' }];
+    const lead = playerContext({ profile_hash: hash, arrangement_id: 0, instrument: 'guitar', role: 'lead' });
+    const bass = playerContext({ profile_hash: hash, arrangement_id: 1, instrument: 'bass', role: 'bass' });
+
+    assert.equal(mod._importSongMasterySource(lead, { arrangements }).imported, 2);
+    assert.equal(mod.readProgress(lead).migratedMastery, 72);
+    assert.equal(mod.readProgress(bass).migratedMastery, 61);
+    assert.equal(mod.readProgress(bass).currentDifficulty, 40);
+});
+
+test('a malformed Song Mastery source store is treated as absent without throwing', () => {
+    const hash = sourceHash();
+    const mod = freshPlugin({ stored: {
+        [sourceKeyFor(hash)]: '{not json',
+    } });
+    const ctx = playerContext({ profile_hash: hash, arrangement_id: 0, instrument: 'guitar', role: 'lead' });
+
+    assert.equal(mod._readSongMasterySource(sourceKeyFor(hash)), null);
+    assert.doesNotThrow(() => {
+        const result = mod._importSongMasterySource(ctx, { arrangements: [{ index: 0, name: 'Lead', type: 'lead' }] });
+        assert.equal(result.imported, 0);
+    });
+    assert.equal(global.localStorage.getItem(SOURCE_MARKER), null);
+});
+
+test('_songMasteryArrangementMetadata exposes only the streamed arrangement when no list is provided', () => {
+    const mod = freshPlugin();
+    global.window.highway = {
+        getSongInfo: () => ({ arrangement: 'Lead', arrangement_index: 2, arrangement_type: 'lead' }),
+    };
+    global.window.feedBack = { currentSong: { filename: 'song.feedpak' } };
+    assert.deepEqual(mod._songMasteryArrangementMetadata(), [{ index: 2, name: 'Lead', type: 'lead' }]);
+});
+
 test('a record the ramp moved before any restore keeps its own value, not a concession', () => {
     const mod = freshPlugin();
     mod.settings.autoAdjust = true;
