@@ -892,10 +892,20 @@ function freshRailPlugin() {
     return { mod, dom };
 }
 
-function railCell(dom) {
+function railEl(dom) {
     const rail = dom.player.children.find((c) => c.id === 'dynamic-difficulty-rail');
     assert.ok(rail, 'the rendered guide is the DOM tier rail');
-    return rail.children[0];
+    return rail;
+}
+
+function railCell(dom) {
+    return railEl(dom).children[0];
+}
+
+function litTiers(cell) {
+    return cell.children
+        .map((seg, tier) => (seg.style.cssText.includes('background:#e8c040') ? tier : -1))
+        .filter((tier) => tier >= 0);
 }
 
 test('host-contract: the rendered tier rail agrees with the v3 emit and the attempt log on a full ladder', () => {
@@ -914,8 +924,9 @@ test('host-contract: the rendered tier rail agrees with the v3 emit and the atte
 
     mod._syncDifficultyRail();
     const cell = railCell(dom);
-    const lit = cell.children.filter((s) => s.style.cssText.includes('background:#e8c040'));
+    const lit = litTiers(cell);
     const notch = cell.children.filter((s) => s.style.cssText.includes('outline:'));
+    const label = railEl(dom).getAttribute('aria-label');
 
     const collector = collectOneEmit();
     mod.calculateAndEmitSectionDifficulties(null, highway);
@@ -923,9 +934,10 @@ test('host-contract: the rendered tier rail agrees with the v3 emit and the atte
     mod.recordPhraseAttempt(1, ctx, state, highway);
     const attempt = mod.loadPhraseAttempts(ctx)[0].presented_difficulty;
 
-    assert.equal(lit.length - 1, 2, 'tiers 0..2 lit -> currentTier 2');
-    assert.equal(lit.length - 1, v3.current_tier, 'the rail lights the same tier the v3 emit reports');
-    assert.equal(lit.length - 1, attempt, 'and the same tier the attempt log recorded');
+    assert.deepEqual(lit, [0, 1, 2], 'the rail lights exactly tiers 0..2, not just any three segments');
+    assert.equal(lit[lit.length - 1], v3.current_tier, 'the rail lights the same tier the v3 emit reports');
+    assert.equal(lit[lit.length - 1], attempt, 'and the same tier the attempt log recorded');
+    assert.ok(label.includes('tier 2 of 3'), 'the accessible name announces the same lit tier');
     assert.equal(notch.length, 1, 'exactly one full-detail notch');
     assert.equal(cell.children.indexOf(notch[0]), v3.top_tier, 'the notch sits at the v3 top tier');
 });
@@ -946,8 +958,9 @@ test('host-contract: on a collapsed ladder the rail keeps the slider tier the at
 
     mod._syncDifficultyRail();
     const cell = railCell(dom);
-    const lit = cell.children.filter((s) => s.style.cssText.includes('background:#e8c040'));
+    const lit = litTiers(cell);
     const notch = cell.children.filter((s) => s.style.cssText.includes('outline:'));
+    const label = railEl(dom).getAttribute('aria-label');
 
     const collector = collectOneEmit();
     mod.calculateAndEmitSectionDifficulties(null, highway);
@@ -956,9 +969,11 @@ test('host-contract: on a collapsed ladder the rail keeps the slider tier the at
     const attempt = mod.loadPhraseAttempts(ctx)[0].presented_difficulty;
 
     assert.equal(attempt, 3, 'the attempt log records the uncapped slider tier');
-    assert.equal(lit.length - 1, attempt, 'the rail lights the same uncapped tier');
+    assert.deepEqual(lit, [0, 1, 2, 3], 'the rail lights exactly tiers 0..3, not just any four segments');
+    assert.equal(lit[lit.length - 1], attempt, 'the rail lights the same uncapped tier');
     assert.equal(v3.current_tier, 1, 'the v3 emit caps at full detail (top_tier)');
-    assert.notEqual(lit.length - 1, v3.current_tier, 'so the rail and v3 intentionally diverge');
+    assert.notEqual(lit[lit.length - 1], v3.current_tier, 'so the rail and v3 intentionally diverge');
+    assert.ok(label.includes('tier 3 of 3'), 'the accessible name announces the uncapped slider tier');
     assert.equal(cell.children.indexOf(notch[0]), 1, 'the notch marks the collapsed top tier (1)');
 });
 
