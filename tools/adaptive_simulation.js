@@ -557,48 +557,72 @@ function candidateExperiment({
     };
 }
 
-function main(argv) {
+function parseArgs(argv) {
+    const allowed = ['mode', 'output', 'seeds', 'train-seeds', 'eval-seeds', 'sessions', 'phrases', 'exploration', 'trace', 'seed'];
     const args = new Map();
     for (const arg of argv) {
         const match = /^--([a-z-]+)=(.+)$/.exec(arg);
-        if (!match || !['mode', 'output', 'seeds', 'train-seeds', 'eval-seeds', 'sessions', 'phrases', 'exploration', 'trace', 'seed'].includes(match[1])
-            || args.has(match[1])) throw new Error(`unknown or duplicate option: ${arg}`);
+        if (!match || !allowed.includes(match[1]) || args.has(match[1])) {
+            throw new Error(`unknown or duplicate option: ${arg}`);
+        }
         args.set(match[1], match[2]);
     }
-    const writeOutput = text => {
-        if (args.has('output')) fs.writeFileSync(path.resolve(args.get('output')), text);
-        else process.stdout.write(text);
-    };
+    return args;
+}
+
+function cliConfig(args) {
     const config = {};
     for (const [arg, key] of [['sessions', 'sessions'], ['phrases', 'phrasesPerSession'], ['exploration', 'exploration']]) {
         if (args.has(arg)) config[key] = Number(args.get(arg));
     }
-    const mode = args.get('mode') ?? 'baseline';
-    if (mode === 'compare') {
-        if (args.has('trace') || args.has('seed') || args.has('seeds')) {
-            throw new Error('--mode=compare uses --train-seeds and --eval-seeds');
-        }
-        writeOutput(JSON.stringify(candidateExperiment({
-            trainingSeeds: seedRange(1000, Number(args.get('train-seeds') ?? 20)),
-            evaluationSeeds: seedRange(2000, Number(args.get('eval-seeds') ?? 20)),
-            config,
-        }), null, 2) + '\n');
-    } else if (args.has('trace')) {
-        if (mode !== 'baseline' || args.has('seeds') || args.has('train-seeds') || args.has('eval-seeds')) {
-            throw new Error('--trace uses --seed and cannot be combined with seed-count or compare options');
-        }
-        const run = simulate({ scenario: args.get('trace'), seed: Number(args.get('seed') ?? 1000), config });
-        const lines = [JSON.stringify({ schema: 'difficulty_ladder.adaptive_trace.v1',
-            synthetic: true, controllerSha256, scenario: run.scenario, seed: run.seed, config: run.config })];
-        for (const row of run.rows) lines.push(JSON.stringify(row));
-        writeOutput(lines.join('\n') + '\n');
-    } else {
-        if (mode !== 'baseline') throw new Error(`unknown mode: ${mode}`);
-        if (args.has('seed') || args.has('train-seeds') || args.has('eval-seeds')) {
-            throw new Error('--seed requires --trace; train/eval seed counts require --mode=compare');
-        }
-        writeOutput(JSON.stringify(experiment({ seeds: Number(args.get('seeds') ?? 20), config }), null, 2) + '\n');
+    return config;
+}
+
+function writeOutput(args, text) {
+    if (args.has('output')) fs.writeFileSync(path.resolve(args.get('output')), text);
+    else process.stdout.write(text);
+}
+
+function runComparison(args, config) {
+    if (args.has('trace') || args.has('seed') || args.has('seeds')) {
+        throw new Error('--mode=compare uses --train-seeds and --eval-seeds');
     }
+    const result = candidateExperiment({
+        trainingSeeds: seedRange(1000, Number(args.get('train-seeds') ?? 20)),
+        evaluationSeeds: seedRange(2000, Number(args.get('eval-seeds') ?? 20)),
+        config,
+    });
+    writeOutput(args, JSON.stringify(result, null, 2) + '\n');
+}
+
+function runTrace(args, config) {
+    if (args.get('mode') !== undefined && args.get('mode') !== 'baseline'
+        || args.has('seeds') || args.has('train-seeds') || args.has('eval-seeds')) {
+        throw new Error('--trace uses --seed and cannot be combined with seed-count or compare options');
+    }
+    const run = simulate({ scenario: args.get('trace'), seed: Number(args.get('seed') ?? 1000), config });
+    const lines = [JSON.stringify({ schema: 'difficulty_ladder.adaptive_trace.v1',
+        synthetic: true, controllerSha256, scenario: run.scenario, seed: run.seed, config: run.config })];
+    for (const row of run.rows) lines.push(JSON.stringify(row));
+    writeOutput(args, lines.join('\n') + '\n');
+}
+
+function runBaseline(args, config) {
+    if (args.has('seed') || args.has('train-seeds') || args.has('eval-seeds')) {
+        throw new Error('--seed requires --trace; train/eval seed counts require --mode=compare');
+    }
+    const result = experiment({ seeds: Number(args.get('seeds') ?? 20), config });
+    writeOutput(args, JSON.stringify(result, null, 2) + '\n');
+}
+
+function main(argv) {
+    const args = parseArgs(argv);
+    const config = cliConfig(args);
+    const mode = args.get('mode') ?? 'baseline';
+    if (mode === 'compare') return runComparison(args, config);
+    if (args.has('trace')) return runTrace(args, config);
+    if (mode !== 'baseline') throw new Error(`unknown mode: ${mode}`);
+    return runBaseline(args, config);
 }
 
 if (require.main === module) {

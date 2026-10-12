@@ -2,7 +2,7 @@
   "schema": "difficulty_ladder.adaptive_candidates.v1",
   "synthetic": true,
   "controllerSha256": "5f0e615501d718748a401c9e8ebacfa99bcc08bdbaa6e117cf15ccf8640588e0",
-  "simulatorSha256": "da325211d48170268276d8008c14e6a2728cbe830fa68554bea4a5bda29c61c1",
+  "simulatorSha256": "e3789171e9338a2d0f6a348d6b1501758a5d0702fc7cfabf6b62ca82ae0addfd",
   "estimatorSha256": "325fdd0419719ab5584b33a8d30280fa45c72d1783f90bba1c15971ad605ab4b",
   "config": {
     "sessions": 8,
