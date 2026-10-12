@@ -8,26 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Import the separate Song Mastery plugin's own score/difficulty store (#215,
-  parent #81): the reference plugin keeps `song_mastery_v1` /
-  `song_mastery_v1_<first 12 of player_hash>` as
-  `filename → { ArrangementName → { difficulty?, mastery? } }`, a store #82's
-  migration never read. Difficulty Ladder now imports it read-only, resolving
-  each arrangement name against Host metadata before writing: a unique name maps
-  to that arrangement's canonical id, and an unknown or duplicate name (or an
-  older flat record with no arrangement key) is deferred into a reviewable
-  `difficulty_ladder.songMasterySourceImport.v1` list rather than guessed. Saved
-  difficulty initializes the remembered `currentDifficulty` only when none
-  exists, and the source's best mastery is written once to the immutable
-  `migratedMastery` (a saved difficulty is never read back as a score, and a
-  source mastery never lowers a higher live best). Each record is claimed per
-  `(source key, profile, song, arrangement, instrument, role)` so re-runs are idempotent, the unscoped store
-  is claimed only by a legacy single-player compatibility context, and an absent
-  source writes no marker so a restored backup still imports later. Source keys
-  are never written or deleted. `_importSongMasterySource` and its resolution
-  helpers in `screen.js`; 12 fixtures in `tests/screen.test.js`; documented in
-  `MIGRATION.md` §11 and `README.md`. Version 0.38.1 -> 0.39.0.
-
+- Section-practice override consumer (#161, M6 cross-repo 3/4): while a
   section-practice override installed by another plugin is in force, the
   song-wide controller suspends for the covered player and phrase — no
   phrase-attempt record, no EMA, no warm-up count, no streak, no best
@@ -55,6 +36,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/screen.test.js` (enter/remain/leave, per-player isolation, stale
   snapshot, highway read-back, older-Host degradation, controls +
   diagnostics surface). Version 0.37.0 -> 0.38.0.
+- Import the separate Song Mastery plugin's own score/difficulty store (#215,
+  parent #81): the reference plugin keeps `song_mastery_v1` /
+  `song_mastery_v1_<first 12 of player_hash>` as
+  `filename → { ArrangementName → { difficulty?, mastery? } }`, a store #82's
+  migration never read. Difficulty Ladder now imports it read-only, resolving
+  each arrangement name against Host metadata before writing: a unique name maps
+  to that arrangement's canonical id, and an unknown or duplicate name (or an
+  older flat record with no arrangement key) is deferred into a reviewable
+  `difficulty_ladder.songMasterySourceImport.v1` list rather than guessed. Saved
+  difficulty initializes the remembered `currentDifficulty` only when none
+  exists, and the source's best mastery is written once to the immutable
+  `migratedMastery` (a saved difficulty is never read back as a score, and a
+  source mastery never lowers a higher live best). Each record is claimed per
+  `(source key, profile, song, arrangement, instrument, role)` so re-runs are idempotent, the unscoped store
+  is claimed only by a legacy single-player compatibility context, and an absent
+  source writes no marker so a restored backup still imports later. Source keys
+  are never written or deleted. `_importSongMasterySource` and its resolution
+  helpers in `screen.js`; 12 fixtures in `tests/screen.test.js`; documented in
+  `MIGRATION.md` §11 and `README.md`. Version 0.38.1 -> 0.39.0.
 
 ### Documentation
 - Added `ADAPTIVE_DIFFICULTY_LITERATURE.md`, the Phase 1 source-backed review for
