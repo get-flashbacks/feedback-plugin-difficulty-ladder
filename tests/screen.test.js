@@ -1447,6 +1447,87 @@ test('karaoke normalization uses voice without introducing fretted defaults', ()
     assert.equal(ctx.role, 'karaoke');
 });
 
+test('a karaoke player records to its own vocal branch without touching the fretted record', () => {
+    const mod = freshPlugin();
+    const guitar = playerContext({ player_id: 'player-1', instrument: 'guitar', role: 'lead', skill: 'overall' });
+    const voiceOverall = playerContext({ player_id: 'player-1', instrument: 'voice', role: 'karaoke', skill: 'overall' });
+    const voicePitch = playerContext({ player_id: 'player-1', instrument: 'voice', role: 'karaoke', skill: 'vocal-pitch' });
+
+    mod.writeProgress(guitar, { bestMastery: 80 });
+    mod.writeProgress(voiceOverall, { bestMastery: 55 });
+
+    // A missing vocal skill falls back to the karaoke role's own `overall`
+    // node — never across the instrument/role boundary to the guitar record.
+    assert.equal(mod.readProgress(voicePitch).bestMastery, 55);
+    assert.equal(mod.readProgress(guitar).bestMastery, 80);
+
+    // Writing the vocal skill creates its own node; it replaces neither the
+    // karaoke overall node nor the guitar node.
+    mod.writeProgress(voicePitch, { bestMastery: 42 });
+    assert.equal(mod.readProgress(voicePitch).bestMastery, 42);
+    assert.equal(mod.readProgress(voiceOverall).bestMastery, 55, 'the karaoke overall node is untouched');
+    assert.equal(mod.readProgress(guitar).bestMastery, 80, 'the fretted record is untouched');
+});
+
+test('a karaoke note-detect session scores into the vocal-pitch skill node, not the fretted player', () => {
+    const mod = freshPlugin();
+    const fretted = playerContext({ player_id: 'player-1', instrument: 'guitar', role: 'lead', skill: 'overall' });
+    mod.upsertPlayerContext(fretted);
+    global.window.highway = { getMastery: () => 0.9 }; // the fretted main highway
+    const karaoke = playerContext({ player_id: 'player-2', instrument: 'voice', role: 'karaoke', skill: 'vocal-pitch' });
+    const vocalHighway = { getMastery: () => 0.6 };
+    mod.upsertPlayerContext({ ...karaoke, highway: vocalHighway });
+
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 100, player_context: karaoke } }), true);
+
+    assert.equal(mod.readProgress(karaoke, { exactOnly: true }).bestMastery, 60, '60% vocal slider x 100% accuracy, on the exact vocal-pitch node');
+    assert.equal(mod.readProgress(fretted), null, 'the fretted player records nothing from the vocal session');
+});
+
+test('a note-detect session that names no skill is scored as overall, never a technique', () => {
+    const mod = freshPlugin();
+    const ctx = playerContext({ player_id: 'main', instrument: 'voice', role: 'karaoke' });
+    mod.upsertPlayerContext(ctx);
+    global.window.highway = { getMastery: () => 0.5 };
+    const unnamed = { ...ctx };
+    delete unnamed.skill; // the payload could not identify a technique
+
+    assert.equal(mod._onNoteDetectSession({ detail: { accuracy: 100, player_context: unnamed } }), true);
+
+    const overall = playerContext({ player_id: 'main', instrument: 'voice', role: 'karaoke', skill: 'overall' });
+    assert.equal(mod.readProgress(overall).bestMastery, 50, 'a skill-less session lands on the overall node');
+});
+
+test('a provider-less karaoke highway scores no fretted phrase', () => {
+    const mod = freshPlugin();
+    const karaoke = playerContext({ player_id: 'player-2', instrument: 'voice', role: 'karaoke', skill: 'vocal-pitch' });
+    let time = 0;
+    const karaokeHighway = {
+        hasPhraseData: () => true,
+        getPhrases: () => [{ start_time: 0, end_time: 2, max_difficulty: 2 }],
+        getTime: () => time,
+        getFilteredNotes: () => [{ t: 0.5, s: 1, f: 1 }],
+        getFilteredChords: () => [],
+        getMastery: () => 0.6,
+        getNoteStateProvider: () => null, // no note-state provider during karaoke
+    };
+    mod.registerSplitHighway(karaokeHighway, karaoke);
+    const state = mod._splitScoreStateForHighway(karaokeHighway);
+
+    // Tick across the phrase and its boundary. The `!provider` guard must keep
+    // the tick inert: without it the null provider would be invoked
+    // (`_pollPendingJudgments` calls `provider(note, time)`) and throw, and a
+    // completed phrase would be committed. The pointer advances so the note is
+    // in the enqueue window and the boundary is actually crossed — otherwise
+    // the test would pass even with the guard deleted.
+    for (const t of [1.0, 1.5, 2.0, 2.5]) {
+        time = t;
+        assert.doesNotThrow(() => mod.tickOneSplitHighway(karaokeHighway, state));
+    }
+    assert.equal(state.phrasesScored, 0, 'without a provider the fretted phrase pipeline fabricates nothing');
+    assert.equal(mod.readProgress(karaoke), null, 'and records no difficulty or mastery');
+});
+
 test('skill-specific progress is isolated and falls back to overall only when absent', () => {
     const mod = freshPlugin();
     const overall = playerContext({ skill: 'overall' });
@@ -2946,6 +3027,37 @@ test('only main player context events retarget global mastery persistence', () =
     assert.equal(mod.readProgress(mainA).currentDifficulty, 30);
     assert.equal(mod.readProgress(side), null);
     assert.equal(mod.readProgress(mainB).currentDifficulty, 80);
+});
+
+test('a player-context:changed role switch to karaoke re-keys the main context and preserves the fretted record', () => {
+    const mod = freshPlugin();
+    const handlers = new Map();
+    global.window.feedBack = {
+        on: (name, handler) => {
+            if (!handlers.has(name)) handlers.set(name, []);
+            handlers.get(name).push(handler);
+        },
+        off: () => {},
+        emit: () => {},
+    };
+    const fire = (name, detail) => (handlers.get(name) || []).forEach((handler) => handler({ detail }));
+    mod.startPlayerContextSubscriptions();
+
+    const fretted = playerContext({ player_id: 'main', instrument: 'guitar', role: 'lead', skill: 'overall' });
+    fire('player-context:ready', fretted);
+    mod.writeProgress(fretted, { currentDifficulty: 60, bestMastery: 70 });
+
+    // Karaoke toggles the same player's context to the vocal role/skill, as the
+    // karaoke plugin does through updateActive -> player-context:changed.
+    const karaoke = playerContext({ player_id: 'main', instrument: 'voice', role: 'karaoke', skill: 'vocal-pitch' });
+    fire('player-context:changed', karaoke);
+
+    assert.equal(mod.listPlayerContexts().length, 1, 'the same session/player slot is re-keyed, not duplicated');
+    assert.equal(mod.readProgress(fretted).bestMastery, 70, 'the fretted record survives the role change');
+    assert.equal(mod.readProgress(karaoke), null, 'the new vocal node starts empty (no fretted record leaked in)');
+
+    fire('player-context:left', { session_id: 'session-1', player_id: 'main' });
+    assert.equal(mod.listPlayerContexts().length, 0, 'the departure releases the player slot');
 });
 
 test('karaoke canonicalizes explicit vocals instrument aliases to voice', () => {

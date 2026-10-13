@@ -5977,6 +5977,10 @@
             commitPhraseResult, resetPerSongState,
             updateMasteryStreak, resetMasteryStreak, masteryStreakStatus,
             startMasteryLifecycleSubscriptions, stopMasteryLifecycleSubscriptions,
+            // #88: the player-context bus subscription (ready/changed/left)
+            // exported so concurrent-player join/leave/role-change lifecycle
+            // wiring is testable without a host.
+            startPlayerContextSubscriptions, stopPlayerContextSubscriptions,
             // #87: v3Profile-only readiness adapter (profile:changed /
             // v3:profile-updated) exported so the delayed-identity recovery
             // path is testable without a host.

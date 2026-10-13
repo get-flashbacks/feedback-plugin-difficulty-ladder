@@ -226,7 +226,9 @@ record. It does not score from a global detector or a global active profile.
 If `note_detect` exposes a separate finalized-session event in the future, it
 must include the same `session_id`, `player_id`, profile, arrangement, and
 instrument/role/skill dimensions; consumers must deduplicate it against the
-phrase/session already finalized by the highway.
+phrase/session already finalized by the highway. When a session payload cannot
+name a skill, it is scored as `overall`; consumers must not infer a technique
+from the arrangement.
 
 The legacy Host `window.setMastery` function carries no source metadata.
 Consequently, an unexpected value change is treated conservatively as a manual
@@ -302,9 +304,28 @@ installed is in force for the committing player and phrase:
 
 - Publish vocal players as `role: "karaoke"`, `instrument: "voice"` (or a
   compatible role that normalizes to those values), with the player's profile
-  and arrangement IDs.
+  and arrangement IDs. The sung part / vocal track is the `arrangement_id`; two
+  singers sharing one track are separated by `player_id`, never by overloading
+  the skill.
 - Keep vocal pitch, lyric timing, harmony, and future vocal skills under their
-  own skill keys. Do not reuse fretted-instrument records.
+  own skill keys. Do not reuse fretted-instrument records. A karaoke player's
+  default skill is `overall`; when the payload identifies a vocal technique
+  (e.g. the karaoke plugin's `vocal-pitch`), record it under that skill key so
+  it stays distinct from `overall` and from every fretted skill.
+- Vocal scoring does not depend on a note-state provider: with no provider
+  attached to the karaoke highway, the fretted phrase pipeline scores nothing
+  and fabricates no hit or miss. Vocal mastery instead comes from a finalized
+  session's accuracy — `accuracy` on `notedetect:session` is `0..100` and folds
+  in as `live difficulty × (accuracy / 100)`, written through the same
+  `bestMastery` node as a fretted phrase. Because there are no per-phrase
+  commits to advance it, that write only lands while the node has no standing
+  best, so a karaoke player's first finalized session establishes the value and
+  later sessions cannot raise it.
+- A context that names no skill (the field is absent or blank) is scored as
+  `overall`; an unrecognized non-empty skill is stored verbatim under its own
+  key. An aggregated or mixed surface must never present an `overall` value as
+  a technique-specific one, and no karaoke write may ever touch a fretted
+  instrument's record.
 
 ### Section Map
 
