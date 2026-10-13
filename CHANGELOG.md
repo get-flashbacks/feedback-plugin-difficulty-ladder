@@ -86,6 +86,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   helpers in `screen.js`; 12 fixtures in `tests/screen.test.js`; documented in
   `MIGRATION.md` §11 and `README.md`. Version 0.38.1 -> 0.39.0.
 
+### Changed
+- Completed the four-player splitscreen / karaoke player-context contract
+  (#88, parent #81): exported the `player-context:ready`/`changed`/`left` bus
+  subscription (`startPlayerContextSubscriptions`/`stopPlayerContextSubscriptions`,
+  previously only reachable at module load) as a test seam, then pinned the
+  contract's acceptance criteria with tests — four concurrent panels keep
+  independent score state, EMA, phrase count, and best mastery with no
+  cross-panel state leak; a karaoke player records to its own `voice`/`karaoke`
+  skill branch without touching a fretted record; a karaoke `notedetect:session`
+  folds into its exact `vocal-pitch` node (a skill-less session lands on
+  `overall`); a provider-less karaoke highway scores no fretted phrase; and a
+  `player-context:changed` role switch re-keys the same player slot while the
+  fretted record survives and `player-context:left` releases it. Tests and a
+  test-only export; no gameplay behavior change. `screen.js`, `tests/screen.test.js`,
+  `tests/scoring_pipelines.test.js`. Version 0.40.2 -> 0.40.3.
+
 ### Documentation
 - Added `ADAPTIVE_DIFFICULTY_LITERATURE.md`, the Phase 1 source-backed review for
   #54 (parent #31): core claims, per-source confidence and transfer risk for
@@ -126,6 +142,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   section to name the rail (not the retired glass) as the rendered consumer and
   refreshed the stale JS test count in `CLAUDE.md`. Tests/docs only; no runtime
   behaviour changes. Version 0.40.0 -> 0.40.1.
+- Expanded the `PLAYER_CONTEXT.md` "Karaoke" integration section into the full
+  vocal contract (#88): the sung part / track is the `arrangement_id` (two
+  singers on one track are separated by `player_id`, never by overloading the
+  skill); a karaoke player's default skill is `overall`, with named vocal
+  techniques (`vocal-pitch`, lyric timing, harmony) kept under their own skill
+  keys and never a fretted record; vocal scoring does not depend on a
+  note-state provider (with none attached the fretted phrase pipeline scores
+  nothing and fabricates no hit or miss), so mastery comes from a finalized
+  session's `0..100` accuracy as `live difficulty × accuracy/100` (established
+  by the first finalized session, since there are no per-phrase commits to
+  advance it); and a session that names no skill is scored as `overall`, never
+  presented as a technique. The "Note detection and finalization" section now
+  states the `overall` fallback explicitly. Documentation only; changes no
+  runtime behaviour.
 
 ### Added
 - One-time import of the separate Song Mastery plugin's Dynamic Difficulty

@@ -602,6 +602,63 @@ test('split isolation: a rewind or seek on one panel does not disturb another pa
     } finally { restore(); }
 });
 
+test('split isolation: four concurrent panels keep independent score state and best mastery', () => {
+    // The contract is "at least four" (PLAYER_CONTEXT.md); the common two-panel
+    // case is covered above, so pin the full four. Each panel must compute its
+    // own EMA, phrase count, and best mastery from its OWN verdicts and slider,
+    // and no panel's tick may mutate another's state. (The per-panel adaptive
+    // ramp itself is pinned by the DIFFERENCE (channel) test below.)
+    const envs = [makeEnv(), makeEnv(), makeEnv(), makeEnv()];
+    const restore = installClock(envs[0]);
+    try {
+        const mod = loadNodeInstance();
+        const chart = { phrases: chartA().phrases, notes: [{ t: 0.5, s: 1, f: 1 }, { t: 1.0, s: 2, f: 2 }] };
+        const masteries = [0.5, 0.8, 0.6, 0.9];
+        const patterns = [
+            { [key(0.5, 1, 1)]: 'hit', [key(1.0, 2, 2)]: 'hit' },
+            { [key(0.5, 1, 1)]: 'miss', [key(1.0, 2, 2)]: 'miss' },
+            { [key(0.5, 1, 1)]: 'hit', [key(1.0, 2, 2)]: 'miss' },
+            { [key(0.5, 1, 1)]: 'hit', [key(1.0, 2, 2)]: 'hit' },
+        ];
+        const expectedEma = [1, 0, 0.5, 1];
+        const expectedMastery = [50, 0, 30, 90];
+        const contexts = [];
+        const highways = [];
+        for (let i = 0; i < 4; i++) {
+            envs[i].mastery = masteries[i];
+            for (const [k, v] of Object.entries(patterns[i])) envs[i].verdicts.set(k, v);
+            const ctx = playerContext({ session_id: 'split-4', player_id: `panel-${i + 1}` });
+            const hw = makeHighway(chart, envs[i]);
+            contexts.push(ctx);
+            highways.push(hw);
+            mod.registerSplitHighway(hw, ctx);
+        }
+        const states = highways.map((hw) => mod._splitScoreStateForHighway(hw));
+        // Four panels, four distinct mutable state objects, each keyed to its
+        // own player context.
+        assert.equal(new Set(states).size, 4);
+        for (let i = 0; i < 4; i++) {
+            assert.equal(states[i].playerKey, mod.playerContextKey(contexts[i]));
+        }
+
+        // Interleaved frame-by-frame: every panel sees every frame in step, so
+        // a stray cross-panel read/write would surface in the assertions below.
+        for (const f of play(0, 2.1)) {
+            for (let i = 0; i < 4; i++) {
+                applyFrame(envs[i], f);
+                mod.tickOneSplitHighway(highways[i], states[i]);
+            }
+        }
+
+        for (let i = 0; i < 4; i++) {
+            assert.equal(states[i].phrasesScored, 1, `panel ${i} committed its own phrase`);
+            assert.equal(states[i].emaHitRate, expectedEma[i], `panel ${i} EMA reflects only its own verdicts`);
+            assert.equal(mod.readProgress(contexts[i]).bestMastery, expectedMastery[i],
+                `panel ${i} mastery is its own difficulty x its own hit rate`);
+        }
+    } finally { restore(); }
+});
+
 // ---------------------------------------------------------------------------
 // KNOWN DIFFERENCES between the pipelines (pinned, not endorsed)
 // ---------------------------------------------------------------------------
