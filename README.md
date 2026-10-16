@@ -638,7 +638,10 @@ rather than guessed; see
 [`MIGRATION.md` §11](MIGRATION.md). It registers its own card action under
 a distinct id. **The separate Song Mastery plugin is not declared obsolete** —
 that step is gated on the matrix's cross-plugin upgrade row passing and on
-#84/#85.
+#84/#85. While both are installed, run a single adaptive controller and a
+single library badge (disable the peer's in the Host's plugin/library
+settings); Difficulty Ladder never writes or deletes the peer's keys — see
+[`MIGRATION.md` §5](MIGRATION.md).
 
 **Best mastery vs adaptive difficulty.** *Best mastery* is a per-arrangement,
 monotonic long-term score (`phrase difficulty × hit rate`) persisted with the

@@ -5719,6 +5719,64 @@ test('a malformed Song Mastery source store is treated as absent without throwin
     assert.equal(global.localStorage.getItem(SOURCE_MARKER), null);
 });
 
+// ── Dual-plugin coexistence: read-only compatibility guard (MIGRATION.md §5) ─
+// The committed conflict policy is read-only compatibility mode: with the
+// separate (Slopsmith-era) Song Mastery plugin's keys present, Difficulty
+// Ladder reads them once and writes ONLY into its own `difficulty_ladder.`
+// namespaced keys. It must never create, rewrite, or delete a bare
+// `song_mastery*` key on any cutover path — that would be a competing change to
+// the other plugin's storage and would break its own rollback. This test is the
+// evidence for the §4 "Both plugins installed" matrix row.
+test('the cutover writes only namespaced keys and leaves the peer plugin\'s storage byte-identical', () => {
+    const hash = sourceHash();
+    const sourceKey = sourceKeyFor(hash);
+    const sourceValue = JSON.stringify({ 'song.feedpak': { Lead: { difficulty: 55, mastery: 72 } } });
+    const ddValue = JSON.stringify({ allowDecrease: false, defaultDifficulty: 62 });
+    const stored = {
+        [sourceKey]: sourceValue,
+        'song_mastery_dd': ddValue,
+        'difficulty_ladder.songMastery': JSON.stringify({ 'song.feedpak::lead': { mastery: 40, instrument: 'guitar' } }),
+    };
+    const writes = [];
+    const mod = freshPlugin({ stored, onSet: (key) => writes.push(key) });
+    const ctx = playerContext({
+        compatibility_adapter: true, profile_hash: hash,
+        arrangement_id: 0, instrument: 'guitar', role: 'lead',
+    });
+
+    // Drive every cutover path that reads or could write the peer's storage.
+    mod.migrateLegacyData(ctx);
+    mod._importSongMasteryDDSettings();
+    mod._importSongMasterySource(ctx, { arrangements: [{ index: 0, name: 'Lead', type: 'lead' }] });
+
+    // 1. The peer plugin's own keys are byte-identical afterwards.
+    assert.equal(global.localStorage.getItem(sourceKey), sourceValue, 'the source score store is never rewritten');
+    assert.equal(global.localStorage.getItem('song_mastery_dd'), ddValue, 'the source DD settings are never rewritten');
+    // 2. Difficulty Ladder never wrote a bare (non-namespaced) key on any path.
+    for (const key of writes) {
+        assert.ok(key.startsWith('difficulty_ladder.'), `cutover wrote a non-namespaced key: ${key}`);
+    }
+    // 3. Guard against a vacuous pass: the source import actually ran and wrote
+    //    its namespaced marker.
+    assert.ok(writes.includes('difficulty_ladder.songMasterySourceImport.v1'),
+        'the source import ran and recorded its namespaced marker');
+});
+
+test('the mastery badge registers under a Difficulty Ladder-namespaced action id', () => {
+    // UI ownership (§5): the badge id is namespaced to this plugin, so it can
+    // never collide with or overwrite another plugin's registration. It stays
+    // the Host's call whether two badges render (the operator disables one).
+    const registered = [];
+    const mod = freshPlugin();
+    global.window.feedBack = {
+        libraryCardActions: { register: (action) => registered.push(action) },
+    };
+    mod.registerLibraryCardBadge();
+
+    assert.deepEqual(registered.map((a) => a.id), ['difficulty_ladder.mastery_badge']);
+    assert.equal(registered[0].pluginId, 'difficulty_ladder');
+});
+
 test('_songMasteryArrangementMetadata exposes only the streamed arrangement when no list is provided', () => {
     const mod = freshPlugin();
     global.window.highway = {

@@ -87,6 +87,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MIGRATION.md` §11 and `README.md`. Version 0.38.1 -> 0.39.0.
 
 ### Changed
+- Recorded the dual-plugin coexistence policy and proved it with tests (#86,
+  parent #81). The committed "read-only compatibility mode" conflict decision is
+  now stated as final in `MIGRATION.md` §5: Difficulty Ladder owns the adaptive
+  controller and the mastery/badge surface after cutover, but never suppresses
+  the peer plugin (that would require cross-plugin coupling the design rejects);
+  while both are installed the operator runs one adaptive controller and one
+  badge. Added a cross-plugin key-guard test that drives legacy migration, the
+  DD-settings import, and the source-store import together and asserts every
+  write is `difficulty_ladder.`-prefixed and the peer's `song_mastery*` keys are
+  left byte-identical, plus a badge-namespacing test. Documentation and tests
+  only; no gameplay behavior change. `MIGRATION.md`, `README.md`,
+  `tests/screen.test.js`.
 - Completed the four-player splitscreen / karaoke player-context contract
   (#88, parent #81): exported the `player-context:ready`/`changed`/`left` bus
   subscription (`startPlayerContextSubscriptions`/`stopPlayerContextSubscriptions`,
