@@ -5756,10 +5756,39 @@ test('the cutover writes only namespaced keys and leaves the peer plugin\'s stor
     for (const key of writes) {
         assert.ok(key.startsWith('difficulty_ladder.'), `cutover wrote a non-namespaced key: ${key}`);
     }
-    // 3. Guard against a vacuous pass: the source import actually ran and wrote
-    //    its namespaced marker.
+    // 3. Guard against a vacuous pass: each cutover path actually ran and wrote
+    //    its own namespaced key (a no-op migration or import would otherwise
+    //    still satisfy the checks above).
+    assert.ok(writes.includes('difficulty_ladder.progress.v2'),
+        'legacy migration wrote the canonical progress store');
+    assert.ok(writes.includes('difficulty_ladder.songMasteryDDImport.v1'),
+        'DD-settings import wrote its run-once marker');
+    assert.ok(writes.includes('difficulty_ladder.startDifficulty'),
+        'DD-settings import wrote the mapped starting difficulty');
     assert.ok(writes.includes('difficulty_ladder.songMasterySourceImport.v1'),
-        'the source import ran and recorded its namespaced marker');
+        'source import ran and recorded its namespaced marker');
+});
+
+test('the unscoped Song Mastery source store is preserved byte-identically on the compatibility path', () => {
+    // #215 source-store ownership: with no profile API present, a confirmed
+    // single-player compatibility context may claim the unscoped `song_mastery_v1`
+    // store. The guard test above exercises the hash-scoped key; this pins the
+    // same no-cross-write property for the unscoped branch.
+    const unscoped = JSON.stringify({ 'song.feedpak': { Lead: { difficulty: 55, mastery: 72 } } });
+    const writes = [];
+    const mod = freshPlugin({ stored: { 'song_mastery_v1': unscoped }, onSet: (key) => writes.push(key) });
+    const ctx = playerContext({
+        compatibility_adapter: true, profile_hash: null,
+        arrangement_id: 0, instrument: 'guitar', role: 'lead',
+    });
+
+    const result = mod._importSongMasterySource(ctx, { arrangements: [{ index: 0, name: 'Lead', type: 'lead' }] });
+
+    assert.equal(result.imported, 1, 'the unscoped store is claimed on the compatibility path');
+    assert.equal(global.localStorage.getItem('song_mastery_v1'), unscoped, 'the unscoped source store is never rewritten');
+    for (const key of writes) {
+        assert.ok(key.startsWith('difficulty_ladder.'), `cutover wrote a non-namespaced key: ${key}`);
+    }
 });
 
 test('the mastery badge registers under a Difficulty Ladder-namespaced action id', () => {
