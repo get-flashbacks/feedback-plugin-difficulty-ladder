@@ -163,7 +163,7 @@ Ownership after the cutover is **Difficulty Ladder's**: it is the supported
 adaptive controller and the supported mastery/badge surface. The peer plugin is
 **not** modified or programmatically suppressed — doing so would mean reaching
 into another plugin's globals or registrations, the exact cross-plugin coupling
-rejected below. So while both plugins are installed, the operator owns the
+rejected above. So while both plugins are installed, the operator owns the
 coexistence configuration, and only one of each competing surface should be
 live:
 
@@ -262,8 +262,8 @@ of `localStorage` before uninstalling if exact restoration matters.
 ## 8. Removal timeline (gated)
 
 The eventual removal of the legacy read path (and any shim) is not started and
-is a later, explicitly announced breaking change. The consolidation itself was
-gated on:
+is a later, explicitly announced breaking change. The consolidation and the
+separately-tracked removal timeline were gated on:
 
 - [x] The **cross-plugin upgrade row** in §4 verified against the actual Song
       Mastery storage schema (pinned reference source) and implemented by #215
@@ -285,12 +285,12 @@ gated on:
 - [x] #85 live settings reconciliation landed with regression tests.
 - [x] #215 source-store import landed with fixtures against the pinned schema
       (§11); the source keys stay read-only and unmatched records are deferred.
-- [x] The v2 sections event retired only after Section Map migrates to v3
-      (#159) — **out of scope for this consolidation**: #159 belongs to the
-      tier-rail track (#131), is tracked by its own issue, and is blocked on the
-      external Section Map consumer migration (`feedback-plugin-sectionmap#14`,
-      still open). Until then this plugin keeps the v2 event and the legacy read
-      path, so Section Map behavior is preserved.
+- [x] The v2 sections-event retirement (#159) is **out of scope for this
+      consolidation** — it belongs to the tier-rail track (#131), is tracked by
+      its own issue, and is blocked on the external Section Map consumer
+      migration (`feedback-plugin-sectionmap#14`, still open). This plugin keeps
+      the v2 event and the legacy read path until then, so Section Map behavior
+      is preserved.
 - [x] The **deprecation notice** requirement is **waived** (maintainer decision,
       2026-10-16): no notice is published in the Song Mastery repository. The
       separate plugin is neither declared obsolete nor removed by this
