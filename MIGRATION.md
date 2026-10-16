@@ -300,6 +300,23 @@ non-code and cannot be satisfied from this repository alone:
 Until those pass, this plugin keeps the v2 event and the legacy read path, and
 **does not declare Song Mastery obsolete**.
 
+### Ready-to-publish deprecation notice (Song Mastery repository)
+
+Gate 2 above is a change to a repository this plugin does not own, so it cannot
+be made from here. The notice is prepared below; paste it at the top of
+`jamesgaiser/feedBack-plugin-song-mastery`'s `README.md` once gate 1
+(live-Host certification) passes:
+
+> **Deprecated.** This plugin's per-song difficulty memory, best-mastery
+> tracking, and library badge have been consolidated into
+> [Difficulty Ladder](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder),
+> which is the supported replacement. Your saved scores and last-used
+> difficulty import automatically on first run (read-only) — see Difficulty
+> Ladder's `MIGRATION.md`. Install Difficulty Ladder, disable Song Mastery's
+> Dynamic Difficulty (or uninstall this plugin), and remove the duplicate
+> library badge in the Host's plugin settings. This repository is retained for
+> reference and rollback only.
+
 ## 9. Release checklist
 
 - [ ] `node --test` and `python3 -m pytest tests/` green.

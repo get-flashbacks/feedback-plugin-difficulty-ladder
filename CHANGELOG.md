@@ -96,7 +96,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   badge. Added a cross-plugin key-guard test that drives legacy migration, the
   DD-settings import, and the source-store import together and asserts every
   write is `difficulty_ladder.`-prefixed and the peer's `song_mastery*` keys are
-  left byte-identical, plus a badge-namespacing test. Documentation and tests
+  left byte-identical, plus a badge-namespacing test. `MIGRATION.md` §8 now
+  separates the met code gates from the remaining non-code gates (live-Host
+  certification, the Song Mastery repo deprecation notice, sectionmap#14) and
+  carries a ready-to-publish deprecation notice for that repository.
+  Documentation and tests
   only; no gameplay behavior change. `MIGRATION.md`, `README.md`,
   `tests/screen.test.js`.
 - Completed the four-player splitscreen / karaoke player-context contract
