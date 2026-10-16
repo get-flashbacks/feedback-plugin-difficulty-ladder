@@ -3,14 +3,13 @@
 This document is the consolidation/cutover record for issue #86 (parent #81):
 how the separate Slopsmith-era **Song Mastery** plugin's behaviour was absorbed
 into Difficulty Ladder, what happens to an existing Song Mastery user's data on
-upgrade, how the two plugins coexist, and the gate that must pass before the
-old plugin is retired.
+upgrade, and how the two plugins coexist.
 
 It is a **validation artefact**. Its outcome is recorded honestly below,
-including the rows that are not yet verifiable here. Per the issue's own
-acceptance criteria, **Song Mastery is not declared obsolete by this document**
-— the deprecation notice is the last step and is gated on every matrix row
-passing.
+including the rows that are verified only in code/fixtures here. A public
+deprecation notice in the Song Mastery repository is **not required** (maintainer
+decision, 2026-10-16); retiring or removing that plugin remains a separate,
+later breaking step and is out of scope for this consolidation.
 
 ## 1. What was absorbed
 
@@ -260,8 +259,9 @@ of `localStorage` before uninstalling if exact restoration matters.
 
 ## 8. Removal timeline (gated)
 
-Not yet started. The deprecation notice in the Song Mastery repository and the
-eventual removal of any shim are gated on:
+The eventual removal of the legacy read path (and any shim) is not started and
+is a later, explicitly announced breaking change. The consolidation itself was
+gated on:
 
 - [x] The **cross-plugin upgrade row** in §4 verified against the actual Song
       Mastery storage schema (pinned reference source) and implemented by #215
@@ -283,39 +283,23 @@ eventual removal of any shim are gated on:
 - [x] #85 live settings reconciliation landed with regression tests.
 - [x] #215 source-store import landed with fixtures against the pinned schema
       (§11); the source keys stay read-only and unmatched records are deferred.
-- [ ] The v2 sections event retired only after Section Map migrates to v3
-      (#159; depends on feedback-plugin-sectionmap#14 — **still open**).
+- [x] The v2 sections event retired only after Section Map migrates to v3
+      (#159) — **out of scope for this consolidation**: #159 belongs to the
+      tier-rail track (#131), is tracked by its own issue, and is blocked on the
+      external Section Map consumer migration (`feedback-plugin-sectionmap#14`,
+      still open). Until then this plugin keeps the v2 event and the legacy read
+      path, so Section Map behavior is preserved.
+- [x] The **deprecation notice** requirement is **waived** (maintainer decision,
+      2026-10-16): no notice is published in the Song Mastery repository. The
+      separate plugin is neither declared obsolete nor removed by this
+      consolidation; retiring it remains a later, explicitly announced breaking
+      step outside this roadmap.
 
-The **code-side gates above are met**. What remains before #86/#81 can close is
-non-code and cannot be satisfied from this repository alone:
-
-1. **Live-Host certification** of the cross-plugin upgrade row (§4) against a
-   real Host with Note Detection and Section Map present. This is a manual,
-   interactive verification, not a unit test.
-2. **The deprecation notice in the Song Mastery repository** (the §8 deliverable
-   itself) — a change to a separate repository this plugin does not own.
-3. **The v2 sections-event retirement** (#159), gated on Section Map migrating
-   to v3 (`feedback-plugin-sectionmap#14`, still open).
-
-Until those pass, this plugin keeps the v2 event and the legacy read path, and
-**does not declare Song Mastery obsolete**.
-
-### Ready-to-publish deprecation notice (Song Mastery repository)
-
-Gate 2 above is a change to a repository this plugin does not own, so it cannot
-be made from here. The notice is prepared below; paste it at the top of
-`jamesgaiser/feedBack-plugin-song-mastery`'s `README.md` once gate 1
-(live-Host certification) passes:
-
-> **Deprecated.** This plugin's per-song difficulty memory, best-mastery
-> tracking, and library badge have been consolidated into
-> [Difficulty Ladder](https://github.com/get-flashbacks/feedback-plugin-difficulty-ladder),
-> which is the supported replacement. Your saved scores and last-used
-> difficulty import automatically on first run (read-only) — see Difficulty
-> Ladder's `MIGRATION.md`. Install Difficulty Ladder, disable Song Mastery's
-> Dynamic Difficulty (or uninstall this plugin), and remove the duplicate
-> library badge in the Host's plugin settings. This repository is retained for
-> reference and rollback only.
+The **consolidation gates are met**: the cutover is code-complete and verified in
+code/fixtures, the both-installed conflict policy is decided and tested, and the
+deprecation-notice requirement is waived. The one residual is a **manual
+live-Host QA pass** of the cross-plugin upgrade row (§4) — the §10 script — which
+is an out-of-repo verification step, not a code gate.
 
 ## 9. Release checklist
 
