@@ -636,9 +636,13 @@ anything is written, and any record that cannot be resolved (an unknown or
 duplicate name, or a legacy flat record) is deferred into a reviewable list
 rather than guessed; see
 [`MIGRATION.md` §11](MIGRATION.md). It registers its own card action under
-a distinct id. **The separate Song Mastery plugin is not declared obsolete** —
-that step is gated on the matrix's cross-plugin upgrade row passing and on
-#84/#85.
+a distinct id. The separate Song Mastery plugin is neither declared obsolete
+nor removed by this consolidation (a public deprecation notice is not
+required); retiring it remains a later breaking step. While both are
+installed, run a single adaptive controller and a
+single library badge (disable the peer's in the Host's plugin/library
+settings); Difficulty Ladder never writes or deletes the peer's keys — see
+[`MIGRATION.md` §5](MIGRATION.md).
 
 **Best mastery vs adaptive difficulty.** *Best mastery* is a per-arrangement,
 monotonic long-term score (`phrase difficulty × hit rate`) persisted with the

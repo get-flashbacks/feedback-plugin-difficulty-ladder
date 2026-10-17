@@ -3,14 +3,13 @@
 This document is the consolidation/cutover record for issue #86 (parent #81):
 how the separate Slopsmith-era **Song Mastery** plugin's behaviour was absorbed
 into Difficulty Ladder, what happens to an existing Song Mastery user's data on
-upgrade, how the two plugins coexist, and the gate that must pass before the
-old plugin is retired.
+upgrade, and how the two plugins coexist.
 
 It is a **validation artefact**. Its outcome is recorded honestly below,
-including the rows that are not yet verifiable here. Per the issue's own
-acceptance criteria, **Song Mastery is not declared obsolete by this document**
-— the deprecation notice is the last step and is gated on every matrix row
-passing.
+including the rows that are verified only in code/fixtures here. A public
+deprecation notice in the Song Mastery repository is **not required** (maintainer
+decision, 2026-10-16); retiring or removing that plugin remains a separate,
+later breaking step and is out of scope for this consolidation.
 
 ## 1. What was absorbed
 
@@ -120,7 +119,7 @@ runtime*, distinct from the data cutover marker above.
 | **Fresh install** (no Song Mastery, no legacy keys) | No migration fires; stores initialise empty; defaults apply | Code path guarded on absent `songMastery` map; **verified in code** |
 | **Song Mastery-only user installs Difficulty Ladder** | Legacy `songMastery` / `phraseAttempts.v1` migrate once into `progress.v2` / `phraseAttempts.v2` under `skill: "overall"`, claimed by the first compatibility context | `migrateLegacyData`; test "legacy song difficulty and phrase attempts migrate once into overall for a ready profile" (`tests/screen.test.js:1411`); **verified for this plugin's legacy shape** |
 | **Difficulty Ladder-only user** | No-op; migration marker absent, nothing to read | **verified in code** |
-| **Both plugins installed** | See §5 (conflict decision). No cross-writes; each plugin registers under its own action id, so the idempotency guard only prevents *this* plugin double-registering — the Host may render **both** badges | **partially verified** — duplicate *across* plugins is not deduplicated by this plugin; depends on the Host's card rendering |
+| **Both plugins installed** | See §5 (conflict decision). No cross-writes: every cutover path writes only `difficulty_ladder.*` keys and leaves the peer plugin's `song_mastery*` keys byte-identical (both the hash-scoped and unscoped source branches). Each plugin registers its own badge id, so the idempotency guard only prevents *this* plugin double-registering — the Host may render **both** badges until one is disabled (§5) | **verified (storage + registration)** — tests "the cutover writes only namespaced keys and leaves the peer plugin's storage byte-identical", "the unscoped Song Mastery source store is preserved byte-identically on the compatibility path", and "the mastery badge registers under a Difficulty Ladder-namespaced action id" (`tests/screen.test.js`); duplicate *badge rendering* across plugins remains the Host's call, not this plugin's |
 | **Missing Note Detection** (`window.createNoteDetector` absent) | Standalone operation: slider + authored difficulty still work; no live mastery/best-mastery updates, auto-adjust idle, badge shows only remembered values | Documented in README ("Requirements"); README `## Requirements` (line ~489); **verified in code (feature-detected)** |
 | **Missing phrase data** (`hasPhraseData()` false) | The tier rail is **hidden** — `_railHighwaySnapshot` returns null on `!hasPhraseData()` (`screen.js:3418`). The manual mastery slider and ladder generation (`/generate`) still work | **verified in code** (corrected: the rail does not fall back to authored difficulty without phrase data) |
 | **Multiple arrangements** | Each `(song, arrangement)` migrates independently; a live phrase finalization does not leak across arrangements | Tests named in `CHANGELOG.md` (#82/#83 edge cases): "two arrangements of the same song migrating independently", "a live phrase finalization not leaking across arrangements"; **verified** |
@@ -157,6 +156,37 @@ The alternatives were rejected for concrete reasons:
 Operator guidance: if both plugins render a card badge, disable one badge in
 the Host's plugin/library settings. This is documented here and cross-referenced
 from `README.md`.
+
+### Controller and UI ownership (final)
+
+Ownership after the cutover is **Difficulty Ladder's**: it is the supported
+adaptive controller and the supported mastery/badge surface. The peer plugin is
+**not** modified or programmatically suppressed — doing so would mean reaching
+into another plugin's globals or registrations, the exact cross-plugin coupling
+rejected above. So while both plugins are installed, the operator owns the
+coexistence configuration, and only one of each competing surface should be
+live:
+
+- **One adaptive controller.** Disable the separate Song Mastery plugin's
+  Dynamic Difficulty (or uninstall the plugin) so two controllers do not
+  compete for the difficulty slider. Difficulty Ladder does not detect or stand
+  down for the peer plugin; it relies on the operator choosing one controller.
+- **One library badge.** Disable one of the two card actions in the Host's
+  plugin/library settings (each plugin registers under its own id, so neither
+  can be suppressed from the other side).
+
+Difficulty Ladder never creates a competing change to the peer's **storage**:
+it reads the peer's score store (§11) and DD settings (§6) once and writes only
+its own namespaced keys. This is enforced by the cross-plugin key-guard test
+"the cutover writes only namespaced keys and leaves the peer plugin's storage
+byte-identical" (`tests/screen.test.js`), which drives migration, the DD-settings
+import, and the source-store import together and asserts every write is
+`difficulty_ladder.`-prefixed (with its unscoped-branch companion, "the unscoped
+Song Mastery source store is preserved byte-identically on the compatibility
+path"). This resolves the §4 "Both plugins installed"
+row (and its "competing difficulty changes" acceptance criterion) as a
+documented, operator-configured coexistence rather than one plugin silently
+disabling the other.
 
 ## 6. Song Mastery DD settings mapping (#85)
 
@@ -231,12 +261,18 @@ of `localStorage` before uninstalling if exact restoration matters.
 
 ## 8. Removal timeline (gated)
 
-Not yet started. The deprecation notice in the Song Mastery repository and the
-eventual removal of any shim are gated on:
+The eventual removal of the legacy read path (and any shim) is not started and
+is a later, explicitly announced breaking change. The consolidation and the
+separately-tracked removal timeline were gated on:
 
 - [x] The **cross-plugin upgrade row** in §4 verified against the actual Song
       Mastery storage schema (pinned reference source) and implemented by #215
       (§11). Live-Host certification remains a separate, non-code step.
+- [x] The **both-installed** row and its "no competing difficulty changes"
+      criterion resolved as documented, operator-configured coexistence (§5),
+      with the cross-plugin key-guard test as evidence: every cutover path
+      writes only `difficulty_ladder.*` keys and leaves the peer's
+      `song_mastery*` keys byte-identical.
 - [x] The **empty-source marker** caveat (§3) and the **concurrent-tab**
       whole-store flush (§4) resolved or explicitly accepted and documented.
       The empty-source marker is an accepted, documented design point: it marks
@@ -249,11 +285,23 @@ eventual removal of any shim are gated on:
 - [x] #85 live settings reconciliation landed with regression tests.
 - [x] #215 source-store import landed with fixtures against the pinned schema
       (§11); the source keys stay read-only and unmatched records are deferred.
-- [ ] The v2 sections event retired only after Section Map migrates to v3
-      (#159; depends on feedback-plugin-sectionmap#14 — **still open**).
+- [x] The v2 sections-event retirement (#159) is **out of scope for this
+      consolidation** — it belongs to the tier-rail track (#131), is tracked by
+      its own issue, and is blocked on the external Section Map consumer
+      migration (`feedback-plugin-sectionmap#14`, still open). This plugin keeps
+      the v2 event and the legacy read path until then, so Section Map behavior
+      is preserved.
+- [x] The **deprecation notice** requirement is **waived** (maintainer decision,
+      2026-10-16): no notice is published in the Song Mastery repository. The
+      separate plugin is neither declared obsolete nor removed by this
+      consolidation; retiring it remains a later, explicitly announced breaking
+      step outside this roadmap.
 
-Until those pass, this plugin keeps the v2 event and the legacy read path, and
-**does not declare Song Mastery obsolete**.
+The **consolidation gates are met**: the cutover is code-complete and verified in
+code/fixtures, the both-installed conflict policy is decided and tested, and the
+deprecation-notice requirement is waived. The one residual is a **manual
+live-Host QA pass** of the cross-plugin upgrade row (§4) — the §10 script — which
+is an out-of-repo verification step, not a code gate.
 
 ## 9. Release checklist
 
