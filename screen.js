@@ -15,14 +15,11 @@
     var PLUGIN_ID = 'difficulty_ladder';
     var LS_PREFIX = 'difficulty_ladder.';
 
-    // Section payload contracts (issue #156). v2 is what Section Map consumes
-    // today and stays byte-for-byte as it is until that plugin is on v3;
-    // v3 is the render-neutral replacement on its own event name, so a v3-only
-    // consumer can never be handed a v2 payload and an un-upgraded consumer
-    // never sees fields it doesn't know. See INTEGRATION.md -> "sections v3".
-    const SECTIONS_SCHEMA_V2 = 'difficulty_ladder.sections.v2';
+    // Section payload contract (issue #156). v3 is the render-neutral payload
+    // on its own event name; the legacy render-bound v2 payload (the old
+    // `difficulty:sections-updated` event) was removed in #159 once Section Map
+    // migrated to v3. See INTEGRATION.md -> "sections v3".
     const SECTIONS_SCHEMA_V3 = 'difficulty_ladder.sections.v3';
-    const SECTIONS_EVENT_V2 = 'difficulty:sections-updated';
     const SECTIONS_EVENT_V3 = 'difficulty:sections-updated-v3';
 
     // Best-mastery contract (#83): one event per NEW best, so a UI/integration
@@ -34,20 +31,18 @@
     const MASTERY_EVENT_V1 = 'difficulty:mastery-updated';
 
     // Section Map's released integration probe predates this plugin's rename
-    // from dynamic_difficulty.  It subscribes to our public
-    // `difficulty:sections-updated` event only after seeing this capability
-    // marker. Keep the compatibility surface deliberately minimal: section
-    // boundaries remain the host's canonical highway.getSections() data, and
-    // the event payload is indexed against that exact array.
+    // from dynamic_difficulty. Keep the compatibility surface deliberately
+    // minimal: section boundaries remain the host's canonical
+    // highway.getSections() data, and the emitted payload is indexed against
+    // that exact array.
     window._ddCapabilities = window._ddCapabilities || {};
     window._ddCapabilities.sectionDifficulty = true;
     window._ddCapabilities.playerContext = 'difficulty_ladder.player_context.v1';
-    // Which section-payload schema this build emits, so a consumer can pick
-    // v3 when present and fall back to v2 otherwise instead of sniffing
-    // payloads. Set here, at this plugin's top-level script execution, which
-    // always precedes section_map's (plugins load alphabetically and
-    // difficulty_ladder < section_map) — see INTEGRATION.md -> "Transition
-    // policy".
+    // Which section-payload schema this build emits, so a consumer can feature-
+    // detect it rather than sniffing payloads. Set here, at this plugin's
+    // top-level script execution, which always precedes section_map's (plugins
+    // load alphabetically and difficulty_ladder < section_map) — see
+    // INTEGRATION.md -> "sections v3 — the render-neutral payload".
     window._ddCapabilities.sectionsSchema = SECTIONS_SCHEMA_V3;
 
     function lsGet(key, def) {
@@ -74,24 +69,13 @@
         delete _pendingSettingWrites[key];
     }
 
-    // Issue #158 (tier rail 3/4): the `showGlasses` setting was renamed to
-    // "Show difficulty guide", stored under `showDifficultyGuide`. The new
-    // key is read first; a value under the legacy key is migrated forward
-    // (persisted to the new key) so an existing user's on/off choice
-    // survives the upgrade instead of resetting to the default. Runs once
-    // at settings-load time — never from a gameplay-event handler — and is
-    // idempotent: once the new key exists the legacy key is never consulted
-    // again, and a fresh install (neither key present) takes the default
-    // without writing anything.
+    // Issue #158 (tier rail 3/4): guide visibility is stored under
+    // `showDifficultyGuide` and defaults to on. (#159 removed the one-time
+    // forward-migration from the pre-rename setting key along with the rest of
+    // the retired setting vocabulary.)
     function _resolveDifficultyGuideSetting() {
         var current = lsGet('showDifficultyGuide', null);
         if (current !== null) return current === true;
-        var legacy = lsGet('showGlasses', null);
-        if (legacy !== null) {
-            var migrated = legacy === true;
-            lsSet('showDifficultyGuide', migrated);
-            return migrated;
-        }
         return true;
     }
 
@@ -2744,12 +2728,6 @@
     // the settings-changed listener below can update settings.reactionSpeed
     // mid-song.
     let _masteryStreak = 0;     // consecutive high-accuracy phrases at configured max mastery
-    // Forward-advancing cursors into the time-sorted notes/chords arrays —
-    // avoids an O(N) full-array rescan every rAF tick (CLAUDE.md's per-frame
-    // performance doctrine). Reset only on a backward seek (loop/rewind).
-    let _hudMaxDifficulty = null;
-    let _hudBadgeMeasureKey = null;
-    let _hudBadgeWidth = 0;
 
     function downStepRatio() {
         var ratio = Number(settings.downStepRatio);
@@ -2789,10 +2767,6 @@
     function resetPerSongState() {
         _resetMainScoreState();
         _masteryStreak = 0;
-        _hudMaxDifficulty = null;
-        _hudBadgeMeasureKey = null;
-        _hudBadgeWidth = 0;
-        _hudPhraseIdx = -1;
         _railPhraseIdx = -1;
     }
     resetPerSongState();
@@ -2809,23 +2783,19 @@
         ].join('::');
     }
 
-    // Issue #63: the discrete difficulty-tier fill math, factored out so
-    // every glass renderer -- this plugin's own player HUD (drawHud) and the
-    // per-section aggregate it emits for feedBack-plugin-sectionmap
-    // (calculateAndEmitSectionDifficulties) -- presents the same tier for
-    // the same (mastery, max_difficulty) pair. Before this fix the two used
-    // different formulas (a discrete tier here vs. a continuous
-    // mastery-scaled fraction in the emitted event) that could disagree
-    // materially for a lower-depth phrase/section.
+    // Issue #63: the discrete difficulty-tier fill math. It maps (mastery,
+    // max_difficulty) to a discrete tier index; the DOM tier rail and the v3
+    // section payload (calculateAndEmitSectionDifficulties) present the same
+    // tier for the same pair. The legacy render-bound payload, which once used
+    // a continuous mastery-scaled fraction instead, was removed in #159.
     // `maxDifficulty <= 0` means there's no tier ladder to climb -- nothing
-    // left to fill toward, so it's reported as fully filled (matches the
-    // pre-existing "no glass to fill toward" convention both call sites
-    // already followed for this case).
+    // to advance toward, so the caller's own "no ladder" convention applies
+    // (the rail reports no tier, the v3 payload reports top_tier 0).
     //
     // `topDifficulty` (optional, defaults to maxDifficulty) is the tier from
     // which the phrase plays in full -- core's getPhrases().top_difficulty.
     // Generated ladders share one arrangement-wide tier scale, so an easy
-    // phrase is complete well below max_difficulty; its glass is full from
+    // phrase is complete well below max_difficulty; its fill reaches full from
     // that tier on rather than only at the very top of the slider.
     function _tierFillFrac(mastery, maxDifficulty, topDifficulty) {
         if (!isFinite(maxDifficulty) || maxDifficulty <= 0) return { idxLevel: 0, fillFrac: 1 };
@@ -2851,8 +2821,8 @@
         });
     }
 
-    // How hard a phrase is, for glass sizing: the tier where it becomes
-    // complete. Falls back to max_difficulty on a core that predates
+    // The tier where a phrase becomes complete (core's top_difficulty).
+    // Falls back to max_difficulty on a core that predates
     // getPhrases().top_difficulty (identical for fully authored ladders).
     function _phraseTopDifficulty(phrase) {
         var top = Number(phrase && phrase.top_difficulty);
@@ -3869,7 +3839,7 @@
             provider_registered: !!provider,
             // Host-compatibility signal (#129): whether this host exposes
             // getPhrases().top_difficulty (core e5339c0+). false means the
-            // host predates tier-number phrase semantics and the HUD/attempt
+            // host predates tier-number phrase semantics and the rail/attempt
             // tiers are derived from max_difficulty alone. null = no phrases.
             host_reports_phrase_tiers: _hostReportsPhraseTiers(hw),
             // #161: the section-practice suspension is temporary — the
@@ -3922,81 +3892,14 @@
         return sections && sections.length > 0 && phrases && phrases.length > 0;
     }
 
-    function _maxPhraseDifficulty(phrases) {
-        var maxDiff = 1;
-        phrases.forEach(function (phrase) {
-            maxDiff = Math.max(maxDiff, _phraseTopDifficulty(phrase));
-        });
-        return maxDiff;
-    }
-
-    // Aggregates one section's overlapping phrases into the discrete fill/
-    // glass-size data both the sectionmap and the HUD tiers key off (issue
-    // #63): maxSectionDifficulty === 0 flips to the full-chart content probe
-    // so an empty section reads 0% while a bottom-tier-complete section reads
-    // 100%, exactly as drawHud renders its per-phrase glasses.
-    function _sectionDifficultyData(hw, mastery, nextSectionTime, maxDiff, section, hardestPhrase, inRange) {
-        var avg = inRange.reduce(function (a, b) { return a + b; }, 0) / inRange.length;
-        var maxSectionDifficulty = Math.max.apply(Math, inRange);
-        var fillPercentage;
-        if (maxSectionDifficulty > 0) {
-            fillPercentage = _tierFillFrac(mastery, Number(hardestPhrase.max_difficulty),
-                maxSectionDifficulty).fillFrac * 100;
-        } else {
-            fillPercentage = _chartHasContentIn(hw, section.time, nextSectionTime) ? 100 : 0;
-        }
-        var glassSize = 'medium';
-        if (maxSectionDifficulty < maxDiff * 0.33) glassSize = 'small';
-        else if (maxSectionDifficulty > maxDiff * 0.66) glassSize = 'large';
-        return {
-            fillPercentage: fillPercentage,
-            glassSize: glassSize,
-            avgDifficulty: avg,
-            maxDifficulty: maxSectionDifficulty,
-        };
-    }
-
-    function _computeSectionDifficulties(sections, phrases, hw, mastery, maxDiff) {
-        var sectionDifficulties = {};
-        for (var si = 0; si < sections.length; si++) {
-            var section = sections[si];
-            var nextSectionTime = si < sections.length - 1 ? sections[si + 1].time : Infinity;
-            var inRange = [];
-            var hardestPhrase = null;
-            for (var pi = 0; pi < phrases.length; pi++) {
-                var phrase = phrases[pi];
-                if (phrase.end_time > section.time && phrase.start_time < nextSectionTime) {
-                    inRange.push(_phraseTopDifficulty(phrase));
-                    if (!hardestPhrase || _phraseTopDifficulty(phrase) > _phraseTopDifficulty(hardestPhrase)) hardestPhrase = phrase;
-                }
-            }
-            if (inRange.length > 0) {
-                sectionDifficulties[si] = _sectionDifficultyData(
-                    hw, mastery, nextSectionTime, maxDiff, section, hardestPhrase, inRange);
-            }
-        }
-        return sectionDifficulties;
-    }
-
-    // Both the render-bound v2 payload and the render-neutral v3 payload
-    // (issue #156) ride this same sections/phrases pass, so the twin costs one
-    // extra payload build per emit -- no extra cadence, no per-note scanning
-    // beyond the content probe above. v3's extra highway reads (getTime(),
-    // getSongInfo()) are for its is_current / current_phrase_index / joinable
-    // phrase id fields, and it reports null mastery for a highway that reports
-    // none at all.
-    function _emitSectionDifficulties(fb, context, sections, phrases, hw, reportsMastery, mastery, maxDiff, sectionDifficulties) {
+    // The render-neutral v3 payload (issue #156) rides one sections/phrases
+    // pass. Its extra highway reads (getTime(), getSongInfo()) are for its
+    // is_current / current_phrase_index / joinable phrase id fields, and it
+    // reports null mastery for a highway that reports none at all.
+    function _emitSectionDifficulties(fb, context, sections, phrases, hw, mastery) {
         var playerContextPayload = _contextEventPayload(context);
-        fb.emit(SECTIONS_EVENT_V2, {
-            schema: SECTIONS_SCHEMA_V2,
-            player_context: playerContextPayload,
-            sectionDifficulties: sectionDifficulties,
-            mastery: mastery,
-            maxDifficulty: maxDiff,
-        });
         fb.emit(SECTIONS_EVENT_V3,
-            _sectionsV3Payload(sections, phrases, hw,
-                reportsMastery ? mastery : null, playerContextPayload));
+            _sectionsV3Payload(sections, phrases, hw, mastery, playerContextPayload));
     }
 
     // Calculate and emit section difficulty data for other plugins (e.g., sectionmap)
@@ -4016,35 +3919,23 @@
         // is still loading.
         if (!_sectionsLoaded(sections, phrases)) return;
 
-        var reportsMastery = typeof hw.getMastery === 'function';
-        // 0.5 is v2's long-standing stand-in for a highway that reports no
-        // mastery at all; it is kept for v2 alone below so that frozen payload
-        // is unchanged. v3 gets what the host actually said (null), or the
-        // fallback would read as a real measurement — the same verdict
-        // _presentedDifficultyLevel() reaches for the HUD.
-        var mastery = reportsMastery ? hw.getMastery() : 0.5;
-
-        // Calculate max difficulty across all phrases, then map each section
-        // to the difficulty data the sectionmap renders.
-        var maxDiff = _maxPhraseDifficulty(phrases);
-        var sectionDifficulties = _computeSectionDifficulties(sections, phrases, hw, mastery, maxDiff);
+        var mastery = typeof hw.getMastery === 'function' ? hw.getMastery() : null;
 
         // Emit event for sectionmap and other interested plugins
-        _emitSectionDifficulties(fb, context, sections, phrases, hw, reportsMastery, mastery, maxDiff, sectionDifficulties);
+        _emitSectionDifficulties(fb, context, sections, phrases, hw, mastery);
     }
 
     // ---- difficulty_ladder.sections.v3 (issue #156) ----------------------
-    // The render-neutral twin of the v2 payload above: same aggregation over
-    // the same highway data, but every field states what the data *is* rather
-    // than how a glass should be drawn, so a consumer can render bars, rings,
-    // a heat map or nothing from one payload. See INTEGRATION.md ->
+    // The render-neutral section payload: every field states what the data
+    // *is* rather than how it should be drawn, so a consumer can render bars,
+    // rings, a heat map or nothing from one payload. See INTEGRATION.md ->
     // "sections v3" for the full contract; each section and phrase entry
     // carries:
     //   id / index      - stable key. A phrase's id is the same string
     //                     phrase_attempt.v2 records are keyed by, so a consumer
     //                     can join the two without a translation table.
     //   start/end_time  - half-open [start_time, end_time), matching
-    //                     drawHud()'s and tickScoring()'s phrase cursor.
+    //                     tickScoring()'s phrase cursor.
     //                     end_time is null on an open-ended final section.
     //   current_tier    - the tier this player's mastery currently maps to, or
     //                     null when mastery isn't reported. Never a fabricated
@@ -4052,8 +3943,7 @@
     //   top_tier        - the tier from which the entry plays in full
     //                     (core's top_difficulty, falling back to max_difficulty).
     //                     0 means the phrase reports no ladder at all (a
-    //                     single-level or hand-authored phrase), which is the
-    //                     same reading v2 gives it.
+    //                     single-level or hand-authored phrase).
     //   max_tier        - the top of that entry's own tier ladder (max_difficulty).
     //   is_current      - whether the entry covers the playback time as of this
     //                     emit. Emits are event-driven, so this is a snapshot
@@ -4064,7 +3954,7 @@
     //   has_chart_content - whether the span holds playable notes/chords: probed
     //                     per section, inherited by a single-level phrase from
     //                     its section (see the note at the assignment).
-    // A section with no overlapping phrase gets no entry at all, same as v2:
+    // A section with no overlapping phrase gets no entry at all:
     // absent means "nothing to show", never "tier 0".
     function _sectionsV3Payload(sections, phrases, hw, mastery, contextPayload) {
         // Everything the entries below read from the host, read once per emit.
@@ -4092,9 +3982,9 @@
     function _v3SectionEntries(sections, phrases, state) {
         var entries = [];
         for (var si = 0; si < sections.length; si++) {
-            // The last section has no successor to bound it; Infinity is the
-            // host's own convention here (v2 passes it the same way) but a
-            // payload cannot carry it, so it is emitted as null.
+            // The last section has no successor to bound it; a payload cannot
+            // carry Infinity, so an open-ended final section is emitted as
+            // null.
             var endTime = si < sections.length - 1 ? sections[si + 1].time : null;
             var entry = _v3SectionEntry(si, sections[si].time, endTime, phrases, state);
             if (entry) entries.push(entry);
@@ -4103,8 +3993,8 @@
     }
 
     // One section's entry, or null when no phrase overlaps it (the omission
-    // rule stated above). Same aggregation rule as v2 — hardest overlapping
-    // phrase by top_tier, mean of the section's top_tiers — restated as tiers.
+    // rule stated above). Aggregates the overlapping phrases as tiers: the
+    // hardest one, and the mean of the section's top_tiers.
     function _v3SectionEntry(index, startTime, endTime, phrases, state) {
         var endBoundary = endTime == null ? Infinity : endTime;
         var overlapping = _v3Overlapping(phrases, startTime, endBoundary);
@@ -4115,8 +4005,7 @@
         // top_tier === 0 means every overlapping phrase is single-level,
         // which is two different things: a section of easy phrases that is
         // played in full at every slider position, and a silent section.
-        // The full chart's own notes tell them apart — the same
-        // distinction v2 draws as 100% vs 0% fill (Sourcery, PR #79),
+        // The full chart's own notes tell them apart (Sourcery, PR #79),
         // expressed as data instead of as a percentage.
         var hasChartContent = topTier > 0 || _chartHasContentIn(state.hw, startTime, endBoundary);
 
@@ -4951,43 +4840,15 @@
         });
     }
 
-    // ---- Standalone difficulty guide ----
-    // #157 (tier rail 2/4): the standalone guide is now the event-driven,
-    // accessible DOM tier rail below. The legacy canvas "glass" HUD
-    // (ensureHudCanvas/drawHud + the GLASS_* constants) is retained, unreachable
-    // by default, so sub-issue 4 (#159) can delete it in one place; flip
-    // _USE_LEGACY_GLASS_HUD to run the old renderer while integrating.
-    var _USE_LEGACY_GLASS_HUD = false;
-    var _hudCanvas = null;
-    var _hudRafHandle = null;
+    // ---- Player element helpers shared by the guide and the scorer ----
+    // #159 removed the legacy canvas HUD (its own draw loop and sizing
+    // constants) that these two helpers used to live beside; both are still
+    // needed — the scorer's rAF loop and the DOM tier rail below.
     var _playerEl = null;   // cached — re-resolved only if disconnected, never per-frame-queried
-    var GLASS_W = 26, GLASS_GAP = 8, GLASS_MAX_H = 44, GLASS_MIN_H = 16, LOOKAHEAD = 5;
-    // Cached "which phrase is current" index for drawHud's own rAF loop,
-    // mirroring tickScoring's _curPhraseIdx/_noteCursor cursor pattern
-    // (CLAUDE.md: never redo O(N) work on a per-frame path). drawHud runs
-    // independently of tickScoring (it must keep drawing even when no
-    // scorer/provider is active), so it needs its own cached index rather
-    // than reusing _curPhraseIdx, which tickScoring only maintains while a
-    // provider is present. Reset on song change alongside the rest of
-    // resetPerSongState()'s per-song cursors.
-    var _hudPhraseIdx = -1;
 
     function getPlayerEl() {
         if (!_playerEl || !_playerEl.isConnected) _playerEl = document.getElementById('player');
         return _playerEl;
-    }
-
-    function ensureHudCanvas() {
-        if (_hudCanvas && _hudCanvas.isConnected) return _hudCanvas;
-        var player = getPlayerEl();
-        if (!player) return null;
-        _hudCanvas = document.createElement('canvas');
-        _hudCanvas.id = 'dynamic-difficulty-hud';
-        _hudCanvas.style.cssText =
-            'position:absolute;top:8px;left:50%;transform:translateX(-50%);' +
-            'pointer-events:none;z-index:15;';
-        player.appendChild(_hudCanvas);
-        return _hudCanvas;
     }
 
     function isPlayerActive() {
@@ -4995,161 +4856,9 @@
         return !!(player && player.classList.contains('active'));
     }
 
-    function _hudSuppressed(sectionMapOwnsGlasses, ss) {
-        return !settings.showDifficultyGuide || sectionMapOwnsGlasses
-            || (ss && typeof ss.isActive === 'function' && ss.isActive());
-    }
-
-    function _hudHighwayReady(hw) {
-        return hw && typeof hw.hasPhraseData === 'function' && hw.hasPhraseData();
-    }
-
-    function _phrasesReady(phrases) {
-        return phrases && phrases.length > 0;
-    }
-
-    // Reuse the cached index across frames instead of an O(phrases.length)
-    // findIndex scan every rAF tick -- only rescans when the cached phrase no
-    // longer covers `t` (same cursor-caching idea tickScoring already applies
-    // to _curPhraseIdx above). A miss clamps to 0 so the row still renders.
-    function _hudFindPhraseIndex(phrases, t) {
-        var curIdx = _hudPhraseIdx;
-        if (curIdx < 0 || curIdx >= phrases.length || t < phrases[curIdx].start_time || t >= phrases[curIdx].end_time) {
-            curIdx = phrases.findIndex(function (p) { return t >= p.start_time && t < p.end_time; });
-        }
-        _hudPhraseIdx = curIdx;
-        return curIdx < 0 ? 0 : curIdx;
-    }
-
-    function _hudEnsureMaxDifficulty(phrases) {
-        if (_hudMaxDifficulty == null) {
-            _hudMaxDifficulty = 1;
-            phrases.forEach(function (phrase) {
-                _hudMaxDifficulty = Math.max(_hudMaxDifficulty, _phraseTopDifficulty(phrase));
-            });
-        }
-        return _hudMaxDifficulty;
-    }
-
-    function _hudMastery(hw) {
-        return typeof hw.getMastery === 'function' ? hw.getMastery() : 0;
-    }
-
-    // Reserve badge space before activation so the glass row does not jump;
-    // the backing store is only resized when the integer size actually moved.
-    function _sizeHudCanvas(canvas, w, h, dpr) {
-        var wantW = Math.round(w * dpr), wantH = Math.round(h * dpr);
-        if (canvas.width !== wantW || canvas.height !== wantH) {
-            canvas.width = wantW;
-            canvas.height = wantH;
-            canvas.style.width = w + 'px';
-            canvas.style.height = h + 'px';
-        }
-    }
-
-    function _drawHudBadge(ctx, w) {
-        if (_masteryStreak < MASTERY_STREAK_PHRASES) return;
-        var badgeText = (w >= 90 ? '\u2605 Mastery ' : '\u2605 ') + _masteryStreak;
-        ctx.font = '600 11px system-ui, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        var measureKey = badgeText + '|' + w;
-        if (_hudBadgeMeasureKey !== measureKey) {
-            _hudBadgeMeasureKey = measureKey;
-            _hudBadgeWidth = Math.min(w, Math.ceil(ctx.measureText(badgeText).width) + 14);
-        }
-        var badgeW = _hudBadgeWidth;
-        var badgeX = (w - badgeW) / 2;
-        ctx.fillStyle = 'rgba(34, 28, 8, 0.9)';
-        ctx.strokeStyle = 'rgba(232, 192, 64, 0.9)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        if (typeof ctx.roundRect === 'function') ctx.roundRect(badgeX, 1, badgeW, 16, 8);
-        else ctx.rect(badgeX, 1, badgeW, 16);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = '#f4d35e';
-        ctx.fillText(badgeText, w / 2, 9);
-    }
-
-    function _drawHudGlasses(ctx, list, start, curIdx, maxDiff, mastery, h) {
-        list.forEach(function (p, i2) {
-            var pTop = _phraseTopDifficulty(p);
-            var sizeFrac = Math.max(0.3, pTop / maxDiff);
-            var glassH = GLASS_MIN_H + (GLASS_MAX_H - GLASS_MIN_H) * sizeFrac;
-            var fillFrac = _tierFillFrac(mastery, p.max_difficulty, pTop).fillFrac;
-            var x = i2 * (GLASS_W + GLASS_GAP);
-            var y = h - glassH - 4;
-            var isCurrent = (start + i2) === curIdx;
-
-            ctx.lineWidth = isCurrent ? 2 : 1;
-            ctx.strokeStyle = isCurrent ? '#e8c040' : 'rgba(200,200,200,0.5)';
-            ctx.beginPath();
-            if (typeof ctx.roundRect === 'function') ctx.roundRect(x, y, GLASS_W, glassH, 4);
-            else ctx.rect(x, y, GLASS_W, glassH);
-            ctx.stroke();
-
-            var fillH = Math.max(0, glassH * fillFrac - 1);
-            if (fillH > 0) {
-                ctx.fillStyle = fillFrac > 0.8 ? 'rgba(224,80,80,0.55)'
-                    : fillFrac > 0.4 ? 'rgba(232,192,64,0.55)'
-                        : 'rgba(64,128,224,0.55)';
-                ctx.fillRect(x + 1, y + glassH - fillH, GLASS_W - 2, fillH);
-            }
-        });
-    }
-
-    function drawHud() {
-        if (!isPlayerActive()) {
-            if (_hudCanvas) _hudCanvas.style.display = 'none';
-            _hudRafHandle = null;
-            return;
-        }
-        _hudRafHandle = requestAnimationFrame(drawHud);
-
-        // Section Map renders the same difficulty glasses in its section bar.
-        // Its idempotency marker is a stable capability signal, so this check
-        // does not query or mutate DOM on the animation path.
-        var sectionMapOwnsGlasses = !!window.__slopsmithSectionMapHooksInstalled;
-        var ss = window.feedBackSplitscreen || window.slopsmithSplitscreen;
-        if (_hudSuppressed(sectionMapOwnsGlasses, ss)) {
-            if (_hudCanvas) _hudCanvas.style.display = 'none';
-            return;
-        }
-        var hw = window.highway;
-        if (!_hudHighwayReady(hw)) {
-            if (_hudCanvas) _hudCanvas.style.display = 'none';
-            return;
-        }
-        var canvas = ensureHudCanvas();
-        if (!canvas) return;
-
-        var phrases = hw.getPhrases();
-        if (!_phrasesReady(phrases)) { canvas.style.display = 'none'; return; }
-        canvas.style.display = '';
-
-        var t = hw.getTime();
-        var curIdx = _hudFindPhraseIndex(phrases, t);
-        var start = Math.max(0, curIdx - 1);
-        var list = phrases.slice(start, start + LOOKAHEAD);
-        var maxDiff = _hudEnsureMaxDifficulty(phrases);
-        var mastery = _hudMastery(hw);
-
-        var w = Math.max(1, list.length * (GLASS_W + GLASS_GAP) - GLASS_GAP);
-        var h = GLASS_MAX_H + 30;
-        var dpr = window.devicePixelRatio || 1;
-        _sizeHudCanvas(canvas, w, h, dpr);
-        var ctx = canvas.getContext('2d');
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, w, h);
-
-        _drawHudBadge(ctx, w);
-        _drawHudGlasses(ctx, list, start, curIdx, maxDiff, mastery, h);
-    }
-
     // ---- Tier rail (#157): the standalone guide, event-driven + accessible ----
-    // Replaces the per-frame canvas glass HUD as the active standalone
-    // renderer. Decisions the issue asked to make and state:
+    // The per-frame canvas guide was replaced by this renderer. Decisions the
+    // issue asked to make and state:
     //   * Moved OFF the bare canvas onto DOM: an <ol role="list"> of phrase
     //     cells, so hover, focus and an accessible name come from the
     //     platform instead of a pointer-inert <canvas>.
@@ -5210,8 +4919,9 @@
         return { hw: hw, phrases: phrases };
     }
 
-    // The same gates the glass HUD used: player active, guide on, Section Map
-    // owns the guide, Split Screen owns the panels, and real phrase data.
+    // The same visibility gates the canvas guide used: player active, guide
+    // on, Section Map owns the guide, Split Screen owns the panels, and real
+    // phrase data.
     function _difficultyRailVisible() {
         return !!_railHighwaySnapshot();
     }
@@ -5251,8 +4961,7 @@
     // loop: every caller is a discrete event (see the section comment).
     // The phrase scan runs only when no cached index still covers the event's
     // playback time — a phrase transition invalidates the cache; a mastery
-    // or settings event reuses it (same cursor-caching idea the retired
-    // glass HUD's `_hudPhraseIdx` used).
+    // or settings event reuses it.
     var _railPhraseIdx = -1;
 
     function _railCurrentIndex(phrases, t, changed) {
@@ -5718,13 +5427,8 @@
     function startRafLoops() {
         startMasteryLifecycleSubscriptions();
         if (!_scoreRafHandle) tickScoring();
-        // #157: the standalone guide is the event-driven rail. The legacy glass
-        // HUD (with its own rAF) only runs when explicitly forced on.
-        if (_USE_LEGACY_GLASS_HUD) {
-            if (!_hudRafHandle) drawHud();
-        } else {
-            _syncDifficultyRail();
-        }
+        // #157: the standalone guide is the event-driven rail, not a rAF loop.
+        _syncDifficultyRail();
     }
 
     function onSongEvent() {
@@ -5831,10 +5535,8 @@
                 stopSplitScreenHookSubscription();
                 stopPlayerContextSubscriptions();
                 if (_scoreRafHandle) { cancelAnimationFrame(_scoreRafHandle); _scoreRafHandle = null; }
-                if (_hudRafHandle) { cancelAnimationFrame(_hudRafHandle); _hudRafHandle = null; }
                 _clearGenerateLabelTimer();
                 cancelSectionDifficultiesEmit();
-                if (_hudCanvas) _hudCanvas.style.display = 'none';
                 _hideDifficultyRail();
                 if (_generateLabelTimer) { clearTimeout(_generateLabelTimer); _generateLabelTimer = null; }
             }
@@ -5843,8 +5545,8 @@
 
     // Safety net: if highway:visibility is not fired for every player-active
     // transition (e.g. pause/resume without a song change), the document
-    // visibilitychange event ensures we restart both loops whenever the tab
-    // returns to the foreground while the player is active.
+    // visibilitychange event ensures we restart the scoring loop and re-sync the
+    // rail whenever the tab returns to the foreground while the player is active.
     document.addEventListener('visibilitychange', function () {
         if (document.visibilityState === 'visible') startRafLoops();
         else resetMasteryStreak();
@@ -5905,20 +5607,6 @@
         if (e.key === PHRASE_ATTEMPTS_V2_LS_KEY) _phraseAttemptStore.invalidate();
         if (e.key === SONG_MASTERY_LS_KEY) _songMasteryStore.invalidate(false);
         var short = e.key.slice(LS_PREFIX.length);
-        // Issue #158: a foreign tab running a pre-rename build may still
-        // write the legacy key. Treat it as the new setting (persisted
-        // forward), so a pre-upgrade tab can't silently lose the user's
-        // choice.
-        if (short === 'showGlasses') {
-            try { settings.showDifficultyGuide = JSON.parse(e.newValue) === true; } catch (_) {
-                settings.showDifficultyGuide = false;
-            }
-            lsSet('showDifficultyGuide', settings.showDifficultyGuide);
-            syncControlsUI();
-            contributeDiagnostics();
-            _syncDifficultyRail();
-            return;
-        }
         if (Object.prototype.hasOwnProperty.call(settings, short)) {
             try { settings[short] = JSON.parse(e.newValue); } catch (_) {
                 if (short === 'dropResistance' || short === 'levelUpOnly') settings[short] = false;
@@ -6010,10 +5698,6 @@
             // a browser.
             _syncDifficultyRail, _buildRailCell, _difficultyRailVisible,
             _hideDifficultyRail, ensureRailEl,
-            // Legacy canvas glass HUD (retired in #159): exported so a test
-            // can drive the real draw path and assert its fill reflects the
-            // phrase's pTop rather than max_difficulty (#199 review).
-            drawHud,
             // #83: the best-mastery write + emit path, exported so the event
             // contract (new best only, previous_best documented, dropped
             // without a bus) is testable without a host.

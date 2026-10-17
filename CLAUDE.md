@@ -61,8 +61,8 @@ Also worth knowing before poking around:
 - **`PLAYER_CONTEXT.md`** — the multi-player `(session_id, player_id)`
   contract shared with Split Screen, `note_detect`, karaoke, and Section
   Map; read this before touching anything that keys state by player.
-- **`INTEGRATION.md`** — Section Map's phrase/glass-fill contract
-  (`difficulty:sections-updated`, schema `difficulty_ladder.sections.v2`).
+- **`INTEGRATION.md`** — Section Map's section-difficulty contract
+  (`difficulty:sections-updated-v3`, schema `difficulty_ladder.sections.v3`).
   Note: as of this writing its title line still reads "Integration —
   feedBack-plugin-sectionmap", left over from an earlier doc it was
   adapted from — the content is this repo's real, current contract
@@ -132,7 +132,7 @@ snapshot, this one included.
 ## Testing
 
 ```bash
-node --test                                            # JS: all tests/*.test.js (429 tests)
+node --test                                            # JS: all tests/*.test.js (419 tests)
 python3 -m pip install -r requirements-test.txt        # Python test environment
 python3 -m pytest tests/test_dd_generation.py -q       # Python generator tests — CI's own invocation
 node tools/settle_points.js                            # auto-adjust settle-point simulation, see README

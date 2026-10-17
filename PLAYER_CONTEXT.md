@@ -121,13 +121,12 @@ After a change, Difficulty Ladder emits `difficulty:player-changed`:
 }
 ```
 
-`difficulty:sections-updated` uses the payload schema
-`difficulty_ladder.sections.v2` and also carries `player_context` when it is
+`difficulty:sections-updated-v3` uses the payload schema
+`difficulty_ladder.sections.v3` and carries `player_context` when it is
 generated for a concurrent panel. Section Map must use that context to update
 only the matching pane. A legacy main-player emission may have a null context
-while an older Host is still loading identity. The render-neutral
-`difficulty:sections-updated-v3` payload (`difficulty_ladder.sections.v3`,
-issue #156) follows the same rule: one payload per player context, keyed by
+while an older Host is still loading identity. The payload follows the rule of
+one payload per player context, keyed by
 `session_id` / `player_id`, with no cross-panel state of any kind. See
 `INTEGRATION.md` → "sections v3".
 
@@ -329,10 +328,10 @@ installed is in force for the committing player and phrase:
 
 ### Section Map
 
-- Consume `difficulty:sections-updated` by `session_id` and `player_id` when
-  present, rendering glasses only in the matching player pane.
+- Consume `difficulty:sections-updated-v3` by `session_id` and `player_id` when
+  present, rendering section difficulty only in the matching player pane.
 - Preserve the existing no-data behavior: absent or delayed phrase data means
-  no misleading zero/fully-filled glass.
+  no misleading zero tier.
 
 ## Compatibility boundary
 

@@ -56,14 +56,14 @@ spec is intentionally non-normative about exact mechanics.
 - [x] `standards: ["plugin-runtime-idempotent.v1"]` — verified true: `screen.js`'s singleton guard
       (`window.__feedBackDynamicDifficulty.installed`) returns unconditionally on any re-run, so a
       second execution installs zero additional listeners/timers/wrappers (§6.1).
-- [x] rAF loops (`tickScoring`, `drawHud`) stop themselves when the player isn't active and restart
+- [x] rAF loops (`tickScoring`) stop themselves when the player isn't active and restart
       on `highway:visibility` / `visibilitychange` (§6.4, rule 13).
 - [x] No `querySelector`/`querySelectorAll`/layout reads inside a per-frame path; DOM refs
-      (`_hudCanvas`, `_playerEl`) are cached and only re-resolved via a cheap `.isConnected` check
+      (`_playerEl`) are cached and only re-resolved via a cheap `.isConnected` check
       (rule 9).
 - [x] No `MutationObserver` anywhere in the plugin (rule 10).
 - [x] `localStorage` writes are debounced/change-gated (`_onMasteryApplied` skips the write when
-      the value is unchanged) and never happen inside `tickScoring`'s or `drawHud`'s per-frame body
+      the value is unchanged) and never happen inside `tickScoring`'s per-frame body
       — only from the `setMastery` wrapper, which fires on user/auto-adjust action, not per frame
       (rule 11). Confirmed this is the established, org-wide pattern: `localStorage` is used
       extensively by first-party bundled plugins (`achievements`, `career`, `highway_3d`,
@@ -96,7 +96,7 @@ spec is intentionally non-normative about exact mechanics.
    declare a capability domain for this surface, which is *correct*, not a gap: best-practices rule
    52 is explicit that declaring a capability you don't service is worse than declaring none. The
    actual cross-plugin surface for section-level difficulty is the plugin's own
-   `difficulty:sections-updated` event — see "Section-map integration assumptions" below for the
+   `difficulty:sections-updated-v3` event — see "Section-map integration assumptions" below for the
    current (post-#63) contract; this bullet's original text described a since-superseded
    getters-only architecture. (Separately, unrelated to section difficulty: the plugin *does* now
    participate in the Host's capability dispatch pipeline for player-scoped difficulty commands —
@@ -131,24 +131,24 @@ spec is intentionally non-normative about exact mechanics.
 longer how this integration works.** This section originally documented issue #9's acceptance
 criteria against the state of the plugins at the time (both reading `window.highway` getters
 independently, no dedicated event). That's since changed: `difficulty_ladder` now emits a bespoke
-`difficulty:sections-updated` event on `window.feedBack` (fired from
+`difficulty:sections-updated-v3` event on `window.feedBack` (fired from
 `calculateAndEmitSectionDifficulties()`, throttled at approximately 150 ms — a trailing-edge
 throttle via `scheduleSectionDifficultiesEmit()`, not a debounce: it fires periodically during a
 continuous drag rather than only once at the end), and `section_map` no longer calls
 `highway.getPhrases()` / `hasPhraseData()` / `getMastery()` for section-difficulty data at all — it
-renders whatever `fillPercentage`/`glassSize` the event payload carries per section, and nothing
+renders whatever tiers, spans and content flags the event payload carries per section, and nothing
 else. See [`INTEGRATION.md`](INTEGRATION.md) for the authoritative, current contract (event shape,
-fallback/timing behavior, and why the fill formula was unified with `drawHud()`'s own discrete
-tiers in the same pass). Kept below for historical context only; do not treat the bullets as
+fallback/timing behavior, and the shared discrete tier mapping used by the guide, the attempt log
+and the v3 payload). Kept below for historical context only; do not treat the bullets as
 current:
 
 - ~~This plugin does **not** expose a bespoke API or event for section difficulty.~~ It does now
-  (`difficulty:sections-updated`).
+  (`difficulty:sections-updated-v3`).
 - ~~`feedBack-plugin-sectionmap` should therefore read `window.highway.getPhrases()` /
   `hasPhraseData()` / `getMastery()` directly...~~ It doesn't anymore; it's a pure event consumer.
 - No "difficulty maker" screen exists anywhere in the current feedBack codebase (checked
   `feedBack/plugins/` and `feedBack/static/` for any "maker" screen) — still true, and unaffected
   by the event-contract change above.
-- Missing/delayed phrase data must degrade to "no glass HUD," never an error — still the case on
-  both sides: this plugin's own `drawHud()` fail-soft path is unchanged, and `section_map` simply
-  has nothing to render when no `difficulty:sections-updated` event has fired yet.
+- Missing/delayed phrase data must degrade to "no section difficulty," never an error — still the
+  case on both sides: this plugin's own guide fail-soft path is unchanged, and `section_map` simply
+  has nothing to render when no `difficulty:sections-updated-v3` event has fired yet.

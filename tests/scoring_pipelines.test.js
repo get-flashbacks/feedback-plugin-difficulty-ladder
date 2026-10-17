@@ -228,8 +228,8 @@ function mainDriver(chart, env, opts = {}) {
         },
     };
     sandbox.window = sandbox;
-    // Section Map owning the glasses makes drawHud() skip all canvas work; the
-    // scoring tick is what is under test, not the HUD.
+    // Section Map owning the guide suppresses the tier rail; the scoring tick
+    // is what is under test, not the guide.
     sandbox.__slopsmithSectionMapHooksInstalled = true;
     sandbox.feedBack = {
         on: () => () => {}, off() {}, emit() {},

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- Retired the v2 section-difficulty surface (#159, tier rail 4/4, parent #131):
+  the `difficulty:sections-updated` event and its `difficulty_ladder.sections.v2`
+  payload (`fillPercentage` / `glassSize`), the legacy canvas overlay that drew
+  it (`drawHud` and its sizing/measurement helpers), and the retired pre-rename
+  setting key's one-time forward-migration. The render-neutral
+  `difficulty:sections-updated-v3` event (`difficulty_ladder.sections.v3`,
+  #156/#157) is now the only section-difficulty contract. This is a **breaking
+  change** for any third-party consumer still reading
+  `difficulty_ladder.sections.v2`: migrate to the v3 fields
+  (`sections[].top_tier` / `.current_tier` / `.has_chart_content`). Section Map
+  migrates to these fields in
+  [sectionmap#14](https://github.com/get-flashbacks/feedback-plugin-sectionmap/issues/14);
+  this removal ships only once that migration is in place.
+  The renamed-predecessor setting is gone: only `showDifficultyGuide` is read,
+  still defaulting to on. `screen.js`, `settings.html`, `tests/screen.test.js`,
+  `README.md`, `INTEGRATION.md`, `COMPLIANCE.md`, `PLAYER_CONTEXT.md`,
+  `MIGRATION.md` and `plugin.json` updated. Version 0.40.3 -> 0.41.0.
+
 ### Fixed
 - Profile-aware Hosts that expose only `window.v3Profile` (no
   `playerContexts` capability) now resolve the main player's identity when the

@@ -280,14 +280,9 @@
             var levelUpOnlyEl = document.getElementById('dd-level-up-only');
             if (levelUpOnlyEl) levelUpOnlyEl.checked = lsGet('levelUpOnly', false) === true;
 
-            // Issue #158: read through the renamed key first, falling back to
-            // the legacy one; screen.js's own load migrates it forward, so
-            // this is only a display fallback for a panel opened before that
-            // migration has run.
             var guideEl = document.getElementById('dd-show-guide');
             if (guideEl) {
                 var guide = lsGet('showDifficultyGuide', null);
-                if (guide === null) guide = lsGet('showGlasses', true);
                 guideEl.checked = guide !== false;
             }
 

@@ -1,7 +1,6 @@
 'use strict';
-// Issue #157 (tier rail 2/4): the standalone difficulty guide is now an
-// event-driven, accessible DOM tier rail instead of a per-frame canvas glass
-// HUD. These tests pin the acceptance criteria:
+// Issue #157 (tier rail 2/4): the standalone difficulty guide is an
+// event-driven, accessible DOM tier rail rather than a per-frame canvas HUD. These tests pin the acceptance criteria:
 //   * one cell per phrase, lit segments = currentTier, outlined = topTier,
 //     and NO physical-size difficulty encoding (every segment is equal-sized);
 //   * an accessible name reading current + upcoming tiers;
