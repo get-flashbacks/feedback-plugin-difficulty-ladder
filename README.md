@@ -506,13 +506,14 @@ synchronous `notedetect:session` event, so no `MutationObserver` or polling is i
   (`highway.hasPhraseData() === false` — GP imports, legacy sloppak).
 
 **Difficulty guide**
-- Renders upcoming sections in the player as bars — taller bar = a
-  harder section (scaled by that section's peak authored difficulty), fill
-  level = how much of that section's difficulty range the current
-  master-difficulty setting reaches.
-- At the configured maximum mastery, three consecutive phrases at 95%
-  accuracy or better light a gold Mastery streak badge. Pausing or entering
-  or leaving a split-screen session resets it.
+- Renders upcoming phrases in the player as a compact, **event-driven** segmented
+  tier rail — one cell per visible phrase, the first `currentTier + 1` segments
+  lit, and an outlined segment marking `topTier` (the full-detail threshold).
+  Difficulty is never encoded by changing a component's size (#157).
+- At the configured maximum mastery, three consecutive phrases at 95% accuracy
+  or better build a mastery streak, tracked internally and exposed through the
+  plugin API (`masteryStreakStatus()`). Pausing or entering or leaving a
+  split-screen session resets it.
 - Purely a visualization; can be toggled independently of auto-adjust.
 - With Section Map installed the standalone overlay is suppressed and the
   guide renders in Section Map's own section bar instead. The *Show
@@ -550,7 +551,7 @@ this documents the known source-level floors instead:
 | Capability | Core requirement | Evidence |
 |---|---|---|
 | Loading / generating ladders (`routes.py`) | `dlc_paths._resolve_dlc_path` (core `0dcc913`, Jul 10) and `sloppak.read_member_bytes` (core `d876ded`, Jul 13) | Direct imports in `routes.py`; feedBack core has no tags/releases and versions itself via a root `VERSION` file (currently `0.3.0-alpha.2`) — both commits postdate that version line, which is the load-bearing fact until a release-qualified audit exists |
-| Correct phrase-tier semantics (mastery slider ↔ `getPhrases().top_difficulty`) | Core `e5339c0` (Sep 23) — switched mastery selection to tier-number semantics and exposed `top_difficulty` | `screen.js` consumes `top_difficulty` when present but only *falls back* when it's absent — that doesn't prove older-core rendering agrees with the HUD/attempt records |
+| Correct phrase-tier semantics (mastery slider ↔ `getPhrases().top_difficulty`) | Core `e5339c0` (Sep 23) — switched mastery selection to tier-number semantics and exposed `top_difficulty` | `screen.js` consumes `top_difficulty` when present but only *falls back* when it's absent — that doesn't prove older-core rendering agrees with the tier-rail/attempt records |
 | Full concurrent-player support (`playerContexts`, `player-difficulty.v1`) | Core `7633211` (Sep 17) | Older hosts fall back to a legacy per-player-unaware compatibility path — see [`PLAYER_CONTEXT.md`](PLAYER_CONTEXT.md) |
 
 These are source/history findings (inspected against plugin revision
@@ -570,8 +571,8 @@ lacks it (tiers are then derived from `max_difficulty` alone on those
 phrases, which cannot tell a collapsed single-level phrase from a full
 one — a mixed host is still a legacy host for those phrases), and `null`
 when there is no phrase data to judge. The three phrase-tier consumers
-(the rendered DOM tier rail — the standalone guide since #157 replaced the
-canvas "glass" HUD — the `difficulty_ladder.sections.v3` event, and the
+(the rendered DOM tier rail — the standalone guide since #157 — the
+`difficulty_ladder.sections.v3` event, and the
 phrase-attempt log) and their one intentional divergence on a collapsed ladder
 (`top_difficulty < max_difficulty`: the rail and attempt log report the
 slider's tier, which keeps climbing to `max_tier`, while v3 caps at full
@@ -587,7 +588,7 @@ ladders — each is a feature-scoped optional dependency, not a hard one:
 | [Chordr](https://github.com/get-flashbacks/feedback-plugin-chordr) | The read-only chord-grouping preview at `POST /api/plugins/difficulty_ladder/analyze-chords` (`routes.py:460`), which calls `app.state.chordr_analyze_chart_chords_v1` (`routes.py:496`) | Required, for that route only | v0.5.0 (first version registering `app.state.chordr_analyze_chart_chords_v1`) | Route returns HTTP 503 when Chordr is absent. `staged_chords` (the chord-landmark generator stage, `GenerateIn.staged_chords`) is **not** Chordr-gated — it's a plugin-local option that re-derives chord identity from the arrangement's own templates and works identically with Chordr absent or missing |
 | [Note Detect](https://github.com/get-flashbacks/feedback-plugin-notedetect) | Split-screen adaptive scoring (`window.createNoteDetector`) | Optional | v1.15.2 for the factory/`ownSource` split-panel registration path at all; v1.33.0 for stable `player_context` propagation | Below 1.15.2: split-panel instances aren't registered for adaptive scoring. 1.15.2–1.33.0: works, but panel identity is unpersisted and per-highway rather than stable |
 | [Split Screen](https://github.com/get-flashbacks/feedback-plugin-splitscreen) | Per-panel difficulty state (`window.feedBackSplitscreen`/`window.slopsmithSplitscreen`) | Optional | v1.10.6 — the earliest auditable Split Screen version (the repo's history begins at a `Clean release snapshot` tagged 1.10.6) that already exposes the consumed `window.slopsmithSplitscreen` with `isActive()`. The `window.feedBackSplitscreen` alias is newer (v1.10.8), but the integration reads `window.feedBackSplitscreen \|\| window.slopsmithSplitscreen`, so 1.10.6 is sufficient at the source level | Feature-detected via a bare `typeof ss.isActive === 'function'` presence check — that catches a missing global or a missing `isActive` method, but not a present `isActive` whose contract moved underneath it, which is exactly the silent-death case splitscreen#47 (below) describes |
-| [Section Map](https://github.com/get-flashbacks/feedback-plugin-sectionmap) | Glass-fill difficulty indicators via the `difficulty:sections-updated` event, rendering only its `sectionDifficulties[].fillPercentage`/`.glassSize` fields | Consumer of this plugin's event, not the other way around | Difficulty Ladder v0.12.0 — where `CHANGELOG.md` documents the `difficulty_ladder.sections.v2` payload contract (the event itself shipped in v0.2.0); Section Map does not actually inspect a `schema` field, so this floor is about when the current fill-percentage payload shape stabilized, not a version string Section Map validates | See `INTEGRATION.md` for the full contract |
+| [Section Map](https://github.com/get-flashbacks/feedback-plugin-sectionmap) | Section-difficulty indicators via the `difficulty:sections-updated-v3` event, consuming its `sections[].phrases[].top_tier`/`.current_tier` fields | Consumer of this plugin's event, not the other way around | Difficulty Ladder v0.41.0 — where the render-neutral `difficulty_ladder.sections.v3` payload replaced the retired v2 fill-percentage contract (`sectionmap#14` migrated Section Map to v3) | See `INTEGRATION.md` for the full contract |
 
 A `typeof` check alone doesn't catch a downstream contract change on an
 otherwise-present global — see

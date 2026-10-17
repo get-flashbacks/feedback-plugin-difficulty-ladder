@@ -152,7 +152,7 @@ test('_presentedDifficultyLevel maps current mastery onto the phrase ladder leve
     assert.equal(mod._presentedDifficultyLevel({ getMastery: () => 'not-a-number' }, { max_difficulty: 3 }), null);
 });
 
-// ── Issue #63: one discrete tier formula shared by every glass renderer ────
+// ── Issue #63: one discrete tier formula shared by every tier consumer ─────
 
 test('_tierFillFrac matches the documented discrete tier ladder', () => {
     const mod = freshPlugin();
@@ -191,29 +191,6 @@ test('_phraseTopDifficulty prefers core top_difficulty and falls back to max_dif
     assert.equal(mod._phraseTopDifficulty({ max_difficulty: 3, top_difficulty: 1 }), 1);
     assert.equal(mod._phraseTopDifficulty({ max_difficulty: 3 }), 3);
     assert.equal(mod._phraseTopDifficulty({}), 0);
-});
-
-test('calculateAndEmitSectionDifficulties sizes and fills sections by the tier each phrase is complete at', () => {
-    const mod = freshPlugin();
-    global.window.highway = stubHighwayForSectionDifficulty({
-        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Solo' }],
-        phrases: [
-            { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 },
-            { start_time: 10, end_time: 20, max_difficulty: 3, top_difficulty: 3 },
-        ],
-        mastery: 0.3,
-    });
-    const emits = collectOneEmit();
-
-    mod.calculateAndEmitSectionDifficulties();
-
-    const [verse, solo] = [emits.v2().detail.sectionDifficulties[0], emits.v2().detail.sectionDifficulties[1]];
-    assert.equal(verse.maxDifficulty, 1);
-    assert.equal(verse.fillPercentage, 100, 'the easy verse is already played in full at tier 1');
-    assert.equal(verse.glassSize, 'medium');
-    assert.equal(solo.maxDifficulty, 3);
-    assert.equal(solo.fillPercentage, (1 / 3) * 100);
-    assert.equal(solo.glassSize, 'large');
 });
 
 test('calculateAndEmitSectionDifficulties no-ops for a highway that exposes getSections but not getPhrases', () => {
@@ -259,10 +236,8 @@ function stubHighwayForSectionDifficulty({ sections, phrases, mastery, notes, ch
     };
 }
 
-// The section emit publishes two events (v2 for the released Section Map
-// integration, v3 for render-neutral consumers -- issue #156), so tests that
-// assert one contract pick their event out of the recorded stream by name
-// rather than reading whichever one landed last.
+// The section emit publishes the render-neutral v3 payload on its own event
+// (issue #156), so tests pick that event out of the recorded stream by name.
 function collectEmits() {
     const events = [];
     global.window.feedBack = { emit: (name, detail) => events.push({ name, detail }) };
@@ -280,47 +255,9 @@ function collectOneEmit() {
     const events = collectEmits();
     return {
         events,
-        v2: () => lastEvent(events, 'difficulty:sections-updated'),
         v3: () => lastEvent(events, 'difficulty:sections-updated-v3'),
     };
 }
-
-// Every field name anywhere in a payload, so a contract test can assert a
-// banned key is absent at any depth rather than only where it was looked for.
-function collectFieldNames(value, found = new Set()) {
-    if (Array.isArray(value)) {
-        value.forEach(item => collectFieldNames(item, found));
-    } else if (value && typeof value === 'object') {
-        Object.keys(value).forEach((key) => { found.add(key); collectFieldNames(value[key], found); });
-    }
-    return found;
-}
-
-test('a section of single-level phrases is full when it has notes and empty when it has none', () => {
-    const mod = freshPlugin();
-    // Generated easy phrases collapse to one level (max_difficulty 0): they
-    // play in full at every slider position, so the section glass is full,
-    // matching drawHud. A silent section with the same shape stays at 0%.
-    global.window.highway = stubHighwayForSectionDifficulty({
-        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Break' }, { time: 20, name: 'Solo' }],
-        phrases: [
-            { start_time: 0, end_time: 10, max_difficulty: 0, top_difficulty: 0 },
-            { start_time: 10, end_time: 20, max_difficulty: 0, top_difficulty: 0 },
-            { start_time: 20, end_time: 30, max_difficulty: 3, top_difficulty: 3 },
-        ],
-        notes: [{ t: 1, s: 0, f: 3 }, { t: 22, s: 2, f: 7 }],
-        chords: [{ t: 4, notes: [{ s: 0, f: 3 }] }],
-        mastery: 0.1,
-    });
-    const emits = collectOneEmit();
-
-    mod.calculateAndEmitSectionDifficulties();
-
-    const sections = emits.v2().detail.sectionDifficulties;
-    assert.equal(sections[0].fillPercentage, 100, 'easy verse with notes is played in full');
-    assert.equal(sections[1].fillPercentage, 0, 'a silent break is not shown as mastered');
-    assert.equal(sections[2].fillPercentage, 0, 'the solo is at its bottom tier at 10%');
-});
 
 test('_chartHasContentIn checks notes and chords in a half-open window', () => {
     const mod = freshPlugin();
@@ -331,66 +268,12 @@ test('_chartHasContentIn checks notes and chords in a half-open window', () => {
     assert.equal(mod._chartHasContentIn({}, 0, Infinity), false, 'no getters, no content');
 });
 
-test('calculateAndEmitSectionDifficulties fills each section using the same discrete tier drawHud() uses', () => {
-    const mod = freshPlugin();
-    // A section whose only overlapping phrase caps at difficulty 2 (of a
-    // song-wide max of 4) is a real case the old continuous formula got
-    // wrong: mastery 0.6 against max_difficulty 2 lands on tier 1 (of 2),
-    // i.e. 50% -- not the 30% the old `mastery * maxSectionDifficulty /
-    // globalMaxDifficulty` formula would have emitted.
-    global.window.highway = stubHighwayForSectionDifficulty({
-        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Chorus' }],
-        phrases: [
-            { start_time: 0, end_time: 10, max_difficulty: 2 },
-            { start_time: 10, end_time: 20, max_difficulty: 4 },
-        ],
-        mastery: 0.6,
-    });
-    const emits = collectOneEmit();
-
-    mod.calculateAndEmitSectionDifficulties();
-
-    assert.equal(emits.v2().name, 'difficulty:sections-updated');
-    const verse = emits.v2().detail.sectionDifficulties[0];
-    const expected = mod._tierFillFrac(0.6, 2);
-    assert.equal(verse.maxDifficulty, 2);
-    assert.equal(verse.fillPercentage, expected.fillFrac * 100);
-    assert.equal(verse.fillPercentage, 50); // tier 1 of 2, not the old 30%
-});
-
-test('calculateAndEmitSectionDifficulties reports 0% for a section whose only phrase has no difficulty ladder, even if other phrases in the song do', () => {
-    // Regression (Sourcery, PR #79): _tierFillFrac(mastery, 0) returns
-    // fillFrac 1 ("fully filled") for drawHud's per-phrase "no ladder"
-    // convention, but at the section level maxSectionDifficulty === 0 means
-    // "no difficulty content overlaps this section at all" (e.g. an empty
-    // section next to phrases that do have depth) -- reusing the per-phrase
-    // convention here would render an empty section as misleadingly "fully
-    // mastered". The old continuous formula always emitted 0% for this case.
-    const mod = freshPlugin();
-    global.window.highway = stubHighwayForSectionDifficulty({
-        sections: [{ time: 0, name: 'Intro' }, { time: 5, name: 'Verse' }],
-        phrases: [
-            { start_time: 0, end_time: 5, max_difficulty: 0 },
-            { start_time: 5, end_time: 20, max_difficulty: 4 },
-        ],
-        mastery: 0.6,
-    });
-    const emits = collectOneEmit();
-
-    mod.calculateAndEmitSectionDifficulties();
-
-    const intro = emits.v2().detail.sectionDifficulties[0];
-    assert.equal(intro.maxDifficulty, 0);
-    assert.equal(intro.fillPercentage, 0);
-});
-
 // ── difficulty_ladder.sections.v3 — the render-neutral payload (#156) ──────
 //
-// The v2 payload above answers "how full is this glass, and how big"; these
-// tests pin the v3 contract that replaces it: tiers, spans and "is this the
-// current one", with no presentation field anywhere in it.
+// These tests pin the v3 contract: tiers, spans and "is this the current
+// one", with no presentation field anywhere in it.
 
-test('the v3 payload reports tiers, spans and currency instead of glass presentation', () => {
+test('the v3 payload reports tiers, spans and currency instead of presentation fields', () => {
     const mod = freshPlugin();
     global.window.highway = stubHighwayForSectionDifficulty({
         sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Solo' }],
@@ -444,7 +327,7 @@ test('the v3 payload reports tiers, spans and currency instead of glass presenta
     assert.equal(soloPhrase.is_current, true);
 });
 
-test('the v3 payload carries no presentation field at any depth', () => {
+test('the v3 payload carries only documented fields, never a presentation decision', () => {
     const mod = freshPlugin();
     global.window.highway = stubHighwayForSectionDifficulty({
         sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Solo' }],
@@ -459,10 +342,14 @@ test('the v3 payload carries no presentation field at any depth', () => {
 
     mod.calculateAndEmitSectionDifficulties();
 
-    const fields = collectFieldNames(emits.v3().detail);
-    for (const presentation of ['fillPercentage', 'glassSize']) {
-        assert.equal(fields.has(presentation), false, `${presentation} must stay out of the v3 payload`);
-    }
+    // Pinning the exact key sets at every level is the guard: a presentation
+    // field creaking back into the payload fails here.
+    const payload = emits.v3().detail;
+    assert.deepEqual(Object.keys(payload).sort(),
+        ['current_phrase_index', 'mastery', 'max_tier', 'player_context', 'schema', 'sections'].sort());
+    assert.deepEqual(Object.keys(payload.sections[0].phrases[0]).sort(),
+        ['current_tier', 'end_time', 'has_chart_content', 'id', 'index', 'is_current',
+            'max_tier', 'start_time', 'top_tier'].sort());
 });
 
 test('a v3 phrase entry carries the same id the phrase-attempt record is stored under', () => {
@@ -598,11 +485,11 @@ test('v3 reports current_tier as null when the host reports no usable mastery', 
     }
 });
 
-test('v3 reports an unreported mastery as null where v2 still emits its 0.5 fallback', () => {
+test('v3 reports an unreported mastery as null instead of a fabricated fallback', () => {
     const mod = freshPlugin();
-    // A highway with sections and phrases but no getMastery at all: v2's 0.5
-    // stand-in is frozen and stays, but a real mastery in the v3 payload would
-    // put a non-null current_tier on the wire for a measurement nobody took.
+    // A highway with sections and phrases but no getMastery at all: a stand-in
+    // mastery would put a non-null current_tier on the wire for a measurement
+    // nobody took.
     const highway = stubHighwayForSectionDifficulty({
         sections: [{ time: 0, name: 'Verse' }],
         phrases: [{ start_time: 0, end_time: 10, max_difficulty: 3 }],
@@ -613,7 +500,6 @@ test('v3 reports an unreported mastery as null where v2 still emits its 0.5 fall
 
     mod.calculateAndEmitSectionDifficulties();
 
-    assert.equal(emits.v2().detail.mastery, 0.5, "v2's fallback is unchanged");
     const payload = emits.v3().detail;
     assert.equal(payload.mastery, null);
     assert.equal(payload.sections[0].current_tier, null);
@@ -700,9 +586,9 @@ test('_v3CurrentTier never reports more detail than the entry plays in', () => {
 
 test('_v3CurrentTier reports no tier at all for an entry that has no ladder', () => {
     const mod = freshPlugin();
-    // _tierFillFrac's zero-ladder convention is index 0 ("no glass to fill"),
-    // which on a 0/0 entry would be indistinguishable from mastery measured at
-    // the bottom tier — the reading top_tier/max_tier = 0 explicitly denies.
+    // _tierFillFrac's zero-ladder convention is index 0 ("nothing to
+    // advance"), which on a 0/0 entry would be indistinguishable from mastery
+    // measured at the bottom tier — the reading top_tier/max_tier = 0 denies.
     assert.equal(mod._v3CurrentTier(0.5, 0, 0), null);
     assert.equal(mod._v3CurrentTier(0.9, 3, 0), null, 'a top_tier of 0 reports no ladder either');
     assert.equal(mod._v3CurrentTier(0.5, 0, 3), null);
@@ -724,14 +610,14 @@ test('_hostReportsPhraseTiers reports the host tier-semantics signal (true/false
     ] }), false, 'a mixed host is legacy for the phrases that do not report the field');
 });
 
-// Host-contract coverage (issue #129): the HUD glass, the render-neutral v3
-// event and the phrase-attempt log are three consumers of the SAME mastery ->
-// tier mapping. These pin that they agree on a full ladder, and pin the one
-// place they intentionally diverge on a collapsed ladder (top_tier < max_tier):
-// v3 reports "detail" (capped at full detail, matching its contract), while the
-// HUD/attempt log report the slider's tier, which keeps climbing to max_tier
-// even though no extra content plays above top_tier.
-test('host-contract: the HUD fill, the v3 tier and the attempt log agree on a full ladder', () => {
+// Host-contract coverage (issue #129): the DOM tier rail, the render-neutral
+// v3 event and the phrase-attempt log are three consumers of the SAME
+// mastery -> tier mapping. These pin that they agree on a full ladder, and pin
+// the one place they intentionally diverge on a collapsed ladder
+// (top_tier < max_tier): v3 reports "detail" (capped at full detail, matching
+// its contract), while the rail/attempt log report the slider's tier, which
+// keeps climbing to max_tier even though no extra content plays above top_tier.
+test('host-contract: the rail tier, the v3 tier and the attempt log agree on a full ladder', () => {
     const mod = freshPlugin();
     const ctx = playerContext({ song_id: 'song.feedpak', arrangement_id: 'lead' });
     const phrase = { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 3 };
@@ -754,7 +640,7 @@ test('host-contract: the HUD fill, the v3 tier and the attempt log agree on a fu
     assert.equal(fullV3.phrases[0].current_tier, 2, 'the v3 payload tier agrees on a full ladder');
     assert.equal(fullV3.phrases[0].top_tier, 3);
     assert.equal(mod._v3CurrentTier(0.74, 3, 3), 2, 'v3 agrees on a full ladder');
-    assert.equal(mod._tierFillFrac(0.74, 3, 3).idxLevel, presented, 'the HUD maps from the same index');
+    assert.equal(mod._tierFillFrac(0.74, 3, 3).idxLevel, presented, 'the presented tier maps from the same index');
     assert.equal(mod._tierFillFrac(0.74, 3, 3).fillFrac, 2 / 3);
 
     mod.recordPhraseAttempt(1, ctx, state, highway);
@@ -782,7 +668,7 @@ test('host-contract: on a collapsed ladder v3 caps at full detail while the atte
     assert.equal(collapsedCollector.v3().detail.sections[0].phrases[0].current_tier, 1,
         'the v3 payload reports the detail level, capped at full detail');
     assert.equal(mod._v3CurrentTier(0.9, 3, 1), 1, 'v3 reports the detail level, capped at full detail');
-    // Intermediate mastery is the discriminating HUD assertion: at 0.9 every
+    // Intermediate mastery is the discriminating rail assertion: at 0.9 every
     // fill formulation hits 1, while at 0.5 idxLevel = floor(0.5 * 4) = 2,
     // so the pTop-based fill is min(1, 2/1) = 1 but a max_difficulty-based
     // fill would be (2+1)/(3+1) = 3/4. The assertion reads the production
@@ -792,63 +678,16 @@ test('host-contract: on a collapsed ladder v3 caps at full detail while the atte
     assert.equal(collapsedTop, 1);
     assert.equal(mod._tierFillFrac(0.5, 3, collapsedTop).fillFrac, 1);
     assert.notEqual(mod._tierFillFrac(0.5, 3, 3).fillFrac, mod._tierFillFrac(0.5, 3, collapsedTop).fillFrac,
-        'the HUD fill is scaled by the collapsed top, not max_difficulty');
+        'the fill is scaled by the collapsed top, not max_difficulty');
 
     mod.recordPhraseAttempt(1, ctx, state, highway);
     assert.equal(mod.loadPhraseAttempts(ctx)[0].presented_difficulty, presented,
-        'the attempt log records the same uncapped tier the HUD maps from mastery');
+        'the attempt log records the same uncapped tier the rail maps from mastery');
 });
 
-test('host-contract: drawHud fills a collapsed ladder from pTop, not max_difficulty', () => {
-    // The collapsed-ladder assertion above reads `_tierFillFrac` directly, so
-    // it would stay green if drawHud passed `max_difficulty` as the glass top.
-    // Drive the real draw path (Sourcery #199) and read the fill it emits.
-    const fills = [];
-    const canvas = {
-        isConnected: true, width: 0, height: 0, style: {},
-        getContext: () => ({
-            setTransform() {}, clearRect() {}, beginPath() {}, rect() {},
-            roundRect() {}, stroke() {}, fill() {}, fillText() {},
-            measureText: () => ({ width: 0 }),
-            fillRect(x, y, w, h) { fills.push(h); },
-        }),
-    };
-    const player = { isConnected: true, classList: { contains: () => true }, appendChild() {} };
-    global.window = { addEventListener() {}, devicePixelRatio: 1 };
-    global.document = {
-        addEventListener: () => {},
-        getElementById: (id) => (id === 'player' ? player : null),
-        createElement: () => canvas,
-    };
-    global.localStorage = { getItem: () => null, setItem() {} };
-    global.requestAnimationFrame = () => 1;
-    const file = path.join(__dirname, '..', 'screen.js');
-    delete require.cache[require.resolve(file)];
-    const mod = require(file);
-
-    const phrase = { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 };
-    global.window.highway = {
-        hasPhraseData: () => true,
-        getPhrases: () => [phrase],
-        getTime: () => 1,
-        getMastery: () => 0.5,
-    };
-    mod.settings.showDifficultyGuide = true;
-
-    mod.drawHud();
-
-    // Single phrase, top === max -> glassH = GLASS_MAX_H (44). pTop = 1 at
-    // mastery 0.5 -> _tierFillFrac idxLevel 2, fillFrac min(1, 2/1) = 1 ->
-    // fillH = 44 - 1 = 43. A max_difficulty (3) regression -> fillFrac 2/3 ->
-    // fillH ~= 28.
-    assert.ok(fills.length >= 1, 'drawHud must fill the glass');
-    assert.equal(Math.round(fills[0]), 43,
-        'the drawn fill reflects pTop (full here), not max_difficulty');
-});
-
-// The rendered guide is the event-driven DOM tier rail since #157, so the
-// host-contract coverage above, which rides the retired glass HUD, is repeated
-// here against the live renderer. The rail's lit segments (= currentTier), its
+// The rendered guide is the event-driven DOM tier rail since #157; the
+// host-contract coverage above rides the rail helpers, and this repeats it
+// against the live DOM renderer. The rail's lit segments (= currentTier), its
 // full-detail notch (= topTier) and the accessible description must all read
 // from the same mastery -> tier mapping as the v3 emit and the attempt log —
 // including the one intentional collapse divergence (top_difficulty <
@@ -1142,35 +981,7 @@ test('the split initializer carries and clears the same Elo observation field as
     assert.equal(split.lastElo, null);
 });
 
-test('the v2 event still emits byte-for-byte what Section Map consumes today', () => {
-    const mod = freshPlugin();
-    global.window.highway = stubHighwayForSectionDifficulty({
-        sections: [{ time: 0, name: 'Verse' }, { time: 10, name: 'Solo' }],
-        phrases: [
-            { start_time: 0, end_time: 10, max_difficulty: 3, top_difficulty: 1 },
-            { start_time: 10, end_time: 20, max_difficulty: 3, top_difficulty: 3 },
-        ],
-        mastery: 0.3,
-    });
-    const emits = collectOneEmit();
-
-    mod.calculateAndEmitSectionDifficulties();
-
-    // Locked shape, not just "it still fires": v2 stays the released contract
-    // for as long as an un-upgraded Section Map can be installed beside us.
-    assert.deepEqual(emits.v2().detail, {
-        schema: 'difficulty_ladder.sections.v2',
-        player_context: null,
-        sectionDifficulties: {
-            0: { fillPercentage: 100, glassSize: 'medium', avgDifficulty: 1, maxDifficulty: 1 },
-            1: { fillPercentage: (1 / 3) * 100, glassSize: 'large', avgDifficulty: 3, maxDifficulty: 3 },
-        },
-        mastery: 0.3,
-        maxDifficulty: 3,
-    });
-});
-
-test('the section emit publishes v2 and v3 on separate events in one call', () => {
+test('the section emit publishes exactly one render-neutral v3 event per call', () => {
     const mod = freshPlugin();
     global.window.highway = stubHighwayForSectionDifficulty({
         sections: [{ time: 0, name: 'Verse' }],
@@ -1182,8 +993,8 @@ test('the section emit publishes v2 and v3 on separate events in one call', () =
     mod.calculateAndEmitSectionDifficulties();
 
     assert.deepEqual(emits.events.map(e => e.name),
-        ['difficulty:sections-updated', 'difficulty:sections-updated-v3'],
-        'a v2-only subscriber must never be handed a v3 payload, or the reverse');
+        ['difficulty:sections-updated-v3'],
+        'only the v3 event is published; the legacy v2 event was removed in #159');
     assert.equal(global.window._ddCapabilities.sectionsSchema, 'difficulty_ladder.sections.v3',
         'consumers feature-detect the installed schema instead of sniffing payloads');
 });
@@ -1594,7 +1405,6 @@ test('section difficulty events retain the player context for pane-local renderi
 
     mod.calculateAndEmitSectionDifficulties(ctx, highway);
 
-    assert.deepEqual(emits.v2().detail.player_context, mod._contextEventPayload(ctx));
     assert.deepEqual(emits.v3().detail.player_context, mod._contextEventPayload(ctx));
 });
 
@@ -2971,7 +2781,7 @@ test('split adaptive applies schedule pane-scoped section refresh events', async
     mod._applyDifficultyForContext(b, 70, highwayB, 'adaptive');
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    const sectionEvents = events.filter(event => event.name === 'difficulty:sections-updated');
+    const sectionEvents = events.filter(event => event.name === 'difficulty:sections-updated-v3');
     assert.equal(sectionEvents.length, 2);
     const byPlayer = Object.fromEntries(sectionEvents.map(event => [
         event.detail.player_context.player_id, event.detail.mastery,
@@ -3004,7 +2814,7 @@ test('main song lifecycle does not cancel a pending split-pane section refresh',
     mod.onSongEvent();
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    const splitEvents = events.filter(event => event.name === 'difficulty:sections-updated'
+    const splitEvents = events.filter(event => event.name === 'difficulty:sections-updated-v3'
         && event.detail.player_context?.player_id === 'side-player');
     assert.equal(splitEvents.length, 1);
     assert.equal(splitEvents[0].detail.mastery, 0.65);
@@ -3115,7 +2925,7 @@ test('ready split context emits initial scoped sections without saved difficulty
     mod.registerSplitHighway(highway, ctx);
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    const event = events.find(item => item.name === 'difficulty:sections-updated');
+    const event = events.find(item => item.name === 'difficulty:sections-updated-v3');
     assert.ok(event);
     assert.equal(event.detail.player_context.player_id, 'player-initial');
     assert.equal(event.detail.mastery, 0.45);
@@ -3143,7 +2953,7 @@ test('async main-profile readiness emits scoped sections without saved difficult
     await activation;
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    const sectionEvents = events.filter(item => item.name === 'difficulty:sections-updated');
+    const sectionEvents = events.filter(item => item.name === 'difficulty:sections-updated-v3');
     assert.equal(sectionEvents.length, 1);
     assert.equal(sectionEvents[0].detail.player_context.player_id, 'main');
     assert.equal(sectionEvents[0].detail.player_context.profile_hash, 'main-profile-hash');
@@ -3179,7 +2989,7 @@ test('profile:changed recovers a main context whose v3Profile was still null at 
     // unscoped Section Map output, no shared persistence key).
     mod.onSongEvent();
     assert.equal(
-        events.filter(item => item.name === 'difficulty:sections-updated').length,
+        events.filter(item => item.name === 'difficulty:sections-updated-v3').length,
         0,
         'no unscoped sections may escape while v3Profile.get() is null'
     );
@@ -3189,7 +2999,7 @@ test('profile:changed recovers a main context whose v3Profile was still null at 
     (handlers.get('profile:changed') || []).forEach(handler => handler({ detail: { ready: true } }));
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    const sectionEvents = events.filter(item => item.name === 'difficulty:sections-updated');
+    const sectionEvents = events.filter(item => item.name === 'difficulty:sections-updated-v3');
     assert.equal(sectionEvents.length, 1);
     assert.equal(sectionEvents[0].detail.player_context.player_id, 'main');
     assert.equal(sectionEvents[0].detail.player_context.profile_hash, 'main-profile-hash');
@@ -3216,7 +3026,7 @@ test('profile readiness is left to the Host when the player-context service is p
     mod.resolveCompatibilityContextOnProfileSignal();
 
     assert.equal(getActiveCalls, 0, 'v3Profile adapter must not query on a playerContexts Host');
-    assert.equal(events.filter(item => item.name === 'difficulty:sections-updated').length, 0);
+    assert.equal(events.filter(item => item.name === 'difficulty:sections-updated-v3').length, 0);
 });
 
 test('v3:profile-updated re-resolves the main context when the active profile changes', async () => {
@@ -3248,7 +3058,7 @@ test('v3:profile-updated re-resolves the main context when the active profile ch
     (handlers.get('v3:profile-updated') || []).forEach(handler => handler({ detail: activeProfile }));
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    const latest = events.filter(item => item.name === 'difficulty:sections-updated').pop();
+    const latest = events.filter(item => item.name === 'difficulty:sections-updated-v3').pop();
     assert.ok(latest, 'a profile update must re-publish scoped sections');
     assert.equal(latest.detail.player_context.profile_hash, 'bob-hash');
     assert.equal(latest.detail.player_context.player_id, 'main');
@@ -3275,7 +3085,7 @@ test('song ready waits for profile readiness before its first Section Map emissi
 
     mod.onSongEvent();
     assert.equal(
-        events.filter(item => item.name === 'difficulty:sections-updated').length,
+        events.filter(item => item.name === 'difficulty:sections-updated-v3').length,
         0,
         'no null-context event may escape while the profile promise is pending'
     );
@@ -3283,7 +3093,7 @@ test('song ready waits for profile readiness before its first Section Map emissi
     resolveProfile({ id: 'ready-profile', player_hash: 'ready-profile-hash' });
     await new Promise(resolve => setTimeout(resolve, 200));
 
-    const sectionEvents = events.filter(item => item.name === 'difficulty:sections-updated');
+    const sectionEvents = events.filter(item => item.name === 'difficulty:sections-updated-v3');
     assert.equal(sectionEvents.length, 1);
     assert.equal(sectionEvents[0].detail.player_context.player_id, 'main');
     assert.equal(sectionEvents[0].detail.player_context.profile_hash, 'ready-profile-hash');
@@ -4409,28 +4219,12 @@ test('malformed dropResistance storage updates reset the setting to false', () =
     assert.equal(mod.settings.dropResistance, false);
 });
 
-// Issue #158 (tier rail 3/4): `showGlasses` was renamed to "Show difficulty
-// guide", stored under `showDifficultyGuide`. An existing user's on/off
-// choice migrates forward on first read instead of resetting to the
-// default, and the migration is idempotent.
+// Issue #159 (tier rail 4/4): the retired canvas-HUD visibility setting and its
+// legacy read-time migration are gone with the canvas HUD. "Show difficulty
+// guide" is stored under `showDifficultyGuide` and is the only key consulted.
 
-test('a legacy-only showGlasses false keeps the guide off after upgrading', () => {
-    const mod = freshPlugin({ stored: { 'difficulty_ladder.showGlasses': JSON.stringify(false) } });
-    assert.equal(mod.settings.showDifficultyGuide, false);
-    assert.equal(global.localStorage.getItem('difficulty_ladder.showDifficultyGuide'), 'false');
-});
-
-test('a legacy-only showGlasses true keeps the guide on after upgrading', () => {
-    const mod = freshPlugin({ stored: { 'difficulty_ladder.showGlasses': JSON.stringify(true) } });
-    assert.equal(mod.settings.showDifficultyGuide, true);
-    assert.equal(global.localStorage.getItem('difficulty_ladder.showDifficultyGuide'), 'true');
-});
-
-test('an existing showDifficultyGuide value wins over a stale showGlasses value', () => {
-    const mod = freshPlugin({ stored: {
-        'difficulty_ladder.showDifficultyGuide': JSON.stringify(false),
-        'difficulty_ladder.showGlasses': JSON.stringify(true),
-    } });
+test('a stored showDifficultyGuide of false keeps the guide off', () => {
+    const mod = freshPlugin({ stored: { 'difficulty_ladder.showDifficultyGuide': JSON.stringify(false) } });
     assert.equal(mod.settings.showDifficultyGuide, false);
 });
 
@@ -4439,32 +4233,6 @@ test('neither key present takes the on-by-default without writing storage', () =
     const mod = freshPlugin({ onSet: (key) => written.push(key) });
     assert.equal(mod.settings.showDifficultyGuide, true);
     assert.ok(!written.includes('difficulty_ladder.showDifficultyGuide'));
-});
-
-test('the difficulty-guide migration is idempotent across reloads', () => {
-    const first = freshPlugin({ stored: { 'difficulty_ladder.showGlasses': JSON.stringify(false) } });
-    assert.equal(first.settings.showDifficultyGuide, false);
-    const persisted = global.localStorage.getItem('difficulty_ladder.showDifficultyGuide');
-    const second = freshPlugin({ stored: {
-        'difficulty_ladder.showGlasses': JSON.stringify(false),
-        'difficulty_ladder.showDifficultyGuide': persisted,
-    } });
-    assert.equal(second.settings.showDifficultyGuide, false);
-    assert.equal(global.localStorage.getItem('difficulty_ladder.showDifficultyGuide'), 'false');
-});
-
-test('a legacy-key storage event from a pre-rename tab is adopted, not dropped', () => {
-    const mod = freshPlugin();
-    assert.equal(mod.settings.showDifficultyGuide, true);
-
-    global.window.dispatchEvent({
-        type: 'storage',
-        key: 'difficulty_ladder.showGlasses',
-        newValue: JSON.stringify(false),
-    });
-
-    assert.equal(mod.settings.showDifficultyGuide, false);
-    assert.equal(global.localStorage.getItem('difficulty_ladder.showDifficultyGuide'), 'false');
 });
 
 // Issue #64: minMastery/maxMastery are persisted independently by the two
@@ -6205,12 +5973,12 @@ test('currentTarget() returns null when there is no song loaded yet', () => {
 test('the phrase shape this plugin assumes matches the one sectionmap assumes (contract note)', () => {
     // getPhrases(): [{ index, start_time, end_time, max_difficulty }]
     const samplePhrase = { index: 0, start_time: 0, end_time: 10, max_difficulty: 3 };
-    // Fields this plugin's drawHud()/tickScoring() reads:
+    // Fields this plugin's tickScoring() reads:
     for (const key of ['start_time', 'end_time', 'max_difficulty']) {
         assert.ok(key in samplePhrase, `difficulty_ladder reads phrase.${key}`);
     }
-    // Fields feedBack-plugin-sectionmap's _smSectionDifficulty/_smComputeGlass
-    // read (see that repo's screen.js): the same three, plus none extra —
+    // Fields feedBack-plugin-sectionmap's section-difficulty path reads (see
+    // that repo's screen.js): the same three, plus none extra —
     // confirming neither plugin depends on a field the other doesn't also see.
     for (const key of ['start_time', 'end_time', 'max_difficulty']) {
         assert.ok(key in samplePhrase, `sectionmap reads phrase.${key}`);

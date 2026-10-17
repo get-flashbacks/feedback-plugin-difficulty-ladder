@@ -48,12 +48,12 @@ All keys live in `localStorage`, prefixed `difficulty_ladder.` (`LS_PREFIX`,
 | `difficulty_ladder.phraseAttempts.v2` | schema `difficulty_ladder.phrase_attempts.v2`, version 2 | live scoring | canonical; replaced `phraseAttempts.v1` |
 | `difficulty_ladder.songMastery` | legacy per-song map, `filename::arrangement` → numeric or `{mastery, instrument}` record | read by migration (and, only before a profile context exists, by the badge's fallback); **also written** by `_rememberSongInstrument` (`screen.js:545`) and **pruned** by stale-label cleanup `_clearStaleSongInstrument` (`screen.js:618`) | legacy migration source. Not strictly read-only: the difficulty value is migrated+retained, but its `instrument` label is rewritten on contact and an entry judged stale is deleted, so rollback is best-effort, not guaranteed (§7) |
 | `difficulty_ladder.phraseAttempts.v1` | legacy attempt array | read-only left shift during migration (`screen.js:98`) | legacy migration source; retained |
-| `difficulty_ladder.autoAdjust`, `.dropResistance`, `.levelUpOnly`, `.sensitivity`, `.downStepRatio`, `.reactionSpeed`, `.minMastery`, `.maxMastery`, `.generateLevels`, `.showDifficultyGuide` | booleans / numbers | settings UI | current settings. `showGlasses` is the renamed predecessor of `showDifficultyGuide` and is migrated forward once (`_resolveDifficultyGuideSetting`, `screen.js:78`) |
+| `difficulty_ladder.autoAdjust`, `.dropResistance`, `.levelUpOnly`, `.sensitivity`, `.downStepRatio`, `.reactionSpeed`, `.minMastery`, `.maxMastery`, `.generateLevels`, `.showDifficultyGuide` | booleans / numbers | settings UI | current settings. `showDifficultyGuide` defaults to on and is read by `_resolveDifficultyGuideSetting` (`screen.js:76`); its retired pre-rename predecessor key is no longer consulted (#159) |
 
 Not `localStorage` keys (schema/capability identifiers, listed so readers
 don't look for persisted data that is never written):
 `difficulty_ladder.player_context.v1` (`PLAYER_CONTEXT_SCHEMA`),
-`difficulty_ladder.sections.v2` / `.v3`, `difficulty_ladder.difficulty_event.v1`,
+`difficulty_ladder.sections.v3`, `difficulty_ladder.difficulty_event.v1`,
 `difficulty_ladder.difficulty_request.v1`.
 
 **External source keys (the separate plugin's own storage, never prefixed with
@@ -285,12 +285,12 @@ separately-tracked removal timeline were gated on:
 - [x] #85 live settings reconciliation landed with regression tests.
 - [x] #215 source-store import landed with fixtures against the pinned schema
       (§11); the source keys stay read-only and unmatched records are deferred.
-- [x] The v2 sections-event retirement (#159) is **out of scope for this
-      consolidation** — it belongs to the tier-rail track (#131), is tracked by
-      its own issue, and is blocked on the external Section Map consumer
-      migration (`feedback-plugin-sectionmap#14`, still open). This plugin keeps
-      the v2 event and the legacy read path until then, so Section Map behavior
-      is preserved.
+- [x] The v2 sections-event retirement (#159) was **out of scope for this
+      consolidation** — it belongs to the tier-rail track (#131) and is tracked
+      by its own issue. That issue's removal of the v2 event, the legacy read
+      path, and all retired-overlay terminology is **merge-gated on the external
+      Section Map consumer migration** (`feedback-plugin-sectionmap#14`): it
+      lands only once Section Map reads the v3 fields.
 - [x] The **deprecation notice** requirement is **waived** (maintainer decision,
       2026-10-16): no notice is published in the Song Mastery repository. The
       separate plugin is neither declared obsolete nor removed by this
@@ -311,8 +311,8 @@ is an out-of-repo verification step, not a code gate.
       re-migrate (guard test present).
 - [ ] Legacy keys present after migration (`source_retained`).
 - [ ] No `dynamic_difficulty.*` key is read.
-- [ ] `git grep -i glass` empty apart from the changelog (tier-rail removal,
-      #159) — not a gate for this issue.
+- [ ] All retired-overlay terminology removed (`CHANGELOG.md` excepted;
+      tier-rail removal, #159) — a gate for #159, not for this issue.
 
 ## 10. Manual QA script
 
