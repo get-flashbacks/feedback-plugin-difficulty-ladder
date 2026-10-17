@@ -5759,8 +5759,11 @@ test('the cutover writes only namespaced keys and leaves the peer plugin\'s stor
     // 3. Guard against a vacuous pass: each cutover path actually ran and wrote
     //    its own namespaced key (a no-op migration or import would otherwise
     //    still satisfy the checks above).
-    assert.ok(writes.includes('difficulty_ladder.progress.v2'),
-        'legacy migration wrote the canonical progress store');
+    // progress.v2 is written by the source import too (screen.js:3402), so it
+    // cannot attribute a write to migration; the phrase store is flushed only
+    // by the migration's legacy-attempts cutover (screen.js:3158).
+    assert.ok(writes.includes('difficulty_ladder.phraseAttempts.v2'),
+        'legacy migration flushed the canonical phrase-attempt store');
     assert.ok(writes.includes('difficulty_ladder.songMasteryDDImport.v1'),
         'DD-settings import wrote its run-once marker');
     assert.ok(writes.includes('difficulty_ladder.startDifficulty'),
