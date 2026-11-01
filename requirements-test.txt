@@ -4,7 +4,7 @@
 # to build on some interpreters. Add a dependency here when a direct import
 # starts failing with ModuleNotFoundError.
 pytest==9.1.1
-fastapi==0.141.1
+fastapi==0.162.0
 pydantic==2.13.5
 httpx==0.28.1
 PyYAML==6.0.3
