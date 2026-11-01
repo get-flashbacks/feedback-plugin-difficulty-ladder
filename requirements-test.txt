@@ -3,7 +3,7 @@
 # packages such as Pillow, yt-dlp, curl_cffi, or midiutil, and midiutil fails
 # to build on some interpreters. Add a dependency here when a direct import
 # starts failing with ModuleNotFoundError.
-pytest==9.1.1
+pytest==9.2.0
 fastapi==0.141.1
 pydantic==2.13.5
 httpx==0.28.1
